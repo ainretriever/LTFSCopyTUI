@@ -1,10 +1,11 @@
 //! tapecpy CLI（Presentation 层）。
 //!
-//! Milestone 0-2 提供四个命令：
+//! Milestone 0-3 提供五个命令：
 //! - `tapecpy list`：发现并列出磁带机；
 //! - `tapecpy info [选择器]`：显示一台磁带机的身份信息；
 //! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息；
-//! - `tapecpy volume [选择器]`：识别 LTFS 并显示 volume 基本信息。
+//! - `tapecpy volume [选择器]`：识别 LTFS 并显示 volume 基本信息；
+//! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树。
 
 use std::env;
 use std::process::ExitCode;
@@ -12,13 +13,14 @@ use std::process::ExitCode;
 use tapecpy::app;
 
 const USAGE: &str = "\
-tapecpy — Linux 磁带工具（Milestone 2: 设备发现 + 介质检查 + LTFS 识别）
+tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS 识别 + 浏览）
 
 用法:
   tapecpy list                发现并列出系统上的磁带机
   tapecpy info [选择器]        显示一台磁带机的身份信息
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
   tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
+  tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -40,6 +42,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("info") => cmd_info(args.get(1).map(String::as_str)),
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
+        Some("ls") => cmd_ls(args.get(1).map(String::as_str), args.get(2).map(String::as_str)),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -188,7 +191,7 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
     if let Some(name) = volume
         .index
         .as_ref()
-        .and_then(|idx| idx.volume_name.as_deref())
+        .and_then(|idx| idx.volume_name())
         .filter(|n| !n.is_empty())
     {
         println!("  Volume Name: {name}");
@@ -214,7 +217,8 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
         println!("  更新时间:    {}", idx.update_time);
         println!(
             "  文件/目录:   {} / {}",
-            idx.file_count, idx.directory_count
+            idx.file_count(),
+            idx.directory_count()
         );
         if let Some(uid) = idx.highest_file_uid {
             println!("  HighestUID:  {uid}");
@@ -225,6 +229,55 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
     }
     print_warnings(&volume.warnings);
     Ok(())
+}
+
+fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
+    use tapecpy::ltfs::index::DirectoryEntry;
+
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    let volume = app::inspect_volume(drive).map_err(|e| e.to_string())?;
+
+    if !volume.recognized {
+        println!("LTFS: 否（无法浏览）");
+        if let Some(reason) = &volume.reason {
+            println!("  原因: {reason}");
+        }
+        return Ok(());
+    }
+    let Some(index) = &volume.index else {
+        println!("没有可用的 index，无法浏览。");
+        return Ok(());
+    };
+
+    let dir_path = path.unwrap_or("/");
+    let dir = index
+        .find_directory(dir_path)
+        .ok_or_else(|| format!("目录不存在: {dir_path}"))?;
+
+    println!("{}  (gen {})", display_dir_name(dir, dir_path), index.generation);
+    for entry in &dir.entries {
+        match entry {
+            DirectoryEntry::Directory(d) => {
+                println!("  d   {:>10}  {}/", "", d.name);
+            }
+            DirectoryEntry::File(f) => {
+                println!("  -   {:>10}  {}", format_size(f.length), f.name);
+            }
+            DirectoryEntry::Symlink(s) => {
+                println!("  l   {:>10}  {} -> {}", "-", s.name, s.target);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn display_dir_name(dir: &tapecpy::ltfs::index::Directory, path: &str) -> String {
+    if path == "/" || path.is_empty() {
+        format!("{}/", dir.name)
+    } else {
+        format!("{path}/")
+    }
 }
 
 fn print_warnings(warnings: &[String]) {
@@ -298,5 +351,23 @@ fn format_capacity(mib: u64) -> String {
         format!("{mib} MiB ({:.2} GiB)", mib as f64 / 1024.0)
     } else {
         format!("{mib} MiB")
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    const TIB: u64 = GIB * 1024;
+    if bytes >= TIB {
+        format!("{:.2} TiB", bytes as f64 / TIB as f64)
+    } else if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
