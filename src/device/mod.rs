@@ -9,6 +9,7 @@ pub mod density;
 pub mod mtio;
 pub mod scsi;
 pub mod sysfs;
+pub mod tape;
 
 use std::fmt;
 use std::fs::File;

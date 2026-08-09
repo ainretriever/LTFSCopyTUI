@@ -12,12 +12,18 @@ use libc::{c_int, c_uint, c_ulong, c_void};
 
 const SG_IO: c_ulong = 0x2285;
 const SG_DXFER_FROM_DEV: c_int = -3;
+const SG_DXFER_TO_DEV: c_int = -2;
 const SG_DXFER_NONE: c_int = -1;
 const SG_INTERFACE_ID: c_int = 0x53; // 'S'
+const REWIND_OPCODE: u8 = 0x01;
+const READ_OPCODE: u8 = 0x08;
+const MODE_SELECT_OPCODE: u8 = 0x15;
 const INQUIRY_OPCODE: u8 = 0x12;
 const TEST_UNIT_READY_OPCODE: u8 = 0x00;
 const MODE_SENSE_OPCODE: u8 = 0x1a;
 const READ_ATTRIBUTE_OPCODE: u8 = 0x8c;
+const READ_POSITION_OPCODE: u8 = 0x34;
+const LOCATE16_OPCODE: u8 = 0x92;
 const VPD_SERIAL: u8 = 0x80;
 const DEFAULT_TIMEOUT_MS: c_uint = 10_000;
 const SENSE_BUF_LEN: u8 = 32;
@@ -68,6 +74,58 @@ pub fn sg_io_from_device(fd: &impl AsRawFd, cdb: &[u8], buf: &mut [u8]) -> io::R
 /// 通过 SG_IO 执行一条无数据传输的 CDB（如 TEST UNIT READY）。
 pub fn sg_io_none(fd: &impl AsRawFd, cdb: &[u8]) -> io::Result<ScsiResult> {
     sg_io_impl(fd, cdb, SG_DXFER_NONE, &mut [])
+}
+
+/// 通过 SG_IO 执行一条数据方向为 TO_DEV（主机 → 设备）的 CDB。
+pub fn sg_io_to_device(fd: &impl AsRawFd, cdb: &[u8], data: &[u8]) -> io::Result<ScsiResult> {
+    if cdb.len() > u8::MAX as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "CDB 过长"));
+    }
+
+    let mut sense_buf = [0u8; SENSE_BUF_LEN as usize];
+    let mut hdr = SgIoHdr {
+        interface_id: SG_INTERFACE_ID,
+        dxfer_direction: SG_DXFER_TO_DEV,
+        cmd_len: cdb.len() as u8,
+        mx_sb_len: SENSE_BUF_LEN,
+        iovec_count: 0,
+        dxfer_len: data.len() as c_uint,
+        dxferp: if data.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            data.as_ptr().cast_mut().cast()
+        },
+        cmdp: cdb.as_ptr().cast_mut(),
+        sbp: sense_buf.as_mut_ptr(),
+        timeout: DEFAULT_TIMEOUT_MS,
+        flags: 0,
+        pack_id: 0,
+        usr_ptr: std::ptr::null_mut(),
+        status: 0,
+        masked_status: 0,
+        msg_status: 0,
+        sb_len_wr: 0,
+        host_status: 0,
+        driver_status: 0,
+        resid: 0,
+        duration: 0,
+        info: 0,
+    };
+
+    // SAFETY: 与 sg_io_impl 相同的约束；data 在整个调用期间保持存活。
+    let rc = unsafe { libc::ioctl(fd.as_raw_fd(), SG_IO, &mut hdr) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let sense = sense_buf[..hdr.sb_len_wr as usize].to_vec();
+    Ok(ScsiResult {
+        status: hdr.status,
+        host_status: hdr.host_status,
+        driver_status: hdr.driver_status,
+        resid: hdr.resid,
+        sense,
+    })
 }
 
 fn sg_io_impl(
@@ -188,6 +246,81 @@ pub fn read_attribute(
     cdb[12] = (alloc_len >> 8) as u8;
     cdb[13] = (alloc_len & 0xff) as u8;
     sg_io_from_device(fd, &cdb, buf)
+}
+
+/// 发送 SCSI REWIND。
+pub fn rewind(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
+    let cdb = [REWIND_OPCODE, 0, 0, 0, 0, 0];
+    sg_io_none(fd, &cdb)
+}
+
+/// 发送 SCSI READ(6)。可变块模式下 transfer length 以字节为单位，
+/// 每次返回一条记录（不足时按实际长度返回）。
+pub fn read6(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
+    let len = buf.len().min(0xff_ffff);
+    let mut cdb = [0u8; 6];
+    cdb[0] = READ_OPCODE;
+    cdb[2] = (len >> 16) as u8;
+    cdb[3] = (len >> 8) as u8;
+    cdb[4] = (len & 0xff) as u8;
+    sg_io_from_device(fd, &cdb, buf)
+}
+
+/// 发送 SCSI READ POSITION（long format）。
+pub fn read_position(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 10];
+    cdb[0] = READ_POSITION_OPCODE;
+    cdb[1] = 0x06; // Long format
+    sg_io_from_device(fd, &cdb, buf)
+}
+
+/// 发送 SCSI LOCATE(16)。
+///
+/// `change_partition` 为 true 时设置 CP 位，允许跨分区定位。
+pub fn locate16(
+    fd: &impl AsRawFd,
+    partition: u8,
+    block: u64,
+    change_partition: bool,
+) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 16];
+    cdb[0] = LOCATE16_OPCODE;
+    if change_partition {
+        cdb[1] = 0x02;
+    }
+    cdb[3] = partition;
+    let bytes = block.to_be_bytes();
+    cdb[4..12].copy_from_slice(&bytes);
+    sg_io_none(fd, &cdb)
+}
+
+/// 发送 6 字节 MODE SELECT（PF=1），用于设置块大小等。
+pub fn mode_select6(fd: &impl AsRawFd, data: &[u8]) -> io::Result<ScsiResult> {
+    let len = data.len().min(u16::MAX as usize);
+    let mut cdb = [0u8; 6];
+    cdb[0] = MODE_SELECT_OPCODE;
+    cdb[1] = 0x10; // PF
+    cdb[4] = len as u8;
+    sg_io_to_device(fd, &cdb, data)
+}
+
+/// READ POSITION 响应解析（long format）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TapePosition {
+    pub partition: u32,
+    pub block: u64,
+    pub filemarks: u64,
+}
+
+pub fn parse_read_position(buf: &[u8]) -> Option<TapePosition> {
+    if buf.len() < 24 {
+        return None;
+    }
+    Some(TapePosition {
+        partition: u32::from_be_bytes(buf[4..8].try_into().ok()?),
+        block: u64::from_be_bytes(buf[8..16].try_into().ok()?),
+        filemarks: u64::from_be_bytes(buf[16..24].try_into().ok()?),
+    })
 }
 
 /// 从 6 字节 MODE SENSE 响应中取第一个块描述符的密度代码。
@@ -451,5 +584,18 @@ mod tests {
         );
         assert_eq!(u64_value(&[]), None);
         assert_eq!(u64_value(&[0; 9]), None);
+    }
+
+    #[test]
+    fn parse_read_position_long_format() {
+        let mut buf = vec![0u8; 32];
+        buf[4..8].copy_from_slice(&1u32.to_be_bytes());
+        buf[8..16].copy_from_slice(&42u64.to_be_bytes());
+        buf[16..24].copy_from_slice(&3u64.to_be_bytes());
+        let pos = parse_read_position(&buf).unwrap();
+        assert_eq!(pos.partition, 1);
+        assert_eq!(pos.block, 42);
+        assert_eq!(pos.filemarks, 3);
+        assert_eq!(parse_read_position(&buf[..20]), None);
     }
 }

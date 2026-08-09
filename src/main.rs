@@ -1,9 +1,10 @@
 //! tapecpy CLI（Presentation 层）。
 //!
-//! Milestone 0/1 提供三个命令：
+//! Milestone 0-2 提供四个命令：
 //! - `tapecpy list`：发现并列出磁带机；
 //! - `tapecpy info [选择器]`：显示一台磁带机的身份信息；
-//! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息。
+//! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息；
+//! - `tapecpy volume [选择器]`：识别 LTFS 并显示 volume 基本信息。
 
 use std::env;
 use std::process::ExitCode;
@@ -11,12 +12,13 @@ use std::process::ExitCode;
 use tapecpy::app;
 
 const USAGE: &str = "\
-tapecpy — Linux 磁带工具（Milestone 1: 设备发现 + 介质检查）
+tapecpy — Linux 磁带工具（Milestone 2: 设备发现 + 介质检查 + LTFS 识别）
 
 用法:
   tapecpy list                发现并列出系统上的磁带机
   tapecpy info [选择器]        显示一台磁带机的身份信息
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
+  tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -37,6 +39,7 @@ fn run(args: &[String]) -> Result<(), String> {
         None | Some("list") | Some("devices") => cmd_list(),
         Some("info") => cmd_info(args.get(1).map(String::as_str)),
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
+        Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -162,6 +165,64 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    let volume = app::inspect_volume(drive).map_err(|e| e.to_string())?;
+
+    print_drive_header(drive);
+    println!();
+
+    if !volume.recognized {
+        println!("LTFS: 否");
+        if let Some(reason) = &volume.reason {
+            println!("  原因: {reason}");
+        }
+        print_warnings(&volume.warnings);
+        return Ok(());
+    }
+
+    println!("LTFS: 是");
+    if let Some(label) = &volume.label {
+        println!("  格式版本:    {}", label.version);
+        println!("  Volume UUID: {}", label.volume_uuid);
+        println!("  创建程序:    {}", label.creator);
+        println!("  格式化时间:  {}", label.format_time);
+        println!("  块大小:      {} 字节", label.blocksize);
+        println!("  压缩:        {}", yes_no(label.compression));
+        println!(
+            "  分区:        index={}, data={}",
+            label.index_partition, label.data_partition
+        );
+    }
+    if let Some(barcode) = &volume.ansi_barcode {
+        println!("  Barcode:     {barcode}（ANSI label）");
+    }
+
+    if let Some(idx) = &volume.index {
+        println!("  最新 index:  gen {} @ (分区 {}, 块 {})", idx.generation, idx.self_location.partition, idx.self_location.startblock);
+        println!("  更新时间:    {}", idx.update_time);
+        println!(
+            "  文件/目录:   {} / {}",
+            idx.file_count, idx.directory_count
+        );
+        if let Some(uid) = idx.highest_file_uid {
+            println!("  HighestUID:  {uid}");
+        }
+        if let Some(state) = &idx.volume_lock_state {
+            println!("  锁状态:      {state}");
+        }
+    }
+    print_warnings(&volume.warnings);
+    Ok(())
+}
+
+fn print_warnings(warnings: &[String]) {
+    for w in warnings {
+        println!("  警告: {w}");
+    }
 }
 
 fn print_drive_header(drive: &tapecpy::device::TapeDrive) {
