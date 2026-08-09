@@ -46,13 +46,9 @@ pub struct FileEntry {
     pub readonly: bool,
     pub times: FileTimes,
     pub extents: Vec<Extent>,
-}
-
-/// LTFS 符号链接条目。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SymlinkEntry {
-    pub name: String,
-    pub target: String,
+    /// 符号链接目标；为 Some 时该条目是符号链接（LTFS 格式中 symlink
+    /// 是 `<file>` 内的 `<symlink>` 子元素）。
+    pub symlink_target: Option<String>,
 }
 
 /// LTFS 目录条目。
@@ -70,7 +66,6 @@ pub struct Directory {
 pub enum DirectoryEntry {
     File(FileEntry),
     Directory(Directory),
-    Symlink(SymlinkEntry),
 }
 
 impl DirectoryEntry {
@@ -78,7 +73,6 @@ impl DirectoryEntry {
         match self {
             DirectoryEntry::File(f) => &f.name,
             DirectoryEntry::Directory(d) => &d.name,
-            DirectoryEntry::Symlink(s) => &s.name,
         }
     }
 }
@@ -138,6 +132,19 @@ impl Index {
         Some(current)
     }
 
+    /// 可变版本的 `find_directory`。
+    pub fn find_directory_mut(&mut self, path: &str) -> Option<&mut Directory> {
+        let mut current = &mut self.root;
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            let next = current.entries.iter_mut().find_map(|e| match e {
+                DirectoryEntry::Directory(d) if d.name == part => Some(d),
+                _ => None,
+            })?;
+            current = next;
+        }
+        Some(current)
+    }
+
     /// 按路径查找普通文件（最后一个路径分量是文件名）。
     pub fn find_file(&self, path: &str) -> Option<&FileEntry> {
         let trimmed = path.trim_matches('/');
@@ -154,12 +161,25 @@ impl Index {
             _ => None,
         })
     }
+
+    pub fn find_file_mut(&mut self, path: &str) -> Option<&mut FileEntry> {
+        let trimmed = path.trim_matches('/');
+        let (dir_path, name) = match trimmed.rfind('/') {
+            Some(idx) => (&trimmed[..idx], &trimmed[idx + 1..]),
+            None => ("", trimmed),
+        };
+        let dir = self.find_directory_mut(dir_path)?;
+        dir.entries.iter_mut().find_map(|entry| match entry {
+            DirectoryEntry::File(file) if file.name == name => Some(file),
+            _ => None,
+        })
+    }
 }
 
 fn count_entries(dir: &Directory, files: &mut u64, dirs: &mut u64) {
     for entry in &dir.entries {
         match entry {
-            DirectoryEntry::File(_) | DirectoryEntry::Symlink(_) => *files += 1,
+            DirectoryEntry::File(_) => *files += 1,
             DirectoryEntry::Directory(d) => {
                 *dirs += 1;
                 count_entries(d, files, dirs);
@@ -325,6 +345,132 @@ impl Index {
             root: root.ok_or(IndexError::MissingField("directory"))?,
         })
     }
+
+    /// 序列化为标准 LTFS index XML（与 OpenLTFS 写出的字段一致）。
+    pub fn to_xml(&self) -> String {
+        let mut s = String::new();
+        s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        s.push_str(&format!(
+            "<ltfsindex version=\"{}\">\n",
+            escape_text(&self.version)
+        ));
+        s.push_str(&format!("<creator>{}</creator>\n", escape_text(&self.creator)));
+        s.push_str(&format!(
+            "<volumeuuid>{}</volumeuuid>\n",
+            escape_text(&self.volume_uuid)
+        ));
+        s.push_str(&format!("<generationnumber>{}</generationnumber>\n", self.generation));
+        s.push_str(&format!("<updatetime>{}</updatetime>\n", escape_text(&self.update_time)));
+        write_tape_pos(&mut s, "location", &self.self_location);
+        if let Some(prev) = &self.previous_location {
+            write_tape_pos(&mut s, "previousgenerationlocation", prev);
+        }
+        s.push_str(&format!(
+            "<allowpolicyupdate>{}</allowpolicyupdate>\n",
+            self.allow_policy_update
+        ));
+        if let Some(uid) = self.highest_file_uid {
+            s.push_str(&format!("<highestfileuid>{uid}</highestfileuid>\n"));
+        }
+        if let Some(state) = &self.volume_lock_state {
+            s.push_str(&format!(
+                "<volumelockstate>{}</volumelockstate>\n",
+                escape_text(state)
+            ));
+        }
+        write_directory(&mut s, &self.root);
+        s.push_str("</ltfsindex>\n");
+        s
+    }
+}
+
+fn write_tape_pos(s: &mut String, tag: &str, pos: &TapePos) {
+    s.push_str(&format!("<{tag}>\n"));
+    s.push_str(&format!("<partition>{}</partition>\n", partition_name(pos.partition)));
+    s.push_str(&format!("<startblock>{}</startblock>\n", pos.startblock));
+    s.push_str(&format!("</{tag}>\n"));
+}
+
+fn write_directory(s: &mut String, dir: &Directory) {
+    s.push_str("<directory>\n");
+    s.push_str(&format!("<name>{}</name>\n", escape_text(&dir.name)));
+    s.push_str(&format!("<readonly>{}</readonly>\n", dir.readonly));
+    write_times(s, &dir.times);
+    s.push_str(&format!("<fileuid>{}</fileuid>\n", dir.fileuid));
+    s.push_str("<contents>\n");
+    for entry in &dir.entries {
+        match entry {
+            DirectoryEntry::File(f) => write_file(s, f),
+            DirectoryEntry::Directory(d) => write_directory(s, d),
+        }
+    }
+    s.push_str("</contents>\n");
+    s.push_str("</directory>\n");
+}
+
+fn write_file(s: &mut String, file: &FileEntry) {
+    s.push_str("<file>\n");
+    s.push_str(&format!("<name>{}</name>\n", escape_text(&file.name)));
+    s.push_str(&format!("<length>{}</length>\n", file.length));
+    s.push_str(&format!("<readonly>{}</readonly>\n", file.readonly));
+    write_times(s, &file.times);
+    s.push_str(&format!("<fileuid>{}</fileuid>\n", file.fileuid));
+    if let Some(target) = &file.symlink_target {
+        s.push_str(&format!("<symlink>{}</symlink>\n", escape_text(target)));
+    } else if !file.extents.is_empty() {
+        s.push_str("<extentinfo>\n");
+        for extent in &file.extents {
+            s.push_str("<extent>\n");
+            s.push_str(&format!("<fileoffset>{}</fileoffset>\n", extent.file_offset));
+            s.push_str(&format!(
+                "<partition>{}</partition>\n",
+                partition_name(extent.partition)
+            ));
+            s.push_str(&format!("<startblock>{}</startblock>\n", extent.start_block));
+            // OpenLTFS 解析时 byteoffset 是必需字段；LTFSCopyGUI 写入恒 0。
+            s.push_str("<byteoffset>0</byteoffset>\n");
+            s.push_str(&format!("<bytecount>{}</bytecount>\n", extent.byte_count));
+            s.push_str("</extent>\n");
+        }
+        s.push_str("</extentinfo>\n");
+    }
+    s.push_str("</file>\n");
+}
+
+fn write_times(s: &mut String, times: &FileTimes) {
+    s.push_str(&format!(
+        "<creationtime>{}</creationtime>\n",
+        escape_text(times.creation_time.as_deref().unwrap_or(""))
+    ));
+    s.push_str(&format!(
+        "<changetime>{}</changetime>\n",
+        escape_text(times.change_time.as_deref().unwrap_or(""))
+    ));
+    s.push_str(&format!(
+        "<modifytime>{}</modifytime>\n",
+        escape_text(times.modify_time.as_deref().unwrap_or(""))
+    ));
+    s.push_str(&format!(
+        "<accesstime>{}</accesstime>\n",
+        escape_text(times.access_time.as_deref().unwrap_or(""))
+    ));
+    s.push_str(&format!(
+        "<backuptime>{}</backuptime>\n",
+        escape_text(times.backup_time.as_deref().unwrap_or(""))
+    ));
+}
+
+fn partition_name(partition: u8) -> String {
+    match partition {
+        0 => "a".into(),
+        1 => "b".into(),
+        // 规范只定义 a/b；异常值按数字输出便于调试。
+        other => other.to_string(),
+    }
+}
+
+fn escape_text(text: &str) -> String {
+    quick_xml::escape::escape(text).into_owned()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -342,6 +488,7 @@ fn parse_directory(
 ) -> Result<Directory, IndexError> {
     let mut dir = Directory::default();
     let mut pending = Pending::None;
+    let mut field_text = String::new();
     loop {
         match reader.read_event_into(buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
@@ -357,42 +504,64 @@ fn parse_directory(
                             .push(DirectoryEntry::Directory(parse_directory(reader, buf)?));
                         pending = Pending::None;
                     }
-                    "symlink" => {
-                        dir.entries
-                            .push(DirectoryEntry::Symlink(parse_symlink(reader, buf)?));
-                        pending = Pending::None;
-                    }
-                    "name" => pending = Pending::Name,
-                    "fileuid" => pending = Pending::FileUid,
-                    "readonly" => pending = Pending::Readonly,
-                    "creationtime" => pending = Pending::Time(TimeField::Creation),
-                    "changetime" => pending = Pending::Time(TimeField::Change),
-                    "modifytime" => pending = Pending::Time(TimeField::Modify),
-                    "accesstime" => pending = Pending::Time(TimeField::Access),
-                    "backuptime" => pending = Pending::Time(TimeField::Backup),
+                    "name" => begin_field(&mut pending, &mut field_text, Pending::Name),
+                    "fileuid" => begin_field(&mut pending, &mut field_text, Pending::FileUid),
+                    "readonly" => begin_field(&mut pending, &mut field_text, Pending::Readonly),
+                    "creationtime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Creation),
+                    ),
+                    "changetime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Change),
+                    ),
+                    "modifytime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Modify),
+                    ),
+                    "accesstime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Access),
+                    ),
+                    "backuptime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Backup),
+                    ),
                     _ => {}
                 }
             }
             Ok(Event::Text(t)) => {
                 let text = unescape_text(&t)?;
-                if !text.is_empty() {
-                    apply_pending(&mut pending, &text, |field, value| {
+                field_text.push_str(&text);
+            }
+            Ok(Event::GeneralRef(r)) => {
+                field_text.push_str(&decode_general_ref(&r)?);
+            }
+            Ok(Event::End(e)) => {
+                if element_name(e.name()) == "directory" {
+                    return Ok(dir);
+                }
+                if field_text.is_empty() {
+                    pending = Pending::None;
+                } else {
+                    apply_pending(&mut pending, &field_text, |field, value| {
                         match field {
                             DirField::Name => dir.name = value,
                             DirField::FileUid => dir.fileuid = parse_u64(&value, "fileuid")?,
                             DirField::Readonly => dir.readonly = parse_bool(&value, "readonly")?,
                             DirField::Time(f) => set_time(&mut dir.times, f, value),
                             DirField::Length => unreachable!("目录没有 length"),
+                            DirField::SymlinkTarget => unreachable!("目录没有 symlink"),
                         }
                         Ok(())
                     })?;
                 }
-            }
-            Ok(Event::End(e)) => {
-                match element_name(e.name()).as_str() {
-                    "directory" => return Ok(dir),
-                    _ => pending = Pending::None,
-                }
+                field_text.clear();
             }
             Ok(Event::Eof) => return Err(IndexError::Truncated),
             Err(e) => return Err(IndexError::Xml(e.to_string())),
@@ -405,6 +574,7 @@ fn parse_directory(
 fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry, IndexError> {
     let mut file = FileEntry::default();
     let mut pending = Pending::None;
+    let mut field_text = String::new();
     loop {
         match reader.read_event_into(buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
@@ -415,38 +585,68 @@ fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry
                         file.extents.push(parse_extent(reader, buf)?);
                         pending = Pending::None;
                     }
-                    "name" => pending = Pending::Name,
-                    "fileuid" => pending = Pending::FileUid,
-                    "length" => pending = Pending::Length,
-                    "readonly" => pending = Pending::Readonly,
-                    "creationtime" => pending = Pending::Time(TimeField::Creation),
-                    "changetime" => pending = Pending::Time(TimeField::Change),
-                    "modifytime" => pending = Pending::Time(TimeField::Modify),
-                    "accesstime" => pending = Pending::Time(TimeField::Access),
-                    "backuptime" => pending = Pending::Time(TimeField::Backup),
+                    "name" => begin_field(&mut pending, &mut field_text, Pending::Name),
+                    "fileuid" => begin_field(&mut pending, &mut field_text, Pending::FileUid),
+                    "length" => begin_field(&mut pending, &mut field_text, Pending::Length),
+                    "readonly" => begin_field(&mut pending, &mut field_text, Pending::Readonly),
+                    "creationtime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Creation),
+                    ),
+                    "changetime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Change),
+                    ),
+                    "modifytime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Modify),
+                    ),
+                    "accesstime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Access),
+                    ),
+                    "backuptime" => begin_field(
+                        &mut pending,
+                        &mut field_text,
+                        Pending::Time(TimeField::Backup),
+                    ),
+                    "symlink" => {
+                        begin_field(&mut pending, &mut field_text, Pending::SymlinkTarget)
+                    }
                     _ => {}
                 }
             }
             Ok(Event::Text(t)) => {
                 let text = unescape_text(&t)?;
-                if !text.is_empty() {
-                    apply_pending(&mut pending, &text, |field, value| {
+                field_text.push_str(&text);
+            }
+            Ok(Event::GeneralRef(r)) => {
+                field_text.push_str(&decode_general_ref(&r)?);
+            }
+            Ok(Event::End(e)) => {
+                if element_name(e.name()) == "file" {
+                    return Ok(file);
+                }
+                if field_text.is_empty() {
+                    pending = Pending::None;
+                } else {
+                    apply_pending(&mut pending, &field_text, |field, value| {
                         match field {
                             DirField::Name => file.name = value,
                             DirField::FileUid => file.fileuid = parse_u64(&value, "fileuid")?,
                             DirField::Readonly => file.readonly = parse_bool(&value, "readonly")?,
                             DirField::Length => file.length = parse_u64(&value, "length")?,
                             DirField::Time(f) => set_time(&mut file.times, f, value),
+                            DirField::SymlinkTarget => file.symlink_target = Some(value),
                         }
                         Ok(())
                     })?;
                 }
-            }
-            Ok(Event::End(e)) => {
-                match element_name(e.name()).as_str() {
-                    "file" => return Ok(file),
-                    _ => pending = Pending::None,
-                }
+                field_text.clear();
             }
             Ok(Event::Eof) => return Err(IndexError::Truncated),
             Err(e) => return Err(IndexError::Xml(e.to_string())),
@@ -495,45 +695,6 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
     }
 }
 
-/// 解析一个 `<symlink>` 元素。
-fn parse_symlink(
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-) -> Result<SymlinkEntry, IndexError> {
-    let mut symlink = SymlinkEntry::default();
-    let mut pending = Pending::None;
-    loop {
-        match reader.read_event_into(buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                pending = match element_name(e.name()).as_str() {
-                    "name" => Pending::Name,
-                    "target" => Pending::SymlinkTarget,
-                    _ => Pending::None,
-                };
-            }
-            Ok(Event::Text(t)) => {
-                let text = unescape_text(&t)?;
-                if !text.is_empty() {
-                    match std::mem::replace(&mut pending, Pending::None) {
-                        Pending::Name => symlink.name = text,
-                        Pending::SymlinkTarget => symlink.target = text,
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Event::End(e)) => {
-                if element_name(e.name()).as_str() == "symlink" {
-                    return Ok(symlink);
-                }
-                pending = Pending::None;
-            }
-            Ok(Event::Eof) => return Err(IndexError::Truncated),
-            Err(e) => return Err(IndexError::Xml(e.to_string())),
-            _ => {}
-        }
-    }
-}
-
 /// 等待文本填充的字段。
 #[derive(Clone, Copy)]
 enum Pending {
@@ -566,6 +727,20 @@ enum DirField {
     Readonly,
     Length,
     Time(TimeField),
+    SymlinkTarget,
+}
+
+fn begin_field(pending: &mut Pending, text: &mut String, field: Pending) {
+    *pending = field;
+    text.clear();
+}
+
+fn decode_general_ref(r: &quick_xml::events::BytesRef<'_>) -> Result<String, IndexError> {
+    let name = r.decode().map_err(|e| IndexError::Xml(e.to_string()))?;
+    let encoded = format!("&{name};");
+    quick_xml::escape::unescape(&encoded)
+        .map(|s| s.into_owned())
+        .map_err(|e| IndexError::Xml(e.to_string()))
 }
 
 fn apply_pending(
@@ -578,6 +753,7 @@ fn apply_pending(
         Pending::FileUid => Some(DirField::FileUid),
         Pending::Readonly => Some(DirField::Readonly),
         Pending::Length => Some(DirField::Length),
+        Pending::SymlinkTarget => Some(DirField::SymlinkTarget),
         Pending::Time(f) => Some(DirField::Time(f)),
         _ => None,
     };
@@ -658,7 +834,7 @@ mod tests {
     <startblock>4</startblock>
   </previousgenerationlocation>
   <allowpolicyupdate>false</allowpolicyupdate>
-  <highestfileuid>4</highestfileuid>
+  <highestfileuid>5</highestfileuid>
   <volumelockstate>unlocked</volumelockstate>
   <directory>
     <name>/</name>
@@ -690,10 +866,15 @@ mod tests {
           </file>
         </contents>
       </directory>
-      <symlink>
+      <file>
         <name>link</name>
-        <target>/notes.txt</target>
-      </symlink>
+        <length>0</length>
+        <readonly>false</readonly>
+        <creationtime>2026-06-18T11:28:00.0000000+00:00</creationtime>
+        <changetime>2026-06-18T11:28:00.0000000+00:00</changetime>
+        <fileuid>5</fileuid>
+        <symlink>/notes.txt</symlink>
+      </file>
     </contents>
   </directory>
 </ltfsindex>"#;
@@ -742,7 +923,7 @@ mod tests {
         );
         assert!(!idx.allow_policy_update);
         assert_eq!(idx.volume_lock_state.as_deref(), Some("unlocked"));
-        assert_eq!(idx.highest_file_uid, Some(4));
+        assert_eq!(idx.highest_file_uid, Some(5));
         assert_eq!(idx.file_count(), 3); // notes.txt + inner.bin + symlink
         assert_eq!(idx.directory_count(), 1); // sub
 
@@ -764,11 +945,11 @@ mod tests {
         assert_eq!(sub.name, "sub");
         assert_eq!(sub.entries.len(), 1);
 
-        let DirectoryEntry::Symlink(link) = &idx.root.entries[2] else {
-            panic!("第三个条目应为符号链接");
+        let DirectoryEntry::File(link) = &idx.root.entries[2] else {
+            panic!("第三个条目应为符号链接（以 file 形式存储）");
         };
         assert_eq!(link.name, "link");
-        assert_eq!(link.target, "/notes.txt");
+        assert_eq!(link.symlink_target.as_deref(), Some("/notes.txt"));
     }
 
     #[test]
@@ -836,5 +1017,39 @@ mod tests {
         assert_eq!(idx.file_count(), 0);
         assert_eq!(idx.directory_count(), 0);
         assert!(idx.root.entries.is_empty());
+    }
+
+    #[test]
+    fn to_xml_round_trip() {
+        let idx = Index::parse_xml(INDEX_XML).unwrap();
+        let xml = idx.to_xml();
+        let reparsed = Index::parse_xml(&xml).unwrap();
+        assert_eq!(reparsed, idx);
+    }
+
+    #[test]
+    fn to_xml_real_index_round_trip() {
+        let idx = Index::parse_xml(REAL_INDEX_XML).unwrap();
+        let xml = idx.to_xml();
+        let reparsed = Index::parse_xml(&xml).unwrap();
+        assert_eq!(reparsed, idx);
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+    }
+
+    #[test]
+    fn round_trip_name_with_xml_entities() {
+        let mut idx = Index::parse_xml(INDEX_XML).unwrap();
+        let DirectoryEntry::File(file) = &mut idx.root.entries[0] else {
+            panic!("第一个条目应为文件");
+        };
+        file.name = "xml&less<tag>\"quote\".bin".into();
+
+        let xml = idx.to_xml();
+        assert!(xml.contains("xml&amp;less&lt;tag&gt;&quot;quote&quot;.bin"));
+        let reparsed = Index::parse_xml(&xml).unwrap();
+        assert_eq!(
+            reparsed.root.entries[0].name(),
+            "xml&less<tag>\"quote\".bin"
+        );
     }
 }

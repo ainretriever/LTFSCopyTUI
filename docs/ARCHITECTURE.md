@@ -397,6 +397,72 @@ LTFS、RAW、TAR、Telemetry 等组件不能各自随意打开设备并独立改
 
 如果实现中使用 `TapeSession` 这一名称，它应表示一次针对某台磁带机的有状态操作会话，而不是简单的函数集合。
 
+## 11.1 SG_IO 磁带命令超时
+
+当前设备层不能对所有 SG_IO 命令统一使用短超时。
+
+在 Quantum ULTRIUM 5 真实设备测试中，WRITE(6) 和 WRITE FILEMARK(6)
+正常执行时间超过 10 秒。原实现统一使用 10 秒超时，导致 Linux SCSI 层对
+仍在正常执行的命令发起 task abort。由于代码当时只检查 SCSI status、没有
+同时检查 host status 和 driver status，该 task abort 还可能被误判为成功，
+进而继续更新 LTFS 状态。
+
+当前实现采用：
+
+```text
+普通查询命令：10 秒
+
+磁带运动、数据通道及落带命令：1800 秒
+```
+
+长超时当前适用于：
+
+* READ；
+* WRITE；
+* WRITE FILEMARK；
+* LOCATE；
+* SPACE；
+* REWIND；
+* LOAD / UNLOAD；
+* MODE SELECT（设置磁带块模式等设备状态）。
+
+1800 秒取自 LTFSCopyGUI 对 LOCATE 使用的超时上限，并作为当前真实设备验证
+阶段的保守值。它不是已经证明适合所有命令、所有驱动器的最终配置。
+
+这个决定存在明确风险：
+
+* 真正卡死或失去响应的命令可能很久以后才返回；
+* cancellation 和程序退出可能长时间等待内核中的 SG_IO；
+* TUI 如果没有独立的进度与设备状态报告，可能表现得像程序冻结；
+* 不同命令的合理超时差异很大，统一使用 1800 秒可能掩盖设备故障；
+* 某些 HBA、内核驱动或设备自身还有独立的超时与错误恢复机制，SG_IO
+  timeout 并不是唯一的时间限制。
+
+未来出现以下现象时，应优先重新检查本节和 `TAPE_TIMEOUT_MS`：
+
+* 操作取消或退出长时间无响应；
+* 设备故障需要很久才能报告；
+* TUI 长时间停留在同一阶段；
+* SCSI error recovery 行为异常；
+* 不同型号磁带机表现出明显不同的命令耗时；
+* 需要为 telemetry polling、前台操作或后台任务提供不同响应保证。
+
+后续方向应是根据命令类型、设备能力和实测数据建立更细粒度的 timeout
+policy，并让长命令具备可观察的阶段、耗时和取消语义。在此之前，不要在没有
+真实设备复验的情况下把这些命令恢复成统一的 10 秒超时。
+
+### 11.2 LTFS 覆盖写必须显式确认 write-anywhere 模式
+
+LTFS 刷新 index 分区不是在 EOD 追加，而是定位到旧 index 前的 filemark
+并覆盖。真实 Quantum LTO-5 测试确认：驱动器处于 append-only 模式时，
+`LOCATE` 可以返回成功，但后续写入可能仍落到该分区 EOD，从而从块 0 覆盖
+index 分区 label。因此不能把其他程序留下的驱动器模式当作隐含前置条件。
+
+每个写入会话在首次写磁带前必须读取 SSC device configuration extension
+mode page `0x10/0x01`。若 append-only 字段非零，应按 OpenLTFS 的顺序无弹出
+卸载介质、用 MODE SELECT(10) 清除 append-only、重新装载，并恢复可变块模式。
+此步骤失败时必须拒绝写入。
+
 ---
 
 # 12. Telemetry 与设备控制

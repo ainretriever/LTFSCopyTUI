@@ -60,7 +60,7 @@ impl TapeSession {
             context: format!("向 {} 发送 MODE SENSE 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "MODE SENSE"));
         }
         let density = scsi::parse_mode_sense_density(&sense_buf).unwrap_or(0);
@@ -74,10 +74,69 @@ impl TapeSession {
             context: format!("向 {} 发送 MODE SELECT 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "MODE SELECT"));
         }
         Ok(())
+    }
+
+    /// 确保驱动器处于 LTFS 所需的 write-anywhere 模式。
+    ///
+    /// SSC device configuration extension mode page (0x10/0x01) 的高半字节
+    /// 表示 append-only 模式。OpenLTFS 在关闭该模式时会先卸载介质、执行
+    /// MODE SELECT，再重新装载；Quantum LTO-5 也要求这个顺序。
+    pub fn ensure_write_anywhere(&mut self) -> Result<(), Error> {
+        const PAGE_LEN: usize = 48;
+        let mut page = [0u8; PAGE_LEN];
+        let result = scsi::mode_sense10(&self.fd, 0x10, 0x01, &mut page).map_err(|e| {
+            Error::Io {
+                context: format!("向 {} 发送 MODE SENSE 0x10/0x01 失败", self.path.display()),
+                source: e,
+            }
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SENSE 0x10/0x01"));
+        }
+        if page[21] & 0xf0 == 0 {
+            return Ok(());
+        }
+
+        let result = scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| {
+            Error::Io {
+                context: format!("为切换 write-anywhere 卸载 {} 失败", self.path.display()),
+                source: e,
+            }
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "UNLOAD for write-anywhere"));
+        }
+        self.partition = None;
+
+        // MODE SELECT parameter header 的长度字段必须清零；清除 mode page 的
+        // PS 位，并把 append-only 字段设为 0。偏移与 OpenLTFS 的 48-byte
+        // TC_MP_DEV_CONFIG_EXT 页面处理一致。
+        page[0] = 0;
+        page[1] = 0;
+        page[16] &= 0x7f;
+        page[21] &= 0x0f;
+        let result = scsi::mode_select10(&self.fd, &page).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 write-anywhere MODE SELECT 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SELECT write-anywhere"));
+        }
+
+        let result = scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| {
+            Error::Io {
+                context: format!("切换 write-anywhere 后重新装载 {} 失败", self.path.display()),
+                source: e,
+            }
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "LOAD after write-anywhere"));
+        }
+        self.set_variable_block()
     }
 
     /// SCSI LOAD：装载/穿带当前介质（对已装载磁带是无害的幂等操作）。
@@ -86,7 +145,7 @@ impl TapeSession {
             context: format!("向 {} 发送 LOAD 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "LOAD"));
         }
         Ok(())
@@ -101,7 +160,7 @@ impl TapeSession {
             context: format!("向 {} 发送 PREVENT ALLOW 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "PREVENT ALLOW MEDIUM REMOVAL"));
         }
         // st 驱动 MTOFFL 先回绕；START STOP 全 0 触发驱动器卸载/弹出。
@@ -112,7 +171,7 @@ impl TapeSession {
                 source: e,
             }
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "UNLOAD"));
         }
         self.partition = None;
@@ -125,7 +184,7 @@ impl TapeSession {
             context: format!("向 {} 发送 REWIND 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "REWIND"));
         }
         self.partition = Some(self.read_position()?.partition);
@@ -139,7 +198,7 @@ impl TapeSession {
             context: format!("向 {} 发送 READ POSITION 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "READ POSITION"));
         }
         let pos = scsi::parse_read_position(&buf).ok_or_else(|| Error::Io {
@@ -156,7 +215,7 @@ impl TapeSession {
             context: format!("向 {} 发送 SPACE(EOD) 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "SPACE(EOD)"));
         }
         Ok(self.read_position()?.block)
@@ -169,7 +228,7 @@ impl TapeSession {
             context: format!("向 {} 发送 LOCATE 失败", self.path.display()),
             source: e,
         })?;
-        if result.status != 0 {
+        if !result.is_good() {
             return Err(self.scsi_error(&result, "LOCATE"));
         }
         // 定位后向设备确认实际位置（OpenLTFS 同样在 LOCATE 后读取位置）。
@@ -188,7 +247,7 @@ impl TapeSession {
             context: format!("向 {} 发送 READ 失败", self.path.display()),
             source: e,
         })?;
-        if result.status == 0 {
+        if result.is_good() {
             let len = READ_BUF_LEN.saturating_sub(result.resid.max(0) as usize);
             buf.truncate(len);
             return Ok(ReadRecord::Data(buf));
@@ -215,6 +274,30 @@ impl TapeSession {
             }
         }
         Err(self.scsi_error(&result, "READ"))
+    }
+
+    /// 写入一条记录（可变块模式，长度任意）。
+    pub fn write_record(&mut self, data: &[u8]) -> Result<(), Error> {
+        let result = scsi::write6(&self.fd, data).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 WRITE 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "WRITE"));
+        }
+        Ok(())
+    }
+
+    /// 写入一个 filemark。
+    pub fn write_filemark(&mut self) -> Result<(), Error> {
+        let result = scsi::write_filemark(&self.fd, 1).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 WRITE FILEMARK 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "WRITE FILEMARK"));
+        }
+        Ok(())
     }
 
     fn scsi_error(&self, result: &scsi::ScsiResult, op: &str) -> Error {

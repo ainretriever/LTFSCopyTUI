@@ -16,6 +16,7 @@ import time
 SG_IO = 0x2285
 SG_DXFER_NONE = -1
 SG_DXFER_FROM_DEV = -3
+SG_DXFER_TO_DEV = -2
 
 
 class SgIoHdr(ctypes.Structure):
@@ -45,8 +46,12 @@ class SgIoHdr(ctypes.Structure):
     ]
 
 
-def sg_io(fd, cdb, buflen=0, direction=SG_DXFER_FROM_DEV):
-    buf = ctypes.create_string_buffer(b"\x00" * buflen) if buflen else None
+def sg_io(fd, cdb, buflen=0, direction=SG_DXFER_FROM_DEV, payload=None):
+    if direction == SG_DXFER_TO_DEV:
+        buf = ctypes.create_string_buffer(payload) if payload else None
+        buflen = len(payload) if payload else 0
+    else:
+        buf = ctypes.create_string_buffer(b"\x00" * buflen) if buflen else None
     sense = ctypes.create_string_buffer(32)
     cdb_buf = ctypes.create_string_buffer(bytes(cdb))
     hdr = SgIoHdr()
@@ -91,6 +96,13 @@ def show(tag, r):
 def main():
     dev = sys.argv[1] if len(sys.argv) > 1 else "/dev/sg1"
     fd = os.open(dev, os.O_RDWR | os.O_NONBLOCK)
+
+    # 与 tapecpy 一致：先设置可变块模式（块描述符 block length = 0）
+    ms = sg_io(fd, [0x1A, 0, 0, 0, 12, 0], 12)
+    density = ms["data"][4] if ms["data"] and len(ms["data"]) > 4 else 0
+    mode_sel = bytes([0, 0, 0x10, 8, density, 0, 0, 0, 0, 0, 0, 0])
+    r = sg_io(fd, [0x15, 0x10, 0, 0, 12, 0], 0, SG_DXFER_TO_DEV, payload=mode_sel)
+    print(f"[probe] set variable block: status=0x{r['status']:02x}")
 
     # LOCATE(16) 到分区 0 块 0（CP 置位，允许跨分区）
     locate = bytes([0x92, 0x02, 0, 0]) + struct.pack(">Q", 0) + bytes(4)
@@ -140,6 +152,67 @@ def main():
             print(f"  -> saved /tmp/ltfsindex.xml ({n} bytes)")
         if eod:
             break
+
+    # ---- 探查 data 分区（分区 1）布局 ----
+    locate_p1 = bytes([0x92, 0x02, 0, 1]) + struct.pack(">Q", 0) + bytes(4)
+    show("locate p1 b0 (CP)", sg_io(fd, list(locate_p1), 0, SG_DXFER_NONE))
+    for i in range(14):
+        r = sg_io(fd, list(read), 1024 * 1024)
+        fm = " FM" if r["sense"] and (r["sense"][2] & 0x80) else ""
+        eod = " EOD" if r["sense"] and (r["sense"][2] & 0x0f) == 0x08 else ""
+        head = r["data_head"][:20]
+        print(f"p1 read{i + 1}: {r['ms']:.0f}ms resid={r['resid']}{fm}{eod} head={head!r}")
+        if eod:
+            break
+
+    # ---- 扫描 index 分区（分区 0）从块 4 起的所有记录 ----
+    locate_p0b4 = bytes([0x92, 0x02, 0, 0]) + struct.pack(">Q", 4) + bytes(4)
+    sg_io(fd, list(locate_p0b4), 0, SG_DXFER_NONE)
+    for i in range(30):
+        r = sg_io(fd, list(read), 1024 * 1024)
+        fm = " FM" if r["sense"] and (r["sense"][2] & 0x80) else ""
+        eod = " EOD" if r["sense"] and (r["sense"][2] & 0x0f) == 0x08 else ""
+        n = 1024 * 1024 - r["resid"] if r["resid"] < 1024 * 1024 else 0
+        head = r["data_head"][:30]
+        print(f"p0 b{i+4}: n={n}{fm}{eod} head={head!r}")
+        if eod:
+            break
+
+    # ---- 扫描 data 分区（分区 1）从块 0 起的所有记录 ----
+    locate_p1 = bytes([0x92, 0x02, 0, 1]) + struct.pack(">Q", 0) + bytes(4)
+    sg_io(fd, list(locate_p1), 0, SG_DXFER_NONE)
+    for i in range(40):
+        r = sg_io(fd, list(read), 1024 * 1024)
+        fm = " FM" if r["sense"] and (r["sense"][2] & 0x80) else ""
+        eod = " EOD" if r["sense"] and (r["sense"][2] & 0x0f) == 0x08 else ""
+        n = 1024 * 1024 - r["resid"] if r["resid"] < 1024 * 1024 else 0
+        head = r["data_head"][:30]
+        print(f"p1 b{i}: n={n}{fm}{eod} head={head!r}")
+        if eod:
+            break
+
+    # ---- 对比多种 EOD 定位方式（从 p1 b0 出发）----
+    locate_p1 = bytes([0x92, 0x02, 0, 1]) + struct.pack(">Q", 0) + bytes(4)
+    sg_io(fd, list(locate_p1), 0, SG_DXFER_NONE)
+
+    def readpos():
+        r = sg_io(fd, [0x34, 0x06] + [0] * 8, 32)
+        p = int.from_bytes(r["data"][4:8], "big")
+        b = int.from_bytes(r["data"][8:16], "big")
+        return p, b
+
+    # 1) SPACE(16) code 3
+    sg_io(fd, list(bytes([0x91, 0x03] + [0] * 14)), 0, SG_DXFER_NONE)
+    print(f"SPACE16-EOD  -> partition,block = {readpos()}")
+    # 2) LOCATE(16) DT=EOD(3<<3=0x18) + CP
+    sg_io(fd, list(bytes([0x92, 0x18 | 0x02, 0, 1]) + struct.pack(">Q", 0) + bytes(4)), 0, SG_DXFER_NONE)
+    print(f"LOCATE16-DT-EOD -> partition,block = {readpos()}")
+    # 3) SPACE(6) code 3
+    sg_io(fd, list(bytes([0x11, 0x03, 0, 0, 0, 0])), 0, SG_DXFER_NONE)
+    print(f"SPACE6-EOD  -> partition,block = {readpos()}")
+    # 4) mt 风格：LOCATE(10) block 大值? 跳过，用 SPACE16 带 count=1
+    sg_io(fd, list(bytes([0x91, 0x03, 0, 0]) + struct.pack(">Q", 1) + bytes(4)), 0, SG_DXFER_NONE)
+    print(f"SPACE16-EOD count=1 -> partition,block = {readpos()}")
 
     os.close(fd)
 

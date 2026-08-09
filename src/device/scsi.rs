@@ -17,18 +17,25 @@ const SG_DXFER_NONE: c_int = -1;
 const SG_INTERFACE_ID: c_int = 0x53; // 'S'
 const REWIND_OPCODE: u8 = 0x01;
 const READ_OPCODE: u8 = 0x08;
+const WRITE_OPCODE: u8 = 0x0a;
+const WRITE_FILEMARK_OPCODE: u8 = 0x10;
 const MODE_SELECT_OPCODE: u8 = 0x15;
+const MODE_SELECT10_OPCODE: u8 = 0x55;
 const START_STOP_OPCODE: u8 = 0x1b;
 const PREVENT_ALLOW_MEDIUM_REMOVAL_OPCODE: u8 = 0x1e;
 const INQUIRY_OPCODE: u8 = 0x12;
 const TEST_UNIT_READY_OPCODE: u8 = 0x00;
 const MODE_SENSE_OPCODE: u8 = 0x1a;
+const MODE_SENSE10_OPCODE: u8 = 0x5a;
 const READ_ATTRIBUTE_OPCODE: u8 = 0x8c;
 const READ_POSITION_OPCODE: u8 = 0x34;
 const LOCATE16_OPCODE: u8 = 0x92;
 const SPACE16_OPCODE: u8 = 0x91;
 const VPD_SERIAL: u8 = 0x80;
 const DEFAULT_TIMEOUT_MS: c_uint = 10_000;
+/// 会引起磁带运动或把缓存落带的命令可能持续数分钟。
+/// LTFSCopyGUI 对 LOCATE 使用 1800 秒；这里对所有数据通道/运动命令采用同一上限。
+const TAPE_TIMEOUT_MS: c_uint = 1_800_000;
 const SENSE_BUF_LEN: u8 = 32;
 
 #[repr(C)]
@@ -69,18 +76,34 @@ pub struct ScsiResult {
     pub sense: Vec<u8>,
 }
 
+impl ScsiResult {
+    /// SCSI、host 和 driver 三层都成功才算命令成功。
+    pub fn is_good(&self) -> bool {
+        self.status == 0 && self.host_status == 0 && self.driver_status == 0
+    }
+}
+
 /// 通过 SG_IO 执行一条 CDB，数据方向为 FROM_DEV（设备 → 主机）。
 pub fn sg_io_from_device(fd: &impl AsRawFd, cdb: &[u8], buf: &mut [u8]) -> io::Result<ScsiResult> {
-    sg_io_impl(fd, cdb, SG_DXFER_FROM_DEV, buf)
+    sg_io_impl(fd, cdb, SG_DXFER_FROM_DEV, buf, DEFAULT_TIMEOUT_MS)
 }
 
 /// 通过 SG_IO 执行一条无数据传输的 CDB（如 TEST UNIT READY）。
 pub fn sg_io_none(fd: &impl AsRawFd, cdb: &[u8]) -> io::Result<ScsiResult> {
-    sg_io_impl(fd, cdb, SG_DXFER_NONE, &mut [])
+    sg_io_impl(fd, cdb, SG_DXFER_NONE, &mut [], DEFAULT_TIMEOUT_MS)
 }
 
 /// 通过 SG_IO 执行一条数据方向为 TO_DEV（主机 → 设备）的 CDB。
 pub fn sg_io_to_device(fd: &impl AsRawFd, cdb: &[u8], data: &[u8]) -> io::Result<ScsiResult> {
+    sg_io_to_device_timeout(fd, cdb, data, DEFAULT_TIMEOUT_MS)
+}
+
+fn sg_io_to_device_timeout(
+    fd: &impl AsRawFd,
+    cdb: &[u8],
+    data: &[u8],
+    timeout_ms: c_uint,
+) -> io::Result<ScsiResult> {
     if cdb.len() > u8::MAX as usize {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "CDB 过长"));
     }
@@ -100,7 +123,7 @@ pub fn sg_io_to_device(fd: &impl AsRawFd, cdb: &[u8], data: &[u8]) -> io::Result
         },
         cmdp: cdb.as_ptr().cast_mut(),
         sbp: sense_buf.as_mut_ptr(),
-        timeout: DEFAULT_TIMEOUT_MS,
+        timeout: timeout_ms,
         flags: 0,
         pack_id: 0,
         usr_ptr: std::ptr::null_mut(),
@@ -136,6 +159,7 @@ fn sg_io_impl(
     cdb: &[u8],
     direction: c_int,
     buf: &mut [u8],
+    timeout_ms: c_uint,
 ) -> io::Result<ScsiResult> {
     if cdb.len() > u8::MAX as usize {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "CDB 过长"));
@@ -156,7 +180,7 @@ fn sg_io_impl(
         },
         cmdp: cdb.as_ptr().cast_mut(),
         sbp: sense_buf.as_mut_ptr(),
-        timeout: DEFAULT_TIMEOUT_MS,
+        timeout: timeout_ms,
         flags: 0,
         pack_id: 0,
         usr_ptr: std::ptr::null_mut(),
@@ -231,6 +255,23 @@ pub fn mode_sense(
     sg_io_from_device(fd, &cdb, buf)
 }
 
+/// 发送 10 字节 MODE SENSE，支持 subpage（LTFS 写入模式使用 0x10/0x01）。
+pub fn mode_sense10(
+    fd: &impl AsRawFd,
+    page_code: u8,
+    subpage_code: u8,
+    buf: &mut [u8],
+) -> io::Result<ScsiResult> {
+    let len = buf.len().min(u16::MAX as usize);
+    let mut cdb = [0u8; 10];
+    cdb[0] = MODE_SENSE10_OPCODE;
+    cdb[2] = page_code & 0x3f; // PC=Current
+    cdb[3] = subpage_code;
+    cdb[7] = (len >> 8) as u8;
+    cdb[8] = len as u8;
+    sg_io_from_device(fd, &cdb, buf)
+}
+
 /// 发送 16 字节 READ ATTRIBUTE（SSC MAM）。
 ///
 /// `first_attr` 是起始 attribute identifier（0 表示从头读取整个列表）。
@@ -254,7 +295,7 @@ pub fn read_attribute(
 /// 发送 SCSI REWIND。
 pub fn rewind(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
     let cdb = [REWIND_OPCODE, 0, 0, 0, 0, 0];
-    sg_io_none(fd, &cdb)
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
 /// 发送 SCSI START STOP UNIT（用于 load / unload 磁带）。
@@ -277,7 +318,7 @@ pub fn start_stop_unit(
     if start {
         cdb[4] |= 0x01;
     }
-    sg_io_none(fd, &cdb)
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
 /// 发送 SCSI PREVENT ALLOW MEDIUM REMOVAL。
@@ -304,7 +345,25 @@ pub fn read6(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
     cdb[2] = (len >> 16) as u8;
     cdb[3] = (len >> 8) as u8;
     cdb[4] = (len & 0xff) as u8;
-    sg_io_from_device(fd, &cdb, buf)
+    sg_io_impl(fd, &cdb, SG_DXFER_FROM_DEV, buf, TAPE_TIMEOUT_MS)
+}
+
+/// 发送 SCSI WRITE(6)。可变块模式下 transfer length 以字节为单位，
+/// 每次写入一条记录。
+pub fn write6(fd: &impl AsRawFd, data: &[u8]) -> io::Result<ScsiResult> {
+    let len = data.len().min(0xff_ffff);
+    let mut cdb = [0u8; 6];
+    cdb[0] = WRITE_OPCODE;
+    cdb[2] = (len >> 16) as u8;
+    cdb[3] = (len >> 8) as u8;
+    cdb[4] = (len & 0xff) as u8;
+    sg_io_to_device_timeout(fd, &cdb, data, TAPE_TIMEOUT_MS)
+}
+
+/// 发送 SCSI WRITE FILEMARK(6)。
+pub fn write_filemark(fd: &impl AsRawFd, count: u8) -> io::Result<ScsiResult> {
+    let cdb = [WRITE_FILEMARK_OPCODE, 0, 0, 0, count, 0];
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
 /// 发送 SCSI READ POSITION（long format）。
@@ -332,7 +391,7 @@ pub fn locate16(
     cdb[3] = partition;
     let bytes = block.to_be_bytes();
     cdb[4..12].copy_from_slice(&bytes);
-    sg_io_none(fd, &cdb)
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
 /// 发送 SCSI SPACE(16)。
@@ -343,7 +402,7 @@ pub fn space16(fd: &impl AsRawFd, code: u8, count: i64) -> io::Result<ScsiResult
     cdb[0] = SPACE16_OPCODE;
     cdb[1] = code;
     cdb[4..12].copy_from_slice(&count.to_be_bytes());
-    sg_io_none(fd, &cdb)
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
 /// SPACE 到 end of data（快速定位分区 EOD，避免逐块读到 blank check）。
@@ -358,7 +417,18 @@ pub fn mode_select6(fd: &impl AsRawFd, data: &[u8]) -> io::Result<ScsiResult> {
     cdb[0] = MODE_SELECT_OPCODE;
     cdb[1] = 0x10; // PF
     cdb[4] = len as u8;
-    sg_io_to_device(fd, &cdb, data)
+    sg_io_to_device_timeout(fd, &cdb, data, TAPE_TIMEOUT_MS)
+}
+
+/// 发送 10 字节 MODE SELECT（PF=1）。
+pub fn mode_select10(fd: &impl AsRawFd, data: &[u8]) -> io::Result<ScsiResult> {
+    let len = data.len().min(u16::MAX as usize);
+    let mut cdb = [0u8; 10];
+    cdb[0] = MODE_SELECT10_OPCODE;
+    cdb[1] = 0x10; // PF
+    cdb[7] = (len >> 8) as u8;
+    cdb[8] = len as u8;
+    sg_io_to_device_timeout(fd, &cdb, data, TAPE_TIMEOUT_MS)
 }
 
 /// READ POSITION 响应解析（long format）。
@@ -499,6 +569,24 @@ fn ascii_field(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn result(status: u8, host_status: u16, driver_status: u16) -> ScsiResult {
+        ScsiResult {
+            status,
+            host_status,
+            driver_status,
+            resid: 0,
+            sense: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn good_requires_scsi_host_and_driver_success() {
+        assert!(result(0, 0, 0).is_good());
+        assert!(!result(2, 0, 0).is_good());
+        assert!(!result(0, 7, 0).is_good());
+        assert!(!result(0, 0, 8).is_good());
+    }
     use std::mem;
 
     #[test]

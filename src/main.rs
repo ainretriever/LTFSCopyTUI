@@ -1,6 +1,6 @@
 //! tapecpy CLI（Presentation 层）。
 //!
-//! Milestone 0-4 提供八个命令：
+//! Milestone 0-5 提供九个命令：
 //! - `tapecpy list`：发现并列出磁带机；
 //! - `tapecpy info [选择器]`：显示一台磁带机的身份信息；
 //! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息；
@@ -8,6 +8,7 @@
 //! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树；
 //! - `tapecpy load [选择器]` / `tapecpy unload [选择器]`：装载/弹出磁带。
 //! - `tapecpy read [选择器] <路径> [-o 输出]`：读取 LTFS 卷中的文件。
+//! - `tapecpy write <本地路径> <磁带路径> [选择器]`：写入文件或目录树并更新 index。
 
 use std::env;
 use std::process::ExitCode;
@@ -26,6 +27,7 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
   tapecpy read [选择器] <路径> 读取 LTFS 文件内容到 stdout；-o 指定输出文件
+  tapecpy write <本地> <磁带路径>  写入本地文件或目录树（单次更新 index）
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -56,6 +58,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("load") => cmd_load_unload(args.get(1).map(String::as_str), true),
         Some("unload") => cmd_load_unload(args.get(1).map(String::as_str), false),
         Some("read") => cmd_read(&args[1..]),
+        Some("write") => cmd_write(&args[1..]),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -275,10 +278,11 @@ fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
                 println!("  d   {:>10}  {}/", "", d.name);
             }
             DirectoryEntry::File(f) => {
-                println!("  -   {:>10}  {}", format_size(f.length), f.name);
-            }
-            DirectoryEntry::Symlink(s) => {
-                println!("  l   {:>10}  {} -> {}", "-", s.name, s.target);
+                if let Some(target) = &f.symlink_target {
+                    println!("  l   {:>10}  {} -> {}", "-", f.name, target);
+                } else {
+                    println!("  -   {:>10}  {}", format_size(f.length), f.name);
+                }
             }
         }
     }
@@ -339,6 +343,66 @@ fn cmd_read(args: &[String]) -> Result<(), String> {
             eprintln!("已读取 {n} 字节 -> stdout");
         }
     }
+    Ok(())
+}
+
+fn cmd_write(args: &[String]) -> Result<(), String> {
+    if args.len() < 2 {
+        return Err("用法: tapecpy write <本地路径> <磁带路径> [选择器]".into());
+    }
+    let local = &args[0];
+    let tape_path = &args[1];
+    let selector = args.get(2).map(String::as_str);
+
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    let mut last_completed = 0usize;
+    let mut observer = |event: &app::WriteEvent| match event.phase {
+        app::WritePhase::Preparing => eprintln!(
+            "准备写入 {} 个文件 / {} 字节",
+            event.files_total, event.bytes_total
+        ),
+        app::WritePhase::WritingData => {
+            if event.files_completed > last_completed {
+                eprintln!(
+                    "  已完成 {}/{}（{}/{} 字节）",
+                    event.files_completed,
+                    event.files_total,
+                    event.bytes_written,
+                    event.bytes_total
+                );
+                last_completed = event.files_completed;
+            } else if let Some(path) = &event.current_file {
+                eprintln!(
+                    "写入文件 {}/{}: {}",
+                    event.files_completed + 1,
+                    event.files_total,
+                    path
+                );
+            }
+        }
+        app::WritePhase::FinalizingDataIndex => {
+            eprintln!("正在完成 data 分区 index……")
+        }
+        app::WritePhase::SyncingIndexPartition => {
+            eprintln!("正在同步 index 分区……")
+        }
+        app::WritePhase::Completed => eprintln!("写入会话已安全完成。"),
+    };
+    let result = app::WriteSession::new(drive).run(
+        std::path::Path::new(local),
+        tape_path,
+        &mut observer,
+    )?;
+    println!(
+        "已写入 {} 个文件 / {} 个目录 / {} 字节 -> {} (highest uid {}, index gen {})",
+        result.files,
+        result.directories,
+        result.bytes,
+        tape_path,
+        result.file_uid,
+        result.generation
+    );
     Ok(())
 }
 

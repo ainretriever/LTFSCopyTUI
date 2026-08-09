@@ -217,6 +217,15 @@ fn classify_unit_ready(sg: &std::fs::File, path: &std::path::Path) -> Result<Med
         context: format!("向 {} 发送 TEST UNIT READY 失败", path.display()),
         source: e,
     })?;
+    if result.host_status != 0 || result.driver_status != 0 {
+        return Err(Error::Scsi {
+            device: path.display().to_string(),
+            status: result.status,
+            host_status: result.host_status,
+            driver_status: result.driver_status,
+            sense: result.sense,
+        });
+    }
     match classify_tur_presence(result.status, &result.sense) {
         MediaPresence::Unknown => Err(Error::Scsi {
             device: path.display().to_string(),
@@ -250,7 +259,7 @@ fn mode_sense_density(sg: &std::fs::File, path: &std::path::Path) -> Result<Opti
         context: format!("向 {} 发送 MODE SENSE 失败", path.display()),
         source: e,
     })?;
-    if result.status != 0 {
+    if !result.is_good() {
         return Err(Error::Scsi {
             device: path.display().to_string(),
             status: result.status,
@@ -272,7 +281,7 @@ fn read_mam(sg: &std::fs::File, path: &std::path::Path) -> Result<MamInfo, Error
             source: e,
         }
     })?;
-    if result.status != 0 {
+    if !result.is_good() {
         return Err(Error::Scsi {
             device: path.display().to_string(),
             status: result.status,
@@ -411,7 +420,7 @@ fn send_inquiry(
         context: format!("向 {} 发送 INQUIRY 失败", sg_path.display()),
         source: e,
     })?;
-    if result.status != 0 {
+    if !result.is_good() {
         return Err(Error::Scsi {
             device: sg_path.display().to_string(),
             status: result.status,
