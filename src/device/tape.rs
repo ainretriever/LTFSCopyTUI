@@ -30,6 +30,12 @@ pub enum MamAttributeFormat {
     Text = 2,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LongEraseStatus {
+    InProgress { progress: Option<u16> },
+    Complete,
+}
+
 /// 一次面向单台磁带机的只读会话。
 pub struct TapeSession {
     fd: File,
@@ -179,6 +185,117 @@ impl TapeSession {
         })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "FORMAT MEDIUM partition"));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
+    /// 快速擦除当前介质。ERASE(6) LONG=0 会使原有逻辑内容不可访问，
+    /// 但不会对整盘介质执行物理重写。
+    pub fn short_erase(&mut self) -> Result<(), Error> {
+        self.load()?;
+        self.rewind()?;
+        let result = scsi::erase(&self.fd, false, false).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 short ERASE 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "ERASE short"));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
+    /// 在当前位置启动异步 long erase。使用 IMMED 后由 `long_erase_status`
+    /// 轮询，因此全带擦除不会被单条 SG_IO 的 1800 秒 timeout 截断。
+    pub fn start_long_erase(&mut self) -> Result<(), Error> {
+        self.rewind()?;
+        let result = scsi::erase(&self.fd, true, true).map_err(|e| Error::Io {
+            context: format!("向 {} 启动 long ERASE 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "ERASE long IMMED"));
+        }
+        Ok(())
+    }
+
+    pub fn long_erase_status(&mut self) -> Result<LongEraseStatus, Error> {
+        let mut sense = [0u8; 32];
+        let result = scsi::request_sense(&self.fd, &mut sense).map_err(|e| Error::Io {
+            context: format!("向 {} 查询 long ERASE 状态失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "REQUEST SENSE during long ERASE"));
+        }
+        classify_long_erase_sense(&sense)
+    }
+
+    /// 建立 LTFSCopyGUI 使用的最小 P0 + 剩余 P1 临时分区。
+    pub fn create_minimum_erase_partition(&mut self) -> Result<(), Error> {
+        self.load()?;
+        let mut page = [0u8; 28];
+        let result = scsi::mode_sense10(&self.fd, 0x11, 0, &mut page).map_err(|e| Error::Io {
+            context: format!(
+                "向 {} 读取 minimum-erase partition page 失败",
+                self.path.display()
+            ),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SENSE minimum-erase partition"));
+        }
+        configure_ltfs_partition_page(&mut page)?;
+        let page_len = (18usize + page[17] as usize).max(28).min(page.len());
+        let result = scsi::mode_select10(&self.fd, &page[..page_len]).map_err(|e| Error::Io {
+            context: format!(
+                "向 {} 设置 minimum-erase partition 失败",
+                self.path.display()
+            ),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SELECT minimum-erase partition"));
+        }
+        let result = scsi::format_medium(&self.fd, 0x01).map_err(|e| Error::Io {
+            context: format!(
+                "向 {} 创建 minimum-erase partition 失败",
+                self.path.display()
+            ),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "FORMAT MEDIUM minimum-erase partition"));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
+    /// 按 LTFSCopyGUI 的 0x0a/0x01 序列重新穿带，使驱动器重新识别刚修改的
+    /// 分区布局，同时不执行普通 CLI unload 的门锁/弹出流程。
+    pub fn rethread(&mut self) -> Result<(), Error> {
+        for (action, name) in [(0x0a, "UNTHREAD"), (0x01, "THREAD")] {
+            let result = scsi::load_unload_action(&self.fd, action).map_err(|e| Error::Io {
+                context: format!("向 {} 发送 {name} 失败", self.path.display()),
+                source: e,
+            })?;
+            if !result.is_good() {
+                return Err(self.scsi_error(&result, name));
+            }
+        }
+        self.partition = None;
+        Ok(())
+    }
+
+    /// FORMAT MEDIUM type 0 移除临时分区，恢复未分区介质。
+    pub fn remove_partitions(&mut self) -> Result<(), Error> {
+        let result = scsi::format_medium(&self.fd, 0x00).map_err(|e| Error::Io {
+            context: format!("向 {} 移除临时分区失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "FORMAT MEDIUM remove partitions"));
         }
         self.partition = None;
         Ok(())
@@ -439,6 +556,25 @@ fn configure_ltfs_partition_page(page: &mut [u8]) -> Result<(), Error> {
     Ok(())
 }
 
+fn classify_long_erase_sense(sense: &[u8]) -> Result<LongEraseStatus, Error> {
+    let Some(parsed) = scsi::parse_sense(sense) else {
+        return Ok(LongEraseStatus::Complete);
+    };
+    // Quantum LTO-5 返回 NOT READY(0x02)/00/18；OpenLTFS 的判断只比较
+    // ASC/ASCQ 00/16、00/18。两种 sense key 表示法都作为正常进度处理。
+    if matches!(parsed.key, 0x00 | 0x02) && parsed.asc == 0 && matches!(parsed.ascq, 0x16 | 0x18) {
+        let progress = (sense.len() >= 18).then(|| u16::from_be_bytes([sense[16], sense[17]]));
+        return Ok(LongEraseStatus::InProgress { progress });
+    }
+    if parsed.key == 0 && parsed.asc == 0 && parsed.ascq == 0 {
+        return Ok(LongEraseStatus::Complete);
+    }
+    Err(Error::Protocol(format!(
+        "long erase 返回异常 sense: key=0x{:02x} asc=0x{:02x} ascq=0x{:02x}",
+        parsed.key, parsed.asc, parsed.ascq
+    )))
+}
+
 #[cfg(test)]
 mod format_tests {
     use super::*;
@@ -461,5 +597,28 @@ mod format_tests {
         let mut page = [0u8; 28];
         page[16] = 0x11;
         assert!(configure_ltfs_partition_page(&mut page).is_err());
+    }
+
+    #[test]
+    fn classifies_long_erase_progress_and_completion() {
+        let mut active = [0u8; 32];
+        active[0] = 0x70;
+        active[2] = 0x02;
+        active[12] = 0x00;
+        active[13] = 0x18;
+        active[16] = 0x12;
+        active[17] = 0x34;
+        assert_eq!(
+            classify_long_erase_sense(&active).unwrap(),
+            LongEraseStatus::InProgress {
+                progress: Some(0x1234)
+            }
+        );
+
+        let complete = [0u8; 32];
+        assert_eq!(
+            classify_long_erase_sense(&complete).unwrap(),
+            LongEraseStatus::Complete
+        );
     }
 }

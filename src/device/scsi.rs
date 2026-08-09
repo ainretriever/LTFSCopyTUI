@@ -17,6 +17,8 @@ const SG_DXFER_NONE: c_int = -1;
 const SG_INTERFACE_ID: c_int = 0x53; // 'S'
 const REWIND_OPCODE: u8 = 0x01;
 const FORMAT_MEDIUM_OPCODE: u8 = 0x04;
+const ERASE_OPCODE: u8 = 0x19;
+const REQUEST_SENSE_OPCODE: u8 = 0x03;
 const READ_OPCODE: u8 = 0x08;
 const WRITE_OPCODE: u8 = 0x0a;
 const WRITE_FILEMARK_OPCODE: u8 = 0x10;
@@ -334,6 +336,34 @@ pub fn rewind(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
 /// 发送 SSC FORMAT MEDIUM；format=1 创建分区介质。
 pub fn format_medium(fd: &impl AsRawFd, format: u8) -> io::Result<ScsiResult> {
     let cdb = [FORMAT_MEDIUM_OPCODE, 0, format, 0, 0, 0];
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
+}
+
+/// 发送 SSC ERASE(6)。长擦除使用 IMMED，避免操作时长受单次 SG_IO timeout 限制；
+/// 调用方随后应通过 REQUEST SENSE 轮询完成状态。
+pub fn erase(fd: &impl AsRawFd, long: bool, immediate: bool) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 6];
+    cdb[0] = ERASE_OPCODE;
+    if long {
+        cdb[1] |= 0x01;
+    }
+    if immediate {
+        cdb[1] |= 0x02;
+    }
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
+}
+
+/// 发送 REQUEST SENSE，供 IMMED 长擦除查询进度与最终状态。
+pub fn request_sense(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
+    let len = buf.len().min(u8::MAX as usize);
+    let cdb = [REQUEST_SENSE_OPCODE, 0, 0, 0, len as u8, 0];
+    sg_io_impl(fd, &cdb, SG_DXFER_FROM_DEV, buf, DEFAULT_TIMEOUT_MS)
+}
+
+/// 发送原始 LOAD UNLOAD action byte。用于 LTFSCopyGUI 最小分区擦除流程中的
+/// unthread/rethread（0x0a / 0x01）序列。
+pub fn load_unload_action(fd: &impl AsRawFd, action: u8) -> io::Result<ScsiResult> {
+    let cdb = [START_STOP_OPCODE, 0, 0, 0, action, 0];
     sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 

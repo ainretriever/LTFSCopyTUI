@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::device::tape::{MamAttributeFormat, ReadRecord, TapeSession};
+use crate::device::tape::{LongEraseStatus, MamAttributeFormat, ReadRecord, TapeSession};
 use crate::device::{self, TapeDrive};
 use crate::ltfs::index::{DirectoryEntry, Extent, FileEntry, FileTimes, Index, TapePos};
 use crate::ltfs::label::{AnsiLabel, Label};
@@ -149,6 +149,178 @@ pub struct FormatResult {
 
 pub struct FormatSession<'a> {
     drive: &'a TapeDrive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EraseMode {
+    Short,
+    Long,
+    MinimumPartitionLong,
+}
+
+impl EraseMode {
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Short => "short",
+            Self::Long => "long",
+            Self::MinimumPartitionLong => "minimum",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErasePhase {
+    Preparing,
+    CreatingMinimumPartition,
+    Rethreading,
+    Erasing,
+    RestoringUnpartitioned,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EraseEvent {
+    pub phase: ErasePhase,
+    /// 0..=65535，来自 REQUEST SENSE progress indication。
+    pub progress: Option<u16>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EraseResult {
+    pub mode: EraseMode,
+    pub elapsed_seconds: u64,
+}
+
+pub struct EraseSession<'a> {
+    drive: &'a TapeDrive,
+}
+
+impl<'a> EraseSession<'a> {
+    pub fn new(drive: &'a TapeDrive) -> Self {
+        Self { drive }
+    }
+
+    pub fn run(
+        &self,
+        mode: EraseMode,
+        observer: &mut dyn FnMut(&EraseEvent),
+    ) -> Result<EraseResult, String> {
+        use std::time::Instant;
+
+        let started = Instant::now();
+        emit_erase(observer, ErasePhase::Preparing, None, "打开并独占磁带设备");
+        let mut tape = TapeSession::open(&self.drive.sg_path).map_err(|e| e.to_string())?;
+        match mode {
+            EraseMode::Short => {
+                emit_erase(observer, ErasePhase::Erasing, None, "执行 short erase");
+                tape.short_erase().map_err(|e| e.to_string())?;
+            }
+            EraseMode::Long => {
+                tape.load().map_err(|e| e.to_string())?;
+                emit_erase(
+                    observer,
+                    ErasePhase::RestoringUnpartitioned,
+                    None,
+                    "移除现有分区，准备全带 long erase",
+                );
+                tape.remove_partitions().map_err(|e| e.to_string())?;
+                emit_erase(
+                    observer,
+                    ErasePhase::Rethreading,
+                    None,
+                    "重新穿带以应用未分区布局",
+                );
+                tape.rethread().map_err(|e| e.to_string())?;
+                run_long_erase(&mut tape, observer)?;
+            }
+            EraseMode::MinimumPartitionLong => {
+                run_minimum_partition_long_erase(&mut tape, observer)?;
+            }
+        }
+        emit_erase(observer, ErasePhase::Completed, None, "擦除完成");
+        Ok(EraseResult {
+            mode,
+            elapsed_seconds: started.elapsed().as_secs(),
+        })
+    }
+}
+
+fn run_long_erase(
+    tape: &mut TapeSession,
+    observer: &mut dyn FnMut(&EraseEvent),
+) -> Result<(), String> {
+    emit_erase(observer, ErasePhase::Erasing, None, "启动 long erase");
+    tape.start_long_erase().map_err(|e| e.to_string())?;
+    loop {
+        match tape.long_erase_status().map_err(|e| e.to_string())? {
+            LongEraseStatus::Complete => return Ok(()),
+            LongEraseStatus::InProgress { progress } => {
+                emit_erase(observer, ErasePhase::Erasing, progress, "long erase 进行中");
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+fn run_minimum_partition_long_erase(
+    tape: &mut TapeSession,
+    observer: &mut dyn FnMut(&EraseEvent),
+) -> Result<(), String> {
+    emit_erase(
+        observer,
+        ErasePhase::CreatingMinimumPartition,
+        None,
+        "创建最小 P0 临时分区",
+    );
+    tape.create_minimum_erase_partition()
+        .map_err(|e| e.to_string())?;
+
+    emit_erase(
+        observer,
+        ErasePhase::Rethreading,
+        None,
+        "重新穿带以应用临时分区",
+    );
+    let erase_result = tape
+        .rethread()
+        .map_err(|e| e.to_string())
+        .and_then(|_| run_long_erase(tape, observer));
+
+    emit_erase(
+        observer,
+        ErasePhase::RestoringUnpartitioned,
+        None,
+        "移除临时分区并恢复未分区介质",
+    );
+    let restore_result = tape
+        .rethread()
+        .map_err(|e| e.to_string())
+        .and_then(|_| tape.remove_partitions().map_err(|e| e.to_string()));
+
+    match (erase_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(erase), Ok(())) => Err(erase),
+        (Ok(()), Err(restore)) => Err(format!(
+            "long erase 已完成，但恢复未分区介质失败：{restore}"
+        )),
+        (Err(erase), Err(restore)) => Err(format!(
+            "long erase 失败：{erase}；恢复未分区介质也失败：{restore}"
+        )),
+    }
+}
+
+fn emit_erase(
+    observer: &mut dyn FnMut(&EraseEvent),
+    phase: ErasePhase,
+    progress: Option<u16>,
+    message: &str,
+) {
+    observer(&EraseEvent {
+        phase,
+        progress,
+        message: message.into(),
+    });
 }
 
 impl<'a> FormatSession<'a> {

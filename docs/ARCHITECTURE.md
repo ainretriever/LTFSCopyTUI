@@ -1202,10 +1202,12 @@ erase
 完整 write workflow
 ```
 
-截至 2026-08-09，`format` 垂直切片已经实现并在 Quantum LTO-5 上完成
-tapecpy/OpenLTFS 交叉验证。实现范围、参考行为和兼容性边界见
-`docs/REVIEW_FORMAT_WORKFLOW.md`。下一个垂直切片为 `erase`；普通写入结束后
-更新 MAM VCI 仍是进入完整 write workflow 前需要处理的遗留项。
+截至 2026-08-09，`format` 和 `erase` 垂直切片已经实现。format 已在 Quantum
+LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 long
+已经真实验证，全带 long 因耗时过长明确留待未来维护窗口测试。实现范围、参考
+行为和兼容性边界见 `docs/REVIEW_FORMAT_WORKFLOW.md` 和
+`docs/REVIEW_ERASE_WORKFLOW.md`。普通写入结束后更新 MAM VCI 仍是进入完整
+write workflow 前需要处理的遗留项。
 
 实际 milestone 顺序允许根据实现过程中发现的问题调整。
 

@@ -10,6 +10,7 @@
 //! - `tapecpy read [选择器] <路径> [-o 输出]`：读取 LTFS 卷中的文件。
 //! - `tapecpy write <本地路径> <磁带路径> [选择器]`：写入文件或目录树并更新 index。
 //! - `tapecpy format <Barcode> <Volume Name> [选择器] --force`：创建新 LTFS 卷。
+//! - `tapecpy erase <short|long|minimum> [选择器] --force`：擦除/准备介质。
 
 use std::env;
 use std::process::ExitCode;
@@ -31,6 +32,8 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy write <本地> <磁带路径>  写入本地文件或目录树（单次更新 index）
   tapecpy format <Barcode> <Volume Name> [选择器] --force
                               破坏性地重新格式化为 LTFS（必须显式指定 --force）
+  tapecpy erase <short|long|minimum> [选择器] --force
+                              擦除介质：快速、全带长擦除、最小分区长擦除
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -66,6 +69,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("read") => cmd_read(&args[1..]),
         Some("write") => cmd_write(&args[1..]),
         Some("format") => cmd_format(&args[1..]),
+        Some("erase") => cmd_erase(&args[1..]),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -444,6 +448,57 @@ fn cmd_format(args: &[String]) -> Result<(), String> {
     println!(
         "LTFS format 完成: Barcode={} Volume Name={} UUID={} generation={}",
         result.barcode, result.volume_name, result.volume_uuid, result.generation
+    );
+    Ok(())
+}
+
+fn cmd_erase(args: &[String]) -> Result<(), String> {
+    if !args.iter().any(|arg| arg == "--force") {
+        return Err("erase 会销毁当前磁带上的数据；确认后请重新执行并加上 --force".into());
+    }
+    let positional: Vec<&str> = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--force")
+        .map(String::as_str)
+        .collect();
+    if positional.is_empty() || positional.len() > 2 {
+        return Err("用法: tapecpy erase <short|long|minimum> [选择器] --force".into());
+    }
+    let mode = match positional[0] {
+        "short" => app::EraseMode::Short,
+        "long" => app::EraseMode::Long,
+        "minimum" | "minimum-long" => app::EraseMode::MinimumPartitionLong,
+        other => {
+            return Err(format!(
+                "未知 erase 模式 `{other}`；应为 short、long 或 minimum"
+            ));
+        }
+    };
+
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, positional.get(1).copied())?;
+    eprintln!(
+        "警告：正在对 {} 中的磁带执行 {} erase，现有数据将被销毁",
+        drive.sg_path.display(),
+        mode.cli_name()
+    );
+    let mut observer = |event: &app::EraseEvent| {
+        if let Some(progress) = event.progress {
+            eprintln!(
+                "[{:?}] {}（{:.1}%）",
+                event.phase,
+                event.message,
+                progress as f64 * 100.0 / u16::MAX as f64
+            );
+        } else {
+            eprintln!("[{:?}] {}", event.phase, event.message);
+        }
+    };
+    let result = app::EraseSession::new(drive).run(mode, &mut observer)?;
+    println!(
+        "{} erase 完成，耗时 {} 秒",
+        result.mode.cli_name(),
+        result.elapsed_seconds
     );
     Ok(())
 }
