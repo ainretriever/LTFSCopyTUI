@@ -10,8 +10,7 @@
 //! device    —— Linux 磁带设备访问（st / sg / sysfs）
 //! ```
 //!
-//! 当前为 Milestone 0：设备发现与身份显示。
+//! 当前为 Milestone 0/1：设备发现、身份显示与介质检查。
 
 pub mod app;
 pub mod device;
-

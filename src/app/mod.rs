@@ -1,6 +1,6 @@
 //! Application 层：用户操作与工作流编排。
 //!
-//! Milestone 0 只包含设备发现与选择。后续的检查介质、LTFS 格式化、
+//! Milestone 0/1 包含设备发现、选择与介质检查。后续的 LTFS 格式化、
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
 use std::path::Path;
@@ -47,4 +47,9 @@ pub fn select_drive<'a>(
         }
     };
     Ok(drive)
+}
+
+/// 检查一台磁带机的介质状态与基本信息（Milestone 1）。
+pub fn inspect_media(drive: &TapeDrive) -> Result<device::MediaInfo, device::Error> {
+    device::inspect_media(drive)
 }
