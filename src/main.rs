@@ -1,12 +1,13 @@
 //! tapecpy CLI（Presentation 层）。
 //!
-//! Milestone 0-3 提供七个命令：
+//! Milestone 0-4 提供八个命令：
 //! - `tapecpy list`：发现并列出磁带机；
 //! - `tapecpy info [选择器]`：显示一台磁带机的身份信息；
 //! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息；
 //! - `tapecpy volume [选择器]`：识别 LTFS 并显示 volume 基本信息；
 //! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树；
 //! - `tapecpy load [选择器]` / `tapecpy unload [选择器]`：装载/弹出磁带。
+//! - `tapecpy read [选择器] <路径> [-o 输出]`：读取 LTFS 卷中的文件。
 
 use std::env;
 use std::process::ExitCode;
@@ -24,6 +25,7 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
+  tapecpy read [选择器] <路径> 读取 LTFS 文件内容到 stdout；-o 指定输出文件
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -53,6 +55,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("ls") => cmd_ls(args.get(1).map(String::as_str), args.get(2).map(String::as_str)),
         Some("load") => cmd_load_unload(args.get(1).map(String::as_str), true),
         Some("unload") => cmd_load_unload(args.get(1).map(String::as_str), false),
+        Some("read") => cmd_read(&args[1..]),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -293,6 +296,54 @@ fn cmd_load_unload(selector: Option<&str>, load: bool) -> Result<(), String> {
         println!("已请求弹出 {}", drive.nst_path.display());
     }
     Ok(())
+}
+
+fn cmd_read(args: &[String]) -> Result<(), String> {
+    use std::io::Write;
+
+    let (selector, rest) = if args.len() >= 2 && looks_like_selector(&args[0]) {
+        (Some(args[0].as_str()), &args[1..])
+    } else {
+        (None, args)
+    };
+    let path = rest
+        .first()
+        .ok_or("用法: tapecpy read [选择器] <路径> [-o 输出文件]")?;
+
+    let mut out_path: Option<&str> = None;
+    let mut i = 1;
+    while i < rest.len() {
+        if rest[i] == "-o" || rest[i] == "--output" {
+            out_path = rest.get(i + 1).map(String::as_str);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+
+    match out_path {
+        Some(out) => {
+            let mut file = std::fs::File::create(out)
+                .map_err(|e| format!("创建 {} 失败: {e}", out))?;
+            let n = app::read_file(drive, path, &mut file)?;
+            eprintln!("已读取 {n} 字节 -> {out}");
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            let n = app::read_file(drive, path, &mut lock)?;
+            let _ = lock.flush();
+            eprintln!("已读取 {n} 字节 -> stdout");
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_selector(s: &str) -> bool {
+    s.starts_with("/dev/") || s.parse::<usize>().is_ok()
 }
 
 fn display_dir_name(dir: &tapecpy::ltfs::index::Directory, path: &str) -> String {

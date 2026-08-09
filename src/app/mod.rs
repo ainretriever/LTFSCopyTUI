@@ -155,6 +155,11 @@ fn scan_latest_index(
 /// 流程：读取两个物理分区的 label → 确定 index 分区 → 扫描最新 index。
 pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
     let mut session = TapeSession::open(&drive.sg_path)?;
+    inspect_volume_session(&mut session)
+}
+
+/// 用已有会话检查 LTFS 卷（供需要继续使用同一会话的命令复用）。
+fn inspect_volume_session(mut session: &mut TapeSession) -> Result<VolumeInfo, device::Error> {
     session.set_variable_block()?;
 
     let mut info = VolumeInfo::default();
@@ -222,6 +227,48 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
             .push("已识别 LTFS label，但未找到可解析的 index。".into());
     }
     Ok(info)
+}
+
+/// 读取 LTFS 卷中的文件内容（按 extent 定位到磁带数据分区，流式写入 `out`）。
+///
+/// 返回实际写入的字节数。设备错误以文本形式返回（保留底层细节）。
+pub fn read_file(
+    drive: &TapeDrive,
+    path: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<u64, String> {
+    let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
+    let volume = inspect_volume_session(&mut session).map_err(|e| e.to_string())?;
+    if !volume.recognized {
+        return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
+    }
+    let index = volume
+        .index
+        .ok_or_else(|| "没有可用的 index".to_string())?;
+    let file = index
+        .find_file(path)
+        .ok_or_else(|| format!("文件不存在: {path}"))?;
+
+    let mut written = 0u64;
+    for extent in &file.extents {
+        session
+            .locate(extent.partition, extent.start_block)
+            .map_err(|e| e.to_string())?;
+        let mut remaining = extent.byte_count;
+        while remaining > 0 {
+            match session.read_record().map_err(|e| e.to_string())? {
+                ReadRecord::Data(buf) => {
+                    let n = buf.len().min(remaining as usize);
+                    out.write_all(&buf[..n])
+                        .map_err(|e| format!("写入输出失败: {e}"))?;
+                    written += n as u64;
+                    remaining -= n as u64;
+                }
+                _ => return Err(format!("读取 {path} 时磁带记录意外结束")),
+            }
+        }
+    }
+    Ok(written)
 }
 
 /// 装载当前介质（磁带已推入但驱动器尚未识别时使用）。

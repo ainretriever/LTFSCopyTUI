@@ -29,12 +29,12 @@ pub struct FileTimes {
 pub struct Extent {
     /// 文件内逻辑偏移（块）。
     pub file_offset: u64,
-    /// 分区上的字节偏移。
-    pub byte_offset: u64,
-    /// 字节长度。
-    pub byte_count: u64,
     /// 所在分区（逻辑）。
     pub partition: u8,
+    /// 数据起始磁带块号（记录索引）。
+    pub start_block: u64,
+    /// extent 字节长度（通常等于文件长度）。
+    pub byte_count: u64,
 }
 
 /// LTFS 文件条目。
@@ -136,6 +136,23 @@ impl Index {
             current = next;
         }
         Some(current)
+    }
+
+    /// 按路径查找普通文件（最后一个路径分量是文件名）。
+    pub fn find_file(&self, path: &str) -> Option<&FileEntry> {
+        let trimmed = path.trim_matches('/');
+        let (dir_path, name) = match trimmed.rfind('/') {
+            Some(idx) => (&trimmed[..idx], &trimmed[idx + 1..]),
+            None => ("", trimmed),
+        };
+        if name.is_empty() {
+            return None;
+        }
+        let dir = self.find_directory(dir_path)?;
+        dir.entries.iter().find_map(|e| match e {
+            DirectoryEntry::File(f) if f.name == name => Some(f),
+            _ => None,
+        })
     }
 }
 
@@ -447,7 +464,7 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 pending = match element_name(e.name()).as_str() {
                     "fileoffset" => Pending::FileOffset,
-                    "byteoffset" => Pending::ByteOffset,
+                    "startblock" => Pending::StartBlock,
                     "bytecount" => Pending::ByteCount,
                     "partition" => Pending::Partition,
                     _ => Pending::None,
@@ -458,7 +475,7 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
                 if !text.is_empty() {
                     match std::mem::replace(&mut pending, Pending::None) {
                         Pending::FileOffset => extent.file_offset = parse_u64(&text, "fileoffset")?,
-                        Pending::ByteOffset => extent.byte_offset = parse_u64(&text, "byteoffset")?,
+                        Pending::StartBlock => extent.start_block = parse_u64(&text, "startblock")?,
                         Pending::ByteCount => extent.byte_count = parse_u64(&text, "bytecount")?,
                         Pending::Partition => extent.partition = parse_partition(&text, "partition")?,
                         _ => {}
@@ -526,7 +543,7 @@ enum Pending {
     Readonly,
     Length,
     FileOffset,
-    ByteOffset,
+    StartBlock,
     ByteCount,
     Partition,
     SymlinkTarget,
@@ -656,7 +673,7 @@ mod tests {
         <extentinfo>
           <extent>
             <fileoffset>0</fileoffset>
-            <byteoffset>0</byteoffset>
+            <startblock>7</startblock>
             <bytecount>1024</bytecount>
             <partition>b</partition>
           </extent>
@@ -738,7 +755,7 @@ mod tests {
         assert_eq!(notes.extents.len(), 1);
         assert_eq!(
             notes.extents[0],
-            Extent { file_offset: 0, byte_offset: 0, byte_count: 1024, partition: 1 }
+            Extent { file_offset: 0, partition: 1, start_block: 7, byte_count: 1024 }
         );
 
         let DirectoryEntry::Directory(sub) = &idx.root.entries[1] else {
@@ -761,6 +778,19 @@ mod tests {
         assert_eq!(sub.name, "sub");
         assert!(idx.find_directory("/nope").is_none());
         assert_eq!(idx.find_directory("/").unwrap().name, "/");
+    }
+
+    #[test]
+    fn find_file_by_path() {
+        let idx = Index::parse_xml(INDEX_XML).unwrap();
+        let f = idx.find_file("/notes.txt").unwrap();
+        assert_eq!(f.name, "notes.txt");
+        assert_eq!(f.length, 1024);
+        let inner = idx.find_file("/sub/inner.bin").unwrap();
+        assert_eq!(inner.name, "inner.bin");
+        assert_eq!(inner.length, 2048);
+        assert!(idx.find_file("/nope").is_none());
+        assert!(idx.find_file("/sub").is_none());
     }
 
     #[test]
