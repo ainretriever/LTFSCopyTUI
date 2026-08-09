@@ -80,6 +80,45 @@ impl TapeSession {
         Ok(())
     }
 
+    /// SCSI LOAD：装载/穿带当前介质（对已装载磁带是无害的幂等操作）。
+    pub fn load(&mut self) -> Result<(), Error> {
+        let result = scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 LOAD 失败", self.path.display()),
+            source: e,
+        })?;
+        if result.status != 0 {
+            return Err(self.scsi_error(&result, "LOAD"));
+        }
+        Ok(())
+    }
+
+    /// SCSI UNLOAD：弹出介质（eject）。
+    ///
+    /// 与 st 驱动 MTOFFL 语义一致：先解除介质移除保护（门锁），
+    /// 再发送 START STOP（全 0，驱动器据此执行卸载/弹出）。
+    pub fn unload(&mut self) -> Result<(), Error> {
+        let result = scsi::prevent_allow_medium_removal(&self.fd, false).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 PREVENT ALLOW 失败", self.path.display()),
+            source: e,
+        })?;
+        if result.status != 0 {
+            return Err(self.scsi_error(&result, "PREVENT ALLOW MEDIUM REMOVAL"));
+        }
+        // st 驱动 MTOFFL 先回绕；START STOP 全 0 触发驱动器卸载/弹出。
+        self.rewind()?;
+        let result = scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| {
+            Error::Io {
+                context: format!("向 {} 发送 UNLOAD 失败", self.path.display()),
+                source: e,
+            }
+        })?;
+        if result.status != 0 {
+            return Err(self.scsi_error(&result, "UNLOAD"));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
     /// SCSI REWIND（当前分区 BOT）。
     pub fn rewind(&mut self) -> Result<(), Error> {
         let result = scsi::rewind(&self.fd).map_err(|e| Error::Io {

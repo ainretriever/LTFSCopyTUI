@@ -18,6 +18,8 @@ const SG_INTERFACE_ID: c_int = 0x53; // 'S'
 const REWIND_OPCODE: u8 = 0x01;
 const READ_OPCODE: u8 = 0x08;
 const MODE_SELECT_OPCODE: u8 = 0x15;
+const START_STOP_OPCODE: u8 = 0x1b;
+const PREVENT_ALLOW_MEDIUM_REMOVAL_OPCODE: u8 = 0x1e;
 const INQUIRY_OPCODE: u8 = 0x12;
 const TEST_UNIT_READY_OPCODE: u8 = 0x00;
 const MODE_SENSE_OPCODE: u8 = 0x1a;
@@ -252,6 +254,44 @@ pub fn read_attribute(
 /// 发送 SCSI REWIND。
 pub fn rewind(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
     let cdb = [REWIND_OPCODE, 0, 0, 0, 0, 0];
+    sg_io_none(fd, &cdb)
+}
+
+/// 发送 SCSI START STOP UNIT（用于 load / unload 磁带）。
+///
+/// `start=true` 启动介质（装载）；`loej=true` 同时弹出（unload/eject）。
+pub fn start_stop_unit(
+    fd: &impl AsRawFd,
+    start: bool,
+    loej: bool,
+    immed: bool,
+) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 6];
+    cdb[0] = START_STOP_OPCODE;
+    if immed {
+        cdb[1] = 0x01;
+    }
+    if loej {
+        cdb[4] |= 0x02;
+    }
+    if start {
+        cdb[4] |= 0x01;
+    }
+    sg_io_none(fd, &cdb)
+}
+
+/// 发送 SCSI PREVENT ALLOW MEDIUM REMOVAL。
+///
+/// `prevent=true` 锁定介质（防止移除），`false` 解锁。
+pub fn prevent_allow_medium_removal(
+    fd: &impl AsRawFd,
+    prevent: bool,
+) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 6];
+    cdb[0] = PREVENT_ALLOW_MEDIUM_REMOVAL_OPCODE;
+    if prevent {
+        cdb[4] = 0x01;
+    }
     sg_io_none(fd, &cdb)
 }
 

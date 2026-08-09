@@ -1,11 +1,12 @@
 //! tapecpy CLI（Presentation 层）。
 //!
-//! Milestone 0-3 提供五个命令：
+//! Milestone 0-3 提供七个命令：
 //! - `tapecpy list`：发现并列出磁带机；
 //! - `tapecpy info [选择器]`：显示一台磁带机的身份信息；
 //! - `tapecpy media [选择器]`：检查介质装载状态并显示基本信息；
 //! - `tapecpy volume [选择器]`：识别 LTFS 并显示 volume 基本信息；
-//! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树。
+//! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树；
+//! - `tapecpy load [选择器]` / `tapecpy unload [选择器]`：装载/弹出磁带。
 
 use std::env;
 use std::process::ExitCode;
@@ -21,11 +22,18 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
   tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
   tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
+  tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
+  tapecpy unload [选择器]      弹出磁带
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
 
 fn main() -> ExitCode {
+    // 管道关闭时（如 `tapecpy ls | head`）保持 Unix 惯例：安静退出而非 panic。
+    // SAFETY: 恢复 SIGPIPE 默认行为是进程级配置，无数据竞争风险。
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -43,6 +51,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
         Some("ls") => cmd_ls(args.get(1).map(String::as_str), args.get(2).map(String::as_str)),
+        Some("load") => cmd_load_unload(args.get(1).map(String::as_str), true),
+        Some("unload") => cmd_load_unload(args.get(1).map(String::as_str), false),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -268,6 +278,19 @@ fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
                 println!("  l   {:>10}  {} -> {}", "-", s.name, s.target);
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_load_unload(selector: Option<&str>, load: bool) -> Result<(), String> {
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    if load {
+        app::load_tape(drive).map_err(|e| e.to_string())?;
+        println!("已请求装载 {}", drive.nst_path.display());
+    } else {
+        app::unload_tape(drive).map_err(|e| e.to_string())?;
+        println!("已请求弹出 {}", drive.nst_path.display());
     }
     Ok(())
 }

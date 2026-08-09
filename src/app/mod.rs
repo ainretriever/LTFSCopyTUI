@@ -223,3 +223,15 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
     }
     Ok(info)
 }
+
+/// 装载当前介质（磁带已推入但驱动器尚未识别时使用）。
+pub fn load_tape(drive: &TapeDrive) -> Result<(), device::Error> {
+    let mut session = TapeSession::open(&drive.sg_path)?;
+    session.load()
+}
+
+/// 弹出介质（eject）。
+pub fn unload_tape(drive: &TapeDrive) -> Result<(), device::Error> {
+    let mut session = TapeSession::open(&drive.sg_path)?;
+    session.unload()
+}
