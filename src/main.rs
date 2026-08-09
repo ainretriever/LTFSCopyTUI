@@ -185,6 +185,14 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
     }
 
     println!("LTFS: 是");
+    if let Some(name) = volume
+        .index
+        .as_ref()
+        .and_then(|idx| idx.volume_name.as_deref())
+        .filter(|n| !n.is_empty())
+    {
+        println!("  Volume Name: {name}");
+    }
     if let Some(label) = &volume.label {
         println!("  格式版本:    {}", label.version);
         println!("  Volume UUID: {}", label.volume_uuid);

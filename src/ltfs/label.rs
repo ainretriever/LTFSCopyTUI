@@ -141,13 +141,13 @@ impl Label {
                             compression = Some(parse_bool(&text, "compression")?)
                         }
                         (Section::Location, "partition") => {
-                            this_partition = Some(parse_u8(&text, "partition")?)
+                            this_partition = Some(parse_partition(&text, "partition")?)
                         }
                         (Section::Partitions, "index") => {
-                            index_partition = Some(parse_u8(&text, "index")?)
+                            index_partition = Some(parse_partition(&text, "index")?)
                         }
                         (Section::Partitions, "data") => {
-                            data_partition = Some(parse_u8(&text, "data")?)
+                            data_partition = Some(parse_partition(&text, "data")?)
                         }
                         _ => {}
                     }
@@ -208,8 +208,13 @@ fn parse_u64(text: &str, field: &'static str) -> Result<u64, LabelError> {
     text.parse().map_err(|_| LabelError::BadNumber(field))
 }
 
-fn parse_u8(text: &str, field: &'static str) -> Result<u8, LabelError> {
-    text.parse().map_err(|_| LabelError::BadNumber(field))
+/// 解析 LTFS 逻辑分区标识：标准写法是 'a'/'b'，同时兼容数字 '0'/'1'。
+fn parse_partition(text: &str, field: &'static str) -> Result<u8, LabelError> {
+    match text {
+        "a" | "0" => Ok(0),
+        "b" | "1" => Ok(1),
+        _ => Err(LabelError::BadNumber(field)),
+    }
 }
 
 fn parse_bool(text: &str, field: &'static str) -> Result<bool, LabelError> {
@@ -240,14 +245,31 @@ mod tests {
   <formattime>2014-10-10T10:10:10.0000000+00:00</formattime>
   <volumeuuid>c72c9917-cf2e-4873-8b64-9ac05b2f324c</volumeuuid>
   <location>
-    <partition>0</partition>
+    <partition>a</partition>
   </location>
   <partitions>
-    <index>0</index>
-    <data>1</data>
+    <index>a</index>
+    <data>b</data>
   </partitions>
   <blocksize>524288</blocksize>
   <compression>false</compression>
+</ltfslabel>"#;
+
+    /// 真实磁带上由 OpenLTFS mkltfs 2.4.8.4 写出的 label。
+    const REAL_LABEL_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ltfslabel version="2.4.0">
+    <creator>IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs</creator>
+    <formattime>2026-08-09T09:29:05.552272521Z</formattime>
+    <volumeuuid>0cc710d4-bc2f-4c54-823e-a44413987f5d</volumeuuid>
+    <location>
+        <partition>a</partition>
+    </location>
+    <partitions>
+        <index>a</index>
+        <data>b</data>
+    </partitions>
+    <blocksize>524288</blocksize>
+    <compression>true</compression>
 </ltfslabel>"#;
 
     #[test]
@@ -302,5 +324,30 @@ mod tests {
     fn label_xml_handles_compression_true() {
         let xml = LABEL_XML.replace("<compression>false</compression>", "<compression>true</compression>");
         assert!(Label::parse_xml(&xml).unwrap().compression);
+    }
+
+    #[test]
+    fn parse_real_mkltfs_label() {
+        let label = Label::parse_xml(REAL_LABEL_XML).unwrap();
+        assert_eq!(label.version, "2.4.0");
+        assert_eq!(label.creator, "IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs");
+        assert_eq!(label.volume_uuid, "0cc710d4-bc2f-4c54-823e-a44413987f5d");
+        assert_eq!(label.this_partition, 0);
+        assert_eq!(label.index_partition, 0);
+        assert_eq!(label.data_partition, 1);
+        assert_eq!(label.blocksize, 524288);
+        assert!(label.compression);
+    }
+
+    #[test]
+    fn partition_accepts_digit_form_too() {
+        let xml = REAL_LABEL_XML
+            .replace("<partition>a</partition>", "<partition>0</partition>")
+            .replace("<index>a</index>", "<index>0</index>")
+            .replace("<data>b</data>", "<data>1</data>");
+        let label = Label::parse_xml(&xml).unwrap();
+        assert_eq!(label.this_partition, 0);
+        assert_eq!(label.index_partition, 0);
+        assert_eq!(label.data_partition, 1);
     }
 }

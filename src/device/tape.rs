@@ -111,6 +111,18 @@ impl TapeSession {
         Ok(pos)
     }
 
+    /// SPACE 到当前分区 EOD，并返回 EOD 块号。
+    pub fn space_to_eod(&mut self) -> Result<u64, Error> {
+        let result = scsi::space_to_eod(&self.fd).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 SPACE(EOD) 失败", self.path.display()),
+            source: e,
+        })?;
+        if result.status != 0 {
+            return Err(self.scsi_error(&result, "SPACE(EOD)"));
+        }
+        Ok(self.read_position()?.block)
+    }
+
     /// 定位到指定分区的指定块；跨分区时自动设置 LOCATE 的 CP 位。
     pub fn locate(&mut self, partition: u8, block: u64) -> Result<(), Error> {
         let change = self.partition != Some(partition as u32);

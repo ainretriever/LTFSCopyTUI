@@ -24,6 +24,7 @@ const MODE_SENSE_OPCODE: u8 = 0x1a;
 const READ_ATTRIBUTE_OPCODE: u8 = 0x8c;
 const READ_POSITION_OPCODE: u8 = 0x34;
 const LOCATE16_OPCODE: u8 = 0x92;
+const SPACE16_OPCODE: u8 = 0x91;
 const VPD_SERIAL: u8 = 0x80;
 const DEFAULT_TIMEOUT_MS: c_uint = 10_000;
 const SENSE_BUF_LEN: u8 = 32;
@@ -292,6 +293,22 @@ pub fn locate16(
     let bytes = block.to_be_bytes();
     cdb[4..12].copy_from_slice(&bytes);
     sg_io_none(fd, &cdb)
+}
+
+/// 发送 SCSI SPACE(16)。
+///
+/// `code`: 0=块，1=filemark，3=end of data；`count` 为有符号数，负值表示向后。
+pub fn space16(fd: &impl AsRawFd, code: u8, count: i64) -> io::Result<ScsiResult> {
+    let mut cdb = [0u8; 16];
+    cdb[0] = SPACE16_OPCODE;
+    cdb[1] = code;
+    cdb[4..12].copy_from_slice(&count.to_be_bytes());
+    sg_io_none(fd, &cdb)
+}
+
+/// SPACE 到 end of data（快速定位分区 EOD，避免逐块读到 blank check）。
+pub fn space_to_eod(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
+    space16(fd, 0x03, 0)
 }
 
 /// 发送 6 字节 MODE SELECT（PF=1），用于设置块大小等。

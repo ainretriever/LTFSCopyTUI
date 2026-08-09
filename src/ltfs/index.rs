@@ -22,6 +22,8 @@ pub struct Index {
     pub version: String,
     pub creator: String,
     pub volume_uuid: String,
+    /// 根目录 name 属性（LTFS 约定为 volume name）。
+    pub volume_name: Option<String>,
     pub generation: u64,
     pub update_time: String,
     pub self_location: TapePos,
@@ -85,6 +87,7 @@ impl Index {
         let mut version = None;
         let mut creator = None;
         let mut volume_uuid = None;
+        let mut volume_name = None;
         let mut generation = None;
         let mut update_time = None;
         let mut allow_policy_update = None;
@@ -115,6 +118,7 @@ impl Index {
                             section = Section::Directory;
                             in_directory = true;
                             dir_depth = 1;
+                            volume_name = attr_value(&e, "name");
                         }
                         _ => {
                             if in_directory {
@@ -133,7 +137,15 @@ impl Index {
                 }
                 Ok(Event::Text(t)) => {
                     let text = unescape_text(&t)?;
-                    if text.is_empty() || in_directory {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if in_directory {
+                        // 根目录的 <name> 子元素是 LTFS volume name；
+                        // 根目录 name 在 <contents> 之前，取第一个即可。
+                        if volume_name.is_none() && dir_depth == 1 && elem == "name" {
+                            volume_name = Some(text);
+                        }
                         continue;
                     }
                     match (section, elem.as_str()) {
@@ -151,13 +163,13 @@ impl Index {
                             highest_file_uid = Some(parse_u64(&text, "highestfileuid")?)
                         }
                         (Section::Location, "partition") => {
-                            self_partition = Some(parse_u8(&text, "partition")?)
+                            self_partition = Some(parse_partition(&text, "partition")?)
                         }
                         (Section::Location, "startblock") => {
                             self_block = Some(parse_u64(&text, "startblock")?)
                         }
                         (Section::PrevLocation, "partition") => {
-                            prev_partition = Some(parse_u8(&text, "partition")?)
+                            prev_partition = Some(parse_partition(&text, "partition")?)
                         }
                         (Section::PrevLocation, "startblock") => {
                             prev_block = Some(parse_u64(&text, "startblock")?)
@@ -203,6 +215,7 @@ impl Index {
             version: version.ok_or(IndexError::MissingVersion)?,
             creator: creator.ok_or(IndexError::MissingField("creator"))?,
             volume_uuid: volume_uuid.ok_or(IndexError::MissingField("volumeuuid"))?,
+            volume_name,
             generation: generation.ok_or(IndexError::MissingField("generationnumber"))?,
             update_time: update_time.ok_or(IndexError::MissingField("updatetime"))?,
             self_location,
@@ -242,8 +255,13 @@ fn parse_u64(text: &str, field: &'static str) -> Result<u64, IndexError> {
     text.parse().map_err(|_| IndexError::BadNumber(field))
 }
 
-fn parse_u8(text: &str, field: &'static str) -> Result<u8, IndexError> {
-    text.parse().map_err(|_| IndexError::BadNumber(field))
+/// 解析 LTFS 逻辑分区标识：标准写法是 'a'/'b'，同时兼容数字 '0'/'1'。
+fn parse_partition(text: &str, field: &'static str) -> Result<u8, IndexError> {
+    match text {
+        "a" | "0" => Ok(0),
+        "b" | "1" => Ok(1),
+        _ => Err(IndexError::BadNumber(field)),
+    }
 }
 
 fn parse_bool(text: &str, field: &'static str) -> Result<bool, IndexError> {
@@ -265,47 +283,90 @@ mod tests {
   <generationnumber>2</generationnumber>
   <updatetime>2026-06-18T11:28:00.0000000+00:00</updatetime>
   <location>
-    <partition>0</partition>
+    <partition>a</partition>
     <startblock>5</startblock>
   </location>
   <previousgenerationlocation>
-    <partition>0</partition>
+    <partition>a</partition>
     <startblock>4</startblock>
   </previousgenerationlocation>
   <allowpolicyupdate>false</allowpolicyupdate>
   <highestfileuid>4</highestfileuid>
   <volumelockstate>unlocked</volumelockstate>
-  <directory name="/">
-    <file name="notes.txt">
-      <fileuid>1</fileuid>
-      <length>1024</length>
-      <creationtime>2026-06-18T11:28:00.0000000+00:00</creationtime>
-      <changetime>2026-06-18T11:28:00.0000000+00:00</changetime>
-      <extentinfo>
-        <extent>
-          <fileoffset>0</fileoffset>
-          <byteoffset>0</byteoffset>
-          <bytecount>1024</bytecount>
-          <partition>1</partition>
-        </extent>
-      </extentinfo>
-    </file>
-    <directory name="sub">
-      <file name="inner.bin">
+  <directory>
+    <name>/</name>
+    <fileuid>1</fileuid>
+    <contents>
+      <file>
+        <name>notes.txt</name>
         <fileuid>2</fileuid>
-        <length>2048</length>
+        <length>1024</length>
+        <creationtime>2026-06-18T11:28:00.0000000+00:00</creationtime>
+        <changetime>2026-06-18T11:28:00.0000000+00:00</changetime>
+        <extentinfo>
+          <extent>
+            <fileoffset>0</fileoffset>
+            <byteoffset>0</byteoffset>
+            <bytecount>1024</bytecount>
+            <partition>b</partition>
+          </extent>
+        </extentinfo>
       </file>
-    </directory>
-    <symlink name="link">
-      <target>/notes.txt</target>
-    </symlink>
+      <directory>
+        <name>sub</name>
+        <fileuid>3</fileuid>
+        <contents>
+          <file>
+            <name>inner.bin</name>
+            <fileuid>4</fileuid>
+            <length>2048</length>
+          </file>
+        </contents>
+      </directory>
+      <symlink>
+        <name>link</name>
+        <target>/notes.txt</target>
+      </symlink>
+    </contents>
   </directory>
+</ltfsindex>"#;
+
+    /// 真实磁带上由 OpenLTFS mkltfs 2.4.8.4 写出的 index。
+    const REAL_INDEX_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ltfsindex version="2.4.0">
+<creator>IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs - Format</creator>
+<volumeuuid>0cc710d4-bc2f-4c54-823e-a44413987f5d</volumeuuid>
+<generationnumber>1</generationnumber>
+<updatetime>2026-08-09T09:29:32.530506355Z</updatetime>
+<location>
+<partition>a</partition>
+<startblock>5</startblock>
+</location>
+<previousgenerationlocation>
+<partition>b</partition>
+<startblock>5</startblock>
+</previousgenerationlocation>
+<allowpolicyupdate>true</allowpolicyupdate>
+<highestfileuid>1</highestfileuid>
+<volumelockstate>unlocked</volumelockstate>
+<directory>
+<name>tapecpy M2 test</name>
+<readonly>false</readonly>
+<creationtime>2026-08-09T09:29:05.552272521Z</creationtime>
+<changetime>2026-08-09T09:29:05.552272521Z</changetime>
+<modifytime>2026-08-09T09:29:05.552272521Z</modifytime>
+<accesstime>2026-08-09T09:29:05.552272521Z</accesstime>
+<backuptime>2026-08-09T09:29:05.552272521Z</backuptime>
+<fileuid>1</fileuid>
+<contents/>
+</directory>
 </ltfsindex>"#;
 
     #[test]
     fn parse_index_xml() {
         let idx = Index::parse_xml(INDEX_XML).unwrap();
         assert_eq!(idx.version, "2.4.0");
+        assert_eq!(idx.volume_name.as_deref(), Some("/"));
         assert_eq!(idx.generation, 2);
         assert_eq!(idx.self_location, TapePos { partition: 0, startblock: 5 });
         assert_eq!(
@@ -337,7 +398,7 @@ mod tests {
     #[test]
     fn index_xml_without_previous_location() {
         let xml = INDEX_XML.replace(
-            "<previousgenerationlocation>\n    <partition>0</partition>\n    <startblock>4</startblock>\n  </previousgenerationlocation>\n",
+            "<previousgenerationlocation>\n    <partition>a</partition>\n    <startblock>4</startblock>\n  </previousgenerationlocation>\n",
             "",
         );
         let idx = Index::parse_xml(&xml).unwrap();
@@ -347,10 +408,29 @@ mod tests {
     #[test]
     fn index_xml_empty_directory() {
         let xml = INDEX_XML.replace(
-            "<file name=\"notes.txt\">\n      <fileuid>1</fileuid>\n      <length>1024</length>\n      <creationtime>2026-06-18T11:28:00.0000000+00:00</creationtime>\n      <changetime>2026-06-18T11:28:00.0000000+00:00</changetime>\n      <extentinfo>\n        <extent>\n          <fileoffset>0</fileoffset>\n          <byteoffset>0</byteoffset>\n          <bytecount>1024</bytecount>\n          <partition>1</partition>\n        </extent>\n      </extentinfo>\n    </file>\n",
+            "<file>\n        <name>notes.txt</name>\n        <fileuid>2</fileuid>\n        <length>1024</length>\n        <creationtime>2026-06-18T11:28:00.0000000+00:00</creationtime>\n        <changetime>2026-06-18T11:28:00.0000000+00:00</changetime>\n        <extentinfo>\n          <extent>\n            <fileoffset>0</fileoffset>\n            <byteoffset>0</byteoffset>\n            <bytecount>1024</bytecount>\n            <partition>b</partition>\n          </extent>\n        </extentinfo>\n      </file>\n",
             "",
         );
         let idx = Index::parse_xml(&xml).unwrap();
         assert_eq!(idx.file_count, 2);
+    }
+
+    #[test]
+    fn parse_real_mkltfs_index() {
+        let idx = Index::parse_xml(REAL_INDEX_XML).unwrap();
+        assert_eq!(idx.volume_name.as_deref(), Some("tapecpy M2 test"));
+        assert_eq!(idx.creator, "IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs - Format");
+        assert_eq!(idx.volume_uuid, "0cc710d4-bc2f-4c54-823e-a44413987f5d");
+        assert_eq!(idx.generation, 1);
+        assert_eq!(idx.self_location, TapePos { partition: 0, startblock: 5 });
+        assert_eq!(
+            idx.previous_location,
+            Some(TapePos { partition: 1, startblock: 5 })
+        );
+        assert!(idx.allow_policy_update);
+        assert_eq!(idx.highest_file_uid, Some(1));
+        assert_eq!(idx.volume_lock_state.as_deref(), Some("unlocked"));
+        assert_eq!(idx.file_count, 0);
+        assert_eq!(idx.directory_count, 0);
     }
 }

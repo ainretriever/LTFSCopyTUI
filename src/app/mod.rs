@@ -119,7 +119,15 @@ fn scan_latest_index(
     session: &mut TapeSession,
     partition: u8,
 ) -> Result<Option<Index>, device::Error> {
-    // label 占据块 0-3（VOL1, FM, XML label, FM），index 从块 4 开始。
+    // label 结束于块 3（VOL1, FM, XML label, FM；某些实现后跟一个多余 FM），
+    // index 从块 4 开始。
+    session.locate(partition, 4)?;
+
+    // 先快速定位 EOD（避免逐块读到 blank check，LTO 驱动器上这一步很慢）。
+    let eod_block = session.space_to_eod()?;
+    if eod_block <= 4 {
+        return Ok(None);
+    }
     session.locate(partition, 4)?;
 
     let mut records = Vec::new();
@@ -131,6 +139,11 @@ fn scan_latest_index(
                 records.push(ScanRecord::Eod);
                 break;
             }
+        }
+        // 到达已知 EOD 块即停止，不再读最后一条（blank check 很慢）。
+        if session.read_position()?.block >= eod_block {
+            records.push(ScanRecord::Eod);
+            break;
         }
     }
     Ok(ltfs::scan::find_latest_index(records)
@@ -147,9 +160,22 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
     let mut info = VolumeInfo::default();
     let mut labels: Vec<(u8, AnsiLabel, Label)> = Vec::new();
 
-    for partition in 0..=1u8 {
+    // 先倒带到当前分区 BOT 并确认所在分区，优先探测当前分区，
+    // 减少跨分区 LOCATE（LTO 驱动器上每次跨分区约 10 秒）。
+    session.rewind()?;
+    let start_partition = session.read_position()?.partition as u8;
+    let order = [start_partition, 1 - start_partition];
+
+    for &partition in &order {
         match probe_partition_label(&mut session, partition) {
-            Ok(Some((ansi, label))) => labels.push((partition, ansi, label)),
+            Ok(Some((ansi, label))) => {
+                let is_index = label.this_partition == label.index_partition;
+                labels.push((partition, ansi, label));
+                // 该分区就是 index 分区时无需再探测另一个。
+                if is_index {
+                    break;
+                }
+            }
             Ok(None) => {}
             // 单分区磁带定位到分区 1 会失败，这里作为警告继续，不中断识别。
             Err(e) => info
@@ -174,7 +200,7 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
         .iter()
         .find(|(_, _, l)| l.this_partition == index_logical)
         .map(|(p, _, _)| vec![*p])
-        .unwrap_or_else(|| labels.iter().map(|(p, _, _)| *p).collect());
+        .unwrap_or_else(|| vec![start_partition]);
 
     for partition in index_phys {
         match scan_latest_index(&mut session, partition) {
