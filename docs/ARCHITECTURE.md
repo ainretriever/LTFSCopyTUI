@@ -1,0 +1,1215 @@
+# tapecpy 架构设计
+
+版本：0.1
+状态：初始架构基线
+
+## 1. 文档目的
+
+本文档描述 tapecpy 当前已经确定的软件架构原则。
+
+它的目的不是提前规定所有 class、module、thread、queue 或 API，而是确定在重新实现 tapecpy 时不能违反的结构性约束。
+
+tapecpy 曾经存在一个早期 prototype。该版本在缺少完整需求和架构规划的情况下逐步增加功能，最终变得难以理解和维护。
+
+本次开发视为一次重新开始。
+
+**新的 tapecpy 从头实现，不以旧代码为基础进行重构，也不继续扩展旧代码。**
+
+旧 prototype 可以保留用于历史参考或验证过去做过的实验，但 Codex 不应从旧代码复制架构、模块划分或状态管理方式。
+
+新的需求文档和本文档是当前实现的主要依据。
+
+---
+
+# 2. 项目架构目标
+
+tapecpy 最初的构想可以概括为：
+
+> LTFSCopyTUI：一个面向 Linux、能够直接操作 LTFS 和 LTO 磁带机的 TUI 工具。
+
+tapecpy 不依赖把 LTFS 通过 FUSE 挂载成普通文件系统来完成核心操作。
+
+程序应直接理解 LTFS，并直接控制磁带设备。
+
+tapecpy 的主要架构目标包括：
+
+1. 让 LTFS 操作过程保持可观察；
+2. 明确展示磁带机状态，而不是把磁带隐藏在普通文件系统抽象后面；
+3. 将磁带设备操作、LTFS 格式处理和用户界面分离；
+4. 保证 LTFS 格式逻辑能够尽可能脱离真实磁带机进行测试；
+5. 为以后加入 RAW、TAR 和 recovery 功能留下空间；
+6. 保持第一阶段范围足够小，避免再次出现功能无序扩张。
+
+---
+
+# 3. 当前平台范围
+
+第一阶段只支持 Linux。
+
+当前不考虑：
+
+* Windows；
+* macOS；
+* 跨平台磁带设备 abstraction。
+
+如果为了测试、模拟设备或隔离 Linux 设备访问而需要建立接口，可以建立适当 abstraction。
+
+但不能仅仅为了未来可能支持其他操作系统而提前构造复杂的平台层。
+
+# 实现语言
+
+tapecpy 的正式实现使用 Rust。
+
+选择 Rust 的主要原因不是单纯追求性能，而是：
+
+- tapecpy 长期运行并操作具有破坏性的有状态设备；
+- 需要精确定义 SCSI、LTFS 和设备状态数据结构；
+- 需要可靠管理 buffer、并发和设备状态所有权；
+- 希望最终以原生 executable 的形式部署；
+- Rust 现有生态能够满足 Linux ioctl、XML 和 TUI 的需求。
+
+Python 不作为 tapecpy production implementation language。
+
+允许在 `experiments/` 中使用 Python 编写一次性硬件实验程序，例如：
+
+- 测试 SCSI command；
+- dump LOG SENSE；
+- 检查 MAM；
+- 验证 ioctl 行为；
+- 分析二进制响应。
+
+实验程序不得成为正式 tapecpy 的运行时依赖。
+实验得到的稳定结论应重新实现到 Rust core，并建立相应测试。
+
+---
+
+# 4. 开发方式：垂直切片
+
+tapecpy 不采用先完成所有底层、再完成所有 LTFS、最后再开发 TUI 的方式。
+
+项目采用 **垂直切片开发**。
+
+每个阶段都应该尽可能形成一条从用户界面到真实磁带设备的完整可运行路径。
+
+例如：
+
+```text
+TUI
+ ↓
+应用操作
+ ↓
+LTFS
+ ↓
+磁带设备访问
+ ↓
+真实磁带机
+```
+
+第一阶段不追求完整实现所有底层能力，而优先完成越来越完整的真实工作流。
+
+推荐的发展方式类似：
+
+```text
+发现并选择磁带机
+        ↓
+读取和显示磁带基本信息
+        ↓
+识别 LTFS volume
+        ↓
+读取 LTFS index
+        ↓
+显示目录
+        ↓
+写入一个文件
+        ↓
+写入多个文件和目录
+        ↓
+完成 LTFS index finalization
+        ↓
+形成完整 LTFS 写入 workflow
+```
+
+每完成一个阶段，都应该能够在真实设备上验证这一整条路径。
+
+不要为了“以后可能需要”而提前横向实现大量尚未被当前 workflow 使用的功能。
+
+---
+
+# 5. 第一阶段的主要架构驱动力
+
+第一阶段最重要的用户工作流是正常 LTFS 写入。
+
+详细需求见：
+
+`docs/WRITE_WORKFLOW.md`
+
+其基本过程为：
+
+```text
+选择磁带机
+→
+检查介质
+→
+擦除 / 准备磁带
+→
+LTFS 格式化
+→
+设置 Barcode 和 Volume Name
+→
+选择写入数据
+→
+写入
+→
+监控速度和错误情况
+→
+写入最终 LTFS index
+→
+可选 read-back verify
+→
+弹出磁带
+```
+
+架构设计应首先服务于这条工作流。
+
+RAW、TAR、LTFS recovery 等功能不得阻塞这条工作流的完成。
+
+---
+
+# 6. 总体分层原则
+
+当前只确定逻辑上的分层关系，不提前规定具体目录和 class。
+
+总体关系为：
+
+```text
+┌──────────────────────────────────┐
+│          Presentation            │
+│                                  │
+│             TUI / CLI            │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│          Application             │
+│                                  │
+│ 用户操作和工作流                  │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│       Format / Tape Logic        │
+│                                  │
+│ LTFS             Telemetry       │
+│ RAW / TAR        Verify          │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│       Tape Device Control        │
+│                                  │
+│ Linux tape API / SCSI            │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+              LTO Drive
+```
+
+这些层次表达的是依赖关系，而不是要求一层必须对应一个 Python package 或一个 class。
+
+具体代码结构应随着第一版实现逐渐确定。
+
+---
+
+# 7. 依赖方向
+
+总体依赖方向必须保持：
+
+```text
+Presentation
+      ↓
+Application
+      ↓
+Format / Tape Logic
+      ↓
+Device Access
+```
+
+下层不得依赖上层。
+
+例如：
+
+* Linux 磁带设备访问代码不能知道 TUI 的存在；
+* LTFS XML parser 不能依赖 TUI；
+* 磁带读取代码不能直接更新 progress bar；
+* LTFS writer 不能直接打印面向用户的文本；
+* TUI 不应该直接发送 SCSI CDB；
+* CLI 不应该直接调用 Linux ioctl 绕过核心逻辑。
+
+用户界面负责显示和发出操作请求。
+
+核心逻辑负责执行操作并返回结构化状态。
+
+---
+
+# 8. 用户界面
+
+TUI 是 tapecpy 的主要交互界面。
+
+CLI 用于：
+
+* 自动化；
+* 脚本；
+* 调试；
+* 状态查询；
+* stdin/stdout；
+* 非交互使用。
+
+TUI 和 CLI 必须使用同一套核心逻辑。
+
+不得维护两套独立的磁带操作实现。
+
+正确关系：
+
+```text
+        TUI
+         │
+         ├─────┐
+         │     │
+        CLI    │
+         │     │
+         └──┬──┘
+            ↓
+         Core logic
+```
+
+禁止：
+
+```text
+TUI → 一套磁带实现
+
+CLI → 另一套磁带实现
+```
+
+---
+
+# 9. 磁带设备
+
+磁带机是有状态的顺序设备。
+
+tapecpy 必须承认这一特征，而不能把磁带完全抽象成普通随机访问文件。
+
+设备访问层负责实际与 Linux 磁带设备及 SCSI 接口通信。
+
+预计可能涉及：
+
+```text
+/dev/nstX
+/dev/sgX
+
+Linux st driver
+ioctl
+SG_IO
+SCSI CDB
+```
+
+具体采用哪些接口，由实际功能需求决定。
+
+设备访问层可以提供的能力包括但不限于：
+
+* open / close；
+* read / write；
+* rewind；
+* space；
+* locate；
+* read position；
+* partition control；
+* write filemark；
+* erase；
+* load；
+* unload；
+* SCSI command；
+* LOG SENSE；
+* MODE SENSE；
+* READ ATTRIBUTE / MAM；
+* REQUEST SENSE。
+
+该层不知道什么是：
+
+* LTFS 文件；
+* LTFS 目录；
+* Barcode 写入 workflow；
+* TUI 页面；
+* 用户正在执行什么业务任务。
+
+---
+
+# 10. 磁带机身份与设备路径
+
+`/dev/nst0`、`/dev/sg4` 等路径只是访问磁带机的入口，不应被视为磁带机永久身份。
+
+程序应尽可能取得：
+
+* Vendor；
+* Model；
+* Serial Number；
+* 对应的 tape device path；
+* 对应的 generic SCSI device path。
+
+同一台物理磁带机可能同时对应多个 Linux device node。
+
+上层应把它们理解为同一台设备。
+
+具体如何发现和匹配这些路径，可以在设备发现功能实现过程中确定。
+
+---
+
+# 11. 设备状态所有权
+
+同一台磁带机的状态性操作必须受到统一管理。
+
+LTFS、RAW、TAR、Telemetry 等组件不能各自随意打开设备并独立改变磁带状态。
+
+需要被统一管理的操作包括：
+
+* partition 切换；
+* locate；
+* rewind；
+* read；
+* write；
+* erase；
+* unload；
+* 其他可能影响当前磁带状态的 SCSI command。
+
+当前只确定：
+
+> 同一台磁带机必须存在统一的设备状态所有权。
+
+暂时不规定具体实现必须是：
+
+* `TapeSession` class；
+* 独立线程；
+* command queue；
+* mutex；
+* async task；
+* 其他并发模型。
+
+这些实现方式应在完成第一版真实设备访问之后，根据实际情况决定。
+
+如果实现中使用 `TapeSession` 这一名称，它应表示一次针对某台磁带机的有状态操作会话，而不是简单的函数集合。
+
+---
+
+# 12. Telemetry 与设备控制
+
+Telemetry 是 tapecpy 的核心功能，而不是单纯的 TUI 装饰。
+
+tapecpy 希望观察：
+
+* 当前写入速度；
+* 平均速度；
+* 速度历史；
+* recovered write error；
+* recovered read error；
+* hard write error；
+* hard read error；
+* TapeAlert；
+* drive/media statistics；
+* 当前 partition；
+* 当前 position；
+* 其他能够反映磁带写入状态的数据。
+
+Telemetry 不拥有磁带机。
+
+它不能为了刷新数据显示而绕过统一的设备状态管理机制。
+
+正确关系应类似：
+
+```text
+Telemetry
+    │
+    │ 请求状态
+    ▼
+统一设备控制
+    │
+    ▼
+磁带机
+```
+
+而不是：
+
+```text
+LTFS Writer ───→ 磁带机
+Telemetry  ───→ 磁带机
+TUI        ───→ 磁带机
+```
+
+Telemetry polling 的具体实现方式、周期和并发模型暂不确定。
+
+第一版代码完成后，根据真实磁带机行为再决定。
+
+---
+
+# 13. Telemetry 数据与累计计数器
+
+磁带机返回的部分统计数据可能是累计计数器。
+
+因此应区分：
+
+```text
+设备原始计数器
+
+和
+
+当前操作期间的变化量
+```
+
+例如：
+
+```text
+任务开始：
+Recovered Write Errors = 152000
+
+当前：
+Recovered Write Errors = 152120
+
+本次任务：
+Recovered Write Errors = 120
+```
+
+用户通常更关心当前 session 或当前操作期间的数据。
+
+因此 telemetry 设计必须允许记录 baseline。
+
+具体数据模型在开始实现 LOG SENSE 后确定。
+
+---
+
+# 14. LTFS
+
+LTFS 是 tapecpy 第一阶段最重要的 format。
+
+tapecpy 自己实现 LTFS 的读取和写入，而不是依赖已经挂载的 FUSE LTFS filesystem。
+
+LTFS 实现至少最终需要理解：
+
+* LTFS Label；
+* Index Partition；
+* Data Partition；
+* LTFS Index；
+* directory；
+* file；
+* extent；
+* logical block；
+* index generation；
+* formatting；
+* index update；
+* finalization。
+
+tapecpy 不创建私有 LTFS 变体。
+
+所有写入的数据必须尽可能遵守正式 LTFS 规范。
+
+---
+
+# 15. LTFS 互操作目标
+
+tapecpy 的目标不是做到：
+
+> tapecpy 写出的磁带只能被 tapecpy 自己读取。
+
+必须以与其他 LTFS 实现互操作为目标。
+
+至少需要逐步验证：
+
+```text
+tapecpy 写入
+      ↓
+OpenLTFS / HPE LTFS 等实现可以读取
+```
+
+以及：
+
+```text
+其他 LTFS 实现写入
+      ↓
+tapecpy 可以读取
+```
+
+因此：
+
+**“tapecpy 可以读回 tapecpy 自己写出的磁带”不能作为充分的 LTFS 正确性证明。**
+
+互操作测试是 LTFS 实现的重要验收方式。
+
+---
+
+# 16. LTFS 格式逻辑与设备 I/O 分离
+
+能够脱离磁带机工作的 LTFS 逻辑，应尽可能保持为纯数据处理。
+
+例如：
+
+```text
+LTFS Index XML
+      ↓
+Parser
+      ↓
+内部数据结构
+```
+
+或者：
+
+```text
+内部数据结构
+      ↓
+Serializer
+      ↓
+LTFS Index XML
+```
+
+这些操作原则上不应该要求连接真实磁带机。
+
+同样，能够离线处理的内容包括：
+
+* label encoding/decoding；
+* index parsing；
+* index serialization；
+* directory tree；
+* extent metadata；
+* 数据格式验证。
+
+这样可以大量使用普通 unit test。
+
+不要把 XML parsing、SCSI command 和 TUI 更新写在同一个函数中。
+
+---
+
+# 17. RAW
+
+RAW 不是第一阶段优先功能。
+
+未来 RAW 模式提供最直接的顺序磁带 I/O。
+
+原则为：
+
+```text
+binary stream
+      ↓
+tape
+```
+
+多个独立输入对象可以使用 filemark 分隔。
+
+RAW 本身不保存：
+
+* 文件名；
+* 路径；
+* 时间戳；
+* 权限；
+* tapecpy 私有 metadata。
+
+不要为 RAW 创建 tapecpy 私有 archive format。
+
+---
+
+# 18. TAR
+
+TAR 也不是第一阶段优先功能。
+
+TAR 应被视为普通顺序数据流上面的 archive codec。
+
+概念关系为：
+
+```text
+Files / Directories
+        ↓
+       TAR
+        ↓
+Sequential Tape Stream
+```
+
+TAR 不应发展成第二套复杂的磁带文件系统。
+
+其磁带数据通路应尽可能复用未来 RAW 模式的顺序 I/O 能力。
+
+---
+
+# 19. Recovery
+
+LTFS recovery 属于未来功能。
+
+正常 LTFS 读取失败时，未来可能提供：
+
+* 扫描旧 LTFS index；
+* 查找可恢复 index generation；
+* 扫描 data partition；
+* 根据 extent 恢复数据；
+* partition raw dump；
+* 保存 logical block / filemark / error map。
+
+Recovery 与正常 RAW 模式不是同一个概念。
+
+第一阶段不得为了 recovery 大量增加架构复杂度。
+
+---
+
+# 20. 应用 Workflow
+
+用户执行的是一个完整操作，而不是一组互不相关的底层命令。
+
+例如正常 LTFS 写入：
+
+```text
+Inspect
+ ↓
+Prepare
+ ↓
+Format
+ ↓
+Select data
+ ↓
+Write
+ ↓
+Finalize
+ ↓
+Optional Verify
+ ↓
+Eject
+```
+
+Application 层负责描述这种工作流。
+
+Presentation 层负责：
+
+* 让用户选择操作；
+* 展示当前状态；
+* 请求取消或确认。
+
+Format/device 层负责真正执行操作。
+
+禁止让 TUI page 或 button 自己承担磁带操作逻辑。
+
+---
+
+# 21. 可观察性
+
+tapecpy 的重要设计目标之一是减少黑盒行为。
+
+任何较长时间的操作都应该尽可能明确展示当前阶段。
+
+例如写入过程至少应该能够区分：
+
+```text
+PREPARING
+FORMATTING
+WRITING_DATA
+FINALIZING_INDEX
+VERIFYING
+UNLOADING
+COMPLETED
+```
+
+这里的具体状态名称不是强制 API。
+
+重要原则是：
+
+**“最后一个文件已经写完”不等于“LTFS 写入任务已经完成”。**
+
+LTFS index update、sync、verify、unload 等过程需要对用户保持可见。
+
+---
+
+# 22. Progress 与事件
+
+核心逻辑不能通过直接打印文本来向用户报告进度。
+
+例如不应该在 LTFS writer 内部出现：
+
+```python
+print("Writing...")
+```
+
+核心应提供结构化状态或事件。
+
+以后可能包括：
+
+```text
+OperationStarted
+OperationProgress
+FileStarted
+FileCompleted
+TelemetryUpdated
+WarningRaised
+OperationFailed
+OperationCompleted
+```
+
+TUI 可以把这些信息转换成：
+
+* progress bar；
+* table；
+* graph；
+* warning dialog。
+
+CLI 可以把同样的信息转换成：
+
+* 文本；
+* JSON；
+* machine-readable output。
+
+具体事件模型在实现第一条完整垂直切片时确定。
+
+---
+
+# 23. 错误透明性
+
+tapecpy 不应把所有底层故障最终压缩成：
+
+```text
+I/O Error
+```
+
+只要底层能够取得，错误信息应尽可能保留：
+
+* 当前操作；
+* 当前 workflow 阶段；
+* 当前文件；
+* partition；
+* logical position；
+* SCSI command；
+* Sense Key；
+* ASC；
+* ASCQ；
+* raw sense data；
+* TapeAlert；
+* 其他诊断信息。
+
+TUI 可以向普通用户提供简化错误说明。
+
+但底层详细信息必须保留在日志或诊断信息中。
+
+这是 tapecpy 去黑盒化目标的一部分。
+
+---
+
+# 24. 破坏性操作安全
+
+以下操作属于明显的破坏性操作：
+
+* erase；
+* format；
+* partition modification；
+* 其他可能破坏已有磁带内容的操作。
+
+TUI 必须在执行之前明确显示当前磁带信息，并要求用户确认。
+
+应尽可能显示：
+
+* 当前选择的磁带机；
+* Vendor / Model / Serial；
+* 当前介质；
+* Barcode；
+* LTFS Volume Name；
+* 即将执行的操作类型。
+
+CLI 中的破坏性操作也必须采用明确的命令语义，不能因为默认参数或模糊命令意外触发擦除。
+
+具体确认交互方式以后决定。
+
+---
+
+# 25. Barcode 与 Volume Name
+
+Barcode 和 LTFS Volume Name 是 LTFS workflow 中的重要介质身份信息。
+
+它们不能只在 format 对话框中短暂出现。
+
+在写入 session 中，应尽可能保持当前 Barcode 可见。
+
+任务完成、磁带 eject 后，也应该再次明确显示 Barcode，方便用户进行物理贴标。
+
+物理磁带与逻辑 volume identity 不一致属于需要尽量避免的人为错误。
+
+---
+
+# 26. Verify
+
+校验不能简单表示成一个 `verify = true/false`。
+
+需要至少在概念上区分：
+
+### 写入过程中的 Hash
+
+对源数据计算 hash。
+
+这能证明输入的数据内容，但不能证明磁带能够重新读取相同数据。
+
+### Read-back Verify
+
+写入完成后，重新读取磁带数据并进行比较。
+
+这是面向重要数据的可选完整校验。
+
+未来还可能研究：
+
+* SCSI VERIFY；
+* drive-level media verification。
+
+但这些不同机制不能混为一个含义不明的 `verify` 参数。
+
+---
+
+# 27. 中断与恢复
+
+第一阶段不实现复杂的断点续写。
+
+如果写入任务发生意外中断，可以要求用户重新开始操作。
+
+但是程序仍然必须尽可能安全地处理中断请求。
+
+不应简单通过粗暴杀死进程来实现正常 cancellation。
+
+第一版至少应逐渐做到：
+
+```text
+用户请求取消
+      ↓
+停止开始新的高层操作
+      ↓
+尽可能结束当前安全操作单元
+      ↓
+记录当前状态和位置
+      ↓
+报告任务未完成
+```
+
+具体 cancellation granularity 根据真实写入实现决定。
+
+---
+
+# 28. 测试原则
+
+测试分为三个层次。
+
+## 28.1 纯软件测试
+
+不需要磁带机。
+
+用于测试：
+
+* LTFS XML parsing；
+* LTFS XML serialization；
+* label；
+* directory tree；
+* extent metadata；
+* state transformation；
+* TAR；
+* 其他纯数据逻辑。
+
+这是日常开发中最重要的测试类型。
+
+## 28.2 模拟设备测试
+
+以后可以提供 fake/mock tape backend。
+
+用于测试：
+
+* workflow；
+* 错误处理；
+* 状态变化；
+* progress；
+* cancellation；
+* 特定设备错误场景。
+
+建立 fake backend 的目的主要是测试，而不是跨平台。
+
+## 28.3 真实磁带机集成测试
+
+用于验证：
+
+* Linux tape API；
+* SCSI command；
+* partition；
+* position；
+  -真实 read/write；
+* erase；
+* format；
+* LTFS interoperability；
+* telemetry；
+* 特定驱动器行为。
+
+真实磁带测试不能替代 unit test。
+
+unit test 也不能替代真实磁带测试。
+
+---
+
+# 29. LTFSCopyGUI 的架构地位
+
+LTFSCopyGUI 是 tapecpy 的重要参考实现。
+
+参考源码位于：
+
+`references/LTFSCopyGUI/`
+
+在实现以下能力时，应主动研究其相关实现：
+
+* LTFS format；
+* LTFS index；
+* extent；
+* partition；
+* SCSI command；
+* MAM；
+* LOG SENSE；
+* TapeAlert；
+* erase；
+* position；
+* capacity；
+* verify；
+* 驱动器兼容处理。
+
+但 LTFSCopyGUI 不定义 tapecpy 的架构。
+
+必须区分：
+
+```text
+它实现了什么行为
+
+和
+
+它为什么以这种程序结构实现
+```
+
+tapecpy 可以参考：
+
+* 命令序列；
+* SCSI CDB；
+* 数据字段；
+* LTFS 格式行为；
+* 磁带机 workaround；
+* 实际硬件经验。
+
+不要机械复制：
+
+* WinForms 架构；
+* Windows device API；
+* 全局状态；
+* UI 与核心逻辑耦合；
+* VB 特有的程序组织方式。
+
+如果某项行为来自 LTFS、SCSI 或设备厂商规范，应优先理解相应规范，而不是把 LTFSCopyGUI 的实现细节当成规范本身。
+
+---
+
+# 30. 旧 tapecpy prototype
+
+旧 tapecpy 代码不再作为新版实现基础。
+
+Codex 在实现新版时：
+
+* 不要继续修改旧架构；
+* 不要尝试渐进式重构成新版；
+* 不要因为旧代码已经存在，就保留旧 module boundaries；
+* 不要默认旧代码的 API 是兼容约束；
+* 不要复制旧状态管理方式。
+
+必要时可以研究旧代码以确认过去做过的实验或硬件行为，但新的实现应从新的目录和新的设计开始。
+
+如果旧代码与当前需求文档或本文档存在冲突，以当前文档为准。
+
+---
+
+# 31. 当前明确不做的事情
+
+第一阶段不实现：
+
+* FUSE mount；
+* POSIX filesystem compatibility layer；
+* multi-volume spanning；
+* tape library robot management；
+* global tape catalog；
+* 自动选择下一盘磁带；
+* backup policy；
+* incremental backup；
+* deduplication；
+* scheduler；
+* 网络服务；
+* Web UI；
+* 自动判定二手磁带报废；
+* 复杂 write resume；
+* 完整 LTFS forensic recovery。
+
+不要因为其中某项功能容易实现而提前加入。
+
+---
+
+# 32. 第一阶段开发策略
+
+新版代码应从空白结构开始。
+
+最初不需要立即建立完整 package tree。
+
+应该根据垂直切片逐渐增加真实需要的模块。
+
+第一批开发工作的目标应该类似：
+
+```text
+Milestone 0
+启动程序
+→
+发现 Linux 磁带机
+→
+选择一台磁带机
+→
+显示设备身份
+```
+
+随后：
+
+```text
+Milestone 1
+选择磁带机
+→
+检测是否装载介质
+→
+读取基本介质信息
+→
+显示给用户
+```
+
+随后：
+
+```text
+Milestone 2
+选择磁带机
+→
+识别 LTFS
+→
+读取 LTFS label/index
+→
+显示 volume 基本信息
+```
+
+随后逐渐加入：
+
+```text
+浏览
+→
+读取文件
+→
+写入文件
+→
+更新 index
+→
+format
+→
+erase
+→
+完整 write workflow
+```
+
+实际 milestone 顺序允许根据实现过程中发现的问题调整。
+
+关键要求是：
+
+> 每个阶段优先形成完整可运行的垂直路径，而不是提前实现大量孤立的底层功能。
+
+---
+
+# 33. 暂时不决定的架构问题
+
+以下问题当前明确保持开放。
+
+不要为了让架构文档看起来完整而提前决定。
+
+### 设备控制
+
+* 是否正式建立 `TapeSession` class；
+* `/dev/nstX` 和 `/dev/sgX` 如何统一管理；
+* 是否由单独线程拥有设备；
+* 是否使用 command queue；
+* 需要什么 locking 模型。
+
+### 并发
+
+* sync / async；
+* thread 数量；
+* telemetry polling 与数据传输如何协调；
+* host I/O pipeline 如何实现。
+
+### Buffering
+
+* buffer size；
+* buffer 数量；
+* preload 策略；
+* write pipeline。
+
+### Hash
+
+* hash 在 pipeline 哪一阶段计算；
+* 是否异步；
+* 默认算法。
+
+### LTFS
+
+* index 更新频率；
+* writer 内部 class 划分；
+* extent allocation 具体结构；
+* cache 策略。
+
+### TUI
+
+* TUI framework；
+* 页面结构；
+* graph implementation；
+* keyboard interaction。
+
+---
+
+# 34. 修改本架构文档的原则
+
+`ARCHITECTURE.md` 不是永久不变的规范。
+
+它记录当前已经确认的架构决定。
+
+如果实现过程中发现：
+
+* Linux tape API 的实际行为与假设不同；
+* LTO 驱动器存在新的状态限制；
+* LTFSCopyGUI 揭示了此前不知道的重要机制；
+* LTFS 规范要求改变结构；
+* 第一版垂直切片证明某项设计不可行；
+
+应该修改本文档。
+
+但是修改架构决定时，应明确记录为什么改变，而不是让代码静默偏离文档。
+
+---
+
+# 35. 当前最重要的原则
+
+在当前阶段，优先级依次为：
+
+```text
+正确理解真实需求
+        ↓
+跑通完整垂直工作流
+        ↓
+理解真实磁带机行为
+        ↓
+根据实际经验确定内部架构
+        ↓
+再进行抽象和优化
+```
+
+不要反过来：
+
+```text
+提前设计复杂抽象
+        ↓
+实现大量底层组件
+        ↓
+最后尝试把它们拼成用户工作流
+```
+
+tapecpy 本次重新开始的核心目标之一，就是避免再次重复这种开发方式。
