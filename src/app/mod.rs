@@ -5,10 +5,10 @@
 
 use std::path::Path;
 
+use crate::device::tape::{MamAttributeFormat, ReadRecord, TapeSession};
 use crate::device::{self, TapeDrive};
-use crate::device::tape::{ReadRecord, TapeSession};
-use crate::ltfs::label::{AnsiLabel, Label};
 use crate::ltfs::index::{DirectoryEntry, Extent, FileEntry, FileTimes, Index, TapePos};
+use crate::ltfs::label::{AnsiLabel, Label};
 
 /// 发现当前系统上的全部磁带机。
 pub fn discover_drives() -> Result<Vec<TapeDrive>, device::Error> {
@@ -27,11 +27,7 @@ pub fn select_drive<'a>(
         None => match drives {
             [one] => one,
             [] => return Err("系统上未发现磁带机。".into()),
-            _ => {
-                return Err(
-                    "系统上有多台磁带机，请用 `tapecpy info <选择器>` 指定一台。".into(),
-                )
-            }
+            _ => return Err("系统上有多台磁带机，请用 `tapecpy info <选择器>` 指定一台。".into()),
         },
         Some(sel) => {
             if let Ok(idx) = sel.parse::<usize>() {
@@ -74,6 +70,387 @@ pub struct VolumeInfo {
     pub index: Option<Index>,
     /// index 分区中最新 index 前的 filemark 块号（刷新 index 时的覆盖起点）。
     pub index_write_block: Option<u64>,
+}
+
+/// 创建新 LTFS 卷所需的用户参数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatOptions {
+    /// ANSI/MAM 使用的 6 位卷序列。
+    pub barcode: String,
+    /// LTFS 根目录显示名。
+    pub volume_name: String,
+    /// LTFS record 最大大小；当前正常双分区工作流默认 512 KiB。
+    pub block_size: u64,
+    pub compression: bool,
+}
+
+impl FormatOptions {
+    pub fn new(barcode: impl Into<String>, volume_name: impl Into<String>) -> Self {
+        Self {
+            barcode: barcode.into(),
+            volume_name: volume_name.into(),
+            block_size: 512 * 1024,
+            compression: true,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        AnsiLabel {
+            barcode: self.barcode.clone(),
+        }
+        .to_bytes()
+        .map_err(|e| e.to_string())?;
+        if self.volume_name.is_empty() {
+            return Err("LTFS Volume Name 不能为空".into());
+        }
+        if self.volume_name.chars().any(char::is_control) {
+            return Err("LTFS Volume Name 不能包含控制字符".into());
+        }
+        if self.block_size == 0 || self.block_size > 1024 * 1024 {
+            return Err("LTFS block size 必须在 1..=1048576 字节范围内".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct InitialFormatImage {
+    ansi: [u8; crate::ltfs::label::ANSI_LABEL_LEN],
+    data_label_xml: String,
+    index_label_xml: String,
+    data_index_xml: String,
+    index_index_xml: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatPhase {
+    Preparing,
+    Partitioning,
+    WritingMam,
+    WritingDataPartition,
+    WritingIndexPartition,
+    WritingCoherency,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatEvent {
+    pub phase: FormatPhase,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatResult {
+    pub barcode: String,
+    pub volume_name: String,
+    pub volume_uuid: String,
+    pub generation: u64,
+}
+
+pub struct FormatSession<'a> {
+    drive: &'a TapeDrive,
+}
+
+impl<'a> FormatSession<'a> {
+    pub fn new(drive: &'a TapeDrive) -> Self {
+        Self { drive }
+    }
+
+    pub fn run(
+        &self,
+        options: &FormatOptions,
+        observer: &mut dyn FnMut(&FormatEvent),
+    ) -> Result<FormatResult, String> {
+        options.validate()?;
+        emit_format(observer, FormatPhase::Preparing, "生成初始 LTFS metadata");
+        let format_time = ltfs_time_now();
+        let volume_uuid = generate_uuid_v4()?;
+        let image = build_initial_format_image(options, &volume_uuid, &format_time)?;
+        let mut tape = TapeSession::open(&self.drive.sg_path).map_err(|e| e.to_string())?;
+
+        emit_format(
+            observer,
+            FormatPhase::Partitioning,
+            "创建 index/data 两个分区",
+        );
+        tape.ensure_write_anywhere().map_err(|e| e.to_string())?;
+        tape.format_ltfs_partitions().map_err(|e| e.to_string())?;
+        tape.set_variable_block().map_err(|e| e.to_string())?;
+
+        emit_format(
+            observer,
+            FormatPhase::WritingMam,
+            "写入 LTFS MAM attributes",
+        );
+        write_format_mam(&mut tape, options, &format_time)?;
+
+        emit_format(
+            observer,
+            FormatPhase::WritingDataPartition,
+            "写入 data 分区 label/index",
+        );
+        write_initial_partition(
+            &mut tape,
+            1,
+            &image.ansi,
+            &image.data_label_xml,
+            &image.data_index_xml,
+        )?;
+        emit_format(
+            observer,
+            FormatPhase::WritingIndexPartition,
+            "写入 index 分区 label/index",
+        );
+        write_initial_partition(
+            &mut tape,
+            0,
+            &image.ansi,
+            &image.index_label_xml,
+            &image.index_index_xml,
+        )?;
+
+        emit_format(
+            observer,
+            FormatPhase::WritingCoherency,
+            "写入两分区 Volume Coherency Information",
+        );
+        write_initial_vci(&mut tape, &volume_uuid)?;
+        emit_format(observer, FormatPhase::Completed, "LTFS format 完成");
+        Ok(FormatResult {
+            barcode: options.barcode.clone(),
+            volume_name: options.volume_name.clone(),
+            volume_uuid,
+            generation: 1,
+        })
+    }
+}
+
+fn emit_format(observer: &mut dyn FnMut(&FormatEvent), phase: FormatPhase, message: &str) {
+    observer(&FormatEvent {
+        phase,
+        message: message.into(),
+    });
+}
+
+fn write_initial_partition(
+    tape: &mut TapeSession,
+    partition: u8,
+    ansi: &[u8],
+    label_xml: &str,
+    index_xml: &str,
+) -> Result<(), String> {
+    tape.locate(partition, 0).map_err(|e| e.to_string())?;
+    tape.write_record(ansi).map_err(|e| e.to_string())?;
+    tape.write_filemark().map_err(|e| e.to_string())?;
+    tape.write_record(label_xml.as_bytes())
+        .map_err(|e| e.to_string())?;
+    tape.write_filemark().map_err(|e| e.to_string())?;
+    tape.write_filemark().map_err(|e| e.to_string())?;
+    let pos = tape.read_position().map_err(|e| e.to_string())?;
+    if pos.partition != partition as u32 || pos.block != 5 {
+        return Err(format!(
+            "初始 index 位置异常：期望 p{partition}b5，实际 p{}b{}",
+            pos.partition, pos.block
+        ));
+    }
+    tape.write_record(index_xml.as_bytes())
+        .map_err(|e| e.to_string())?;
+    tape.write_filemark().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_format_mam(
+    tape: &mut TapeSession,
+    options: &FormatOptions,
+    format_time: &str,
+) -> Result<(), String> {
+    let app_version = env!("CARGO_PKG_VERSION");
+    let written = format_time
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(12)
+        .collect::<String>();
+    let attributes = [
+        (0x0800, MamAttributeFormat::Ascii, padded_ascii("OPEN", 8)),
+        (
+            0x0801,
+            MamAttributeFormat::Ascii,
+            padded_ascii("tapecpy", 32),
+        ),
+        (
+            0x0802,
+            MamAttributeFormat::Ascii,
+            padded_ascii(app_version, 8),
+        ),
+        (
+            0x0803,
+            MamAttributeFormat::Text,
+            padded_bytes(options.volume_name.as_bytes(), 160, 0),
+        ),
+        (0x0805, MamAttributeFormat::Binary, vec![0x81]),
+        (
+            0x0806,
+            MamAttributeFormat::Ascii,
+            padded_ascii(&options.barcode, 32),
+        ),
+        (0x080b, MamAttributeFormat::Ascii, padded_ascii("2.4.0", 16)),
+        (
+            0x0804,
+            MamAttributeFormat::Ascii,
+            padded_ascii(&written, 12),
+        ),
+    ];
+    for (id, format, value) in attributes {
+        tape.write_mam_attribute(0, id, format, &value)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn padded_ascii(value: &str, len: usize) -> Vec<u8> {
+    padded_bytes(value.as_bytes(), len, b' ')
+}
+
+fn padded_bytes(value: &[u8], len: usize, fill: u8) -> Vec<u8> {
+    let mut out = vec![fill; len];
+    let n = value.len().min(len);
+    out[..n].copy_from_slice(&value[..n]);
+    out
+}
+
+fn write_initial_vci(tape: &mut TapeSession, volume_uuid: &str) -> Result<(), String> {
+    // LTFSCopyGUI WriteVCI 先用 WRITE FILEMARK count=0 flush，确保刚写完的
+    // index/filemark 已落带且 Volume Change Reference 不再变化。
+    tape.flush().map_err(|e| e.to_string())?;
+    let vcr = tape
+        .read_mam_attribute(0, 0x0009)
+        .map_err(|e| e.to_string())?;
+    let mut vcr_u64 = [0u8; 8];
+    let copy = vcr.len().min(8);
+    vcr_u64[8 - copy..].copy_from_slice(&vcr[vcr.len() - copy..]);
+    for (partition, block) in [(0u8, 5u64), (1u8, 5u64)] {
+        let mut value = vec![0u8; 70];
+        value[0] = 8;
+        value[1..9].copy_from_slice(&vcr_u64);
+        value[9..17].copy_from_slice(&1u64.to_be_bytes());
+        value[17..25].copy_from_slice(&block.to_be_bytes());
+        value[25..27].copy_from_slice(&43u16.to_be_bytes());
+        value[27..32].copy_from_slice(b"LTFS\0");
+        let uuid = volume_uuid.as_bytes();
+        value[32..32 + uuid.len().min(36)].copy_from_slice(&uuid[..uuid.len().min(36)]);
+        value[69] = 1;
+        tape.write_mam_attribute(partition, 0x080c, MamAttributeFormat::Binary, &value)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn generate_uuid_v4() -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .map_err(|e| format!("生成 volume UUID 失败: {e}"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    ))
+}
+
+/// 生成格式化时要写入两个分区的全部 LTFS metadata。
+///
+/// 位置对应标准初始布局：VOL1@0, FM@1, label@2, FM@3, FM@4,
+/// generation-1 index@5, FM@6。
+fn build_initial_format_image(
+    options: &FormatOptions,
+    volume_uuid: &str,
+    format_time: &str,
+) -> Result<InitialFormatImage, String> {
+    options.validate()?;
+    let creator = format!("tapecpy {} - Linux - format", env!("CARGO_PKG_VERSION"));
+    let ansi = AnsiLabel {
+        barcode: options.barcode.clone(),
+    }
+    .to_bytes()
+    .map_err(|e| e.to_string())?;
+    let base_label = Label {
+        version: "2.4.0".into(),
+        creator: creator.clone(),
+        format_time: format_time.into(),
+        volume_uuid: volume_uuid.into(),
+        blocksize: options.block_size,
+        compression: options.compression,
+        this_partition: 1,
+        index_partition: 0,
+        data_partition: 1,
+    };
+    let data_label_xml = base_label.to_xml();
+    let mut index_label = base_label;
+    index_label.this_partition = 0;
+    let index_label_xml = index_label.to_xml();
+
+    let times = FileTimes {
+        creation_time: Some(format_time.into()),
+        change_time: Some(format_time.into()),
+        modify_time: Some(format_time.into()),
+        access_time: Some(format_time.into()),
+        backup_time: Some(format_time.into()),
+    };
+    let data_pos = TapePos {
+        partition: 1,
+        startblock: 5,
+    };
+    let mut initial_index = Index {
+        version: "2.4.0".into(),
+        creator,
+        volume_uuid: volume_uuid.into(),
+        generation: 1,
+        update_time: format_time.into(),
+        self_location: data_pos.clone(),
+        previous_location: None,
+        allow_policy_update: false,
+        volume_lock_state: Some("unlocked".into()),
+        highest_file_uid: Some(1),
+        root: crate::ltfs::index::Directory {
+            name: options.volume_name.clone(),
+            fileuid: 1,
+            readonly: false,
+            times,
+            entries: Vec::new(),
+        },
+    };
+    let data_index_xml = initial_index.to_xml();
+    initial_index.self_location = TapePos {
+        partition: 0,
+        startblock: 5,
+    };
+    initial_index.previous_location = Some(data_pos);
+    let index_index_xml = initial_index.to_xml();
+
+    Ok(InitialFormatImage {
+        ansi,
+        data_label_xml,
+        index_label_xml,
+        data_index_xml,
+        index_index_xml,
+    })
 }
 
 /// 探测一个物理分区的 label（Milestone 2）。
@@ -251,9 +628,7 @@ pub fn read_file(
     if !volume.recognized {
         return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
     }
-    let index = volume
-        .index
-        .ok_or_else(|| "没有可用的 index".to_string())?;
+    let index = volume.index.ok_or_else(|| "没有可用的 index".to_string())?;
     let file = index
         .find_file(path)
         .ok_or_else(|| format!("文件不存在: {path}"))?;
@@ -400,15 +775,17 @@ fn plan_entry(
         .find_directory_mut(&parent_path)
         .ok_or_else(|| format!("目标父目录不存在: /{parent_path}"))?;
     if parent.entries.iter().any(|entry| entry.name() == name) {
-        return Err(format!("目标已存在: {}", normalized_target(&parent_path, &name)));
+        return Err(format!(
+            "目标已存在: {}",
+            normalized_target(&parent_path, &name)
+        ));
     }
 
     plan.highest_uid += 1;
     let uid = plan.highest_uid;
     let times = planned_times(now);
     if metadata.is_file() {
-        std::fs::File::open(source)
-            .map_err(|e| format!("打开 {} 失败: {e}", source.display()))?;
+        std::fs::File::open(source).map_err(|e| format!("打开 {} 失败: {e}", source.display()))?;
         parent.entries.push(DirectoryEntry::File(FileEntry {
             name,
             fileuid: uid,
@@ -430,13 +807,15 @@ fn plan_entry(
         return Err(format!("源路径不是普通文件或目录: {}", source.display()));
     }
 
-    parent.entries.push(DirectoryEntry::Directory(crate::ltfs::index::Directory {
-        name,
-        fileuid: uid,
-        readonly: false,
-        times,
-        entries: Vec::new(),
-    }));
+    parent
+        .entries
+        .push(DirectoryEntry::Directory(crate::ltfs::index::Directory {
+            name,
+            fileuid: uid,
+            readonly: false,
+            times,
+            entries: Vec::new(),
+        }));
     plan.directories += 1;
     let mut children = std::fs::read_dir(source)
         .map_err(|e| format!("读取目录 {} 失败: {e}", source.display()))?
@@ -513,9 +892,16 @@ fn write_with_observer(
         .label
         .clone()
         .ok_or_else(|| "缺少 LTFS label".to_string())?;
-    let mut index = volume.index.take().ok_or_else(|| "没有可用的 index".to_string())?;
+    let mut index = volume
+        .index
+        .take()
+        .ok_or_else(|| "没有可用的 index".to_string())?;
 
-    if index.volume_lock_state.as_deref().is_some_and(|state| state != "unlocked") {
+    if index
+        .volume_lock_state
+        .as_deref()
+        .is_some_and(|state| state != "unlocked")
+    {
         return Err(format!(
             "LTFS 卷当前不可写（volumelockstate={}）",
             index.volume_lock_state.as_deref().unwrap_or_default()
@@ -599,7 +985,9 @@ fn write_with_observer(
         if file_total != planned.size {
             return Err(format!(
                 "源文件大小在规划后发生变化：{}（计划 {} 字节，实际读取 {} 字节）",
-                planned.source.display(), planned.size, file_total
+                planned.source.display(),
+                planned.size,
+                file_total
             ));
         }
         let entry = index
@@ -738,10 +1126,10 @@ fn locate_checked_data_append(
                     saw_tail = true;
                     if let Ok(text) = std::str::from_utf8(&group) {
                         if let Ok(idx) = Index::parse_xml(text) {
-                            newer_generation = Some(
-                                newer_generation
-                                    .map_or(idx.generation, |current: u64| current.max(idx.generation)),
-                            );
+                            newer_generation =
+                                Some(newer_generation.map_or(idx.generation, |current: u64| {
+                                    current.max(idx.generation)
+                                }));
                         }
                     }
                 }
@@ -776,10 +1164,8 @@ fn locate_checked_data_append(
 /// 判断 SCSI 错误是否为「END OF DATA」（驱动器拒绝写入其 EOD 之后）。
 fn is_end_of_data_error(e: &device::Error) -> bool {
     match e {
-        device::Error::Scsi { sense, .. } => {
-            crate::device::scsi::parse_sense(sense)
-                .is_some_and(|s| s.key == 0x08 || (s.asc == 0x00 && s.ascq == 0x05))
-        }
+        device::Error::Scsi { sense, .. } => crate::device::scsi::parse_sense(sense)
+            .is_some_and(|s| s.key == 0x08 || (s.asc == 0x00 && s.ascq == 0x05)),
         _ => false,
     }
 }
@@ -833,12 +1219,22 @@ mod tests {
             volume_uuid: "00000000-0000-0000-0000-000000000000".into(),
             generation: 1,
             update_time: "2026-08-09T00:00:00.000000000Z".into(),
-            self_location: TapePos { partition: 0, startblock: 5 },
-            previous_location: Some(TapePos { partition: 1, startblock: 5 }),
+            self_location: TapePos {
+                partition: 0,
+                startblock: 5,
+            },
+            previous_location: Some(TapePos {
+                partition: 1,
+                startblock: 5,
+            }),
             allow_policy_update: false,
             volume_lock_state: Some("unlocked".into()),
             highest_file_uid: Some(1),
-            root: Directory { name: "test".into(), fileuid: 1, ..Default::default() },
+            root: Directory {
+                name: "test".into(),
+                fileuid: 1,
+                ..Default::default()
+            },
         }
     }
 
@@ -872,7 +1268,8 @@ mod tests {
 
     #[test]
     fn planning_rejects_existing_target_before_execution() {
-        let root = std::env::temp_dir().join(format!("tapecpy-plan-conflict-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("tapecpy-plan-conflict-{}", std::process::id()));
         let _ = std::fs::remove_file(&root);
         std::fs::write(&root, b"x").unwrap();
         let mut index = empty_index();
@@ -915,5 +1312,65 @@ mod tests {
         assert_eq!(events[2].bytes_written, 10);
         assert!(events.iter().all(|event| event.files_total == 2));
         assert!(events.iter().all(|event| event.bytes_total == 30));
+    }
+
+    #[test]
+    fn initial_format_image_is_consistent_across_partitions() {
+        let options = FormatOptions::new("E6008A", "archive & test");
+        let image = build_initial_format_image(
+            &options,
+            "11111111-2222-4333-8444-555555555555",
+            "2026-08-09T13:00:00.000000000Z",
+        )
+        .unwrap();
+
+        assert_eq!(AnsiLabel::parse(&image.ansi).unwrap().barcode, "E6008A");
+        let data_label = Label::parse_xml(&image.data_label_xml).unwrap();
+        let index_label = Label::parse_xml(&image.index_label_xml).unwrap();
+        assert_eq!(data_label.volume_uuid, index_label.volume_uuid);
+        assert_eq!(data_label.this_partition, 1);
+        assert_eq!(index_label.this_partition, 0);
+
+        let data_index = Index::parse_xml(&image.data_index_xml).unwrap();
+        let index_index = Index::parse_xml(&image.index_index_xml).unwrap();
+        assert_eq!(data_index.generation, 1);
+        assert_eq!(
+            data_index.self_location,
+            TapePos {
+                partition: 1,
+                startblock: 5
+            }
+        );
+        assert_eq!(data_index.previous_location, None);
+        assert_eq!(
+            index_index.self_location,
+            TapePos {
+                partition: 0,
+                startblock: 5
+            }
+        );
+        assert_eq!(
+            index_index.previous_location,
+            Some(TapePos {
+                partition: 1,
+                startblock: 5
+            })
+        );
+        assert_eq!(index_index.volume_name(), Some("archive & test"));
+        assert_eq!(
+            Index::parse_xml(&index_index.to_xml()).unwrap(),
+            index_index
+        );
+    }
+
+    #[test]
+    fn format_options_reject_unsafe_identifiers_before_device_access() {
+        assert!(FormatOptions::new("short", "volume").validate().is_err());
+        assert!(FormatOptions::new("E6008A", "").validate().is_err());
+        assert!(
+            FormatOptions::new("E6008A", "bad\nname")
+                .validate()
+                .is_err()
+        );
     }
 }

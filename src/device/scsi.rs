@@ -16,6 +16,7 @@ const SG_DXFER_TO_DEV: c_int = -2;
 const SG_DXFER_NONE: c_int = -1;
 const SG_INTERFACE_ID: c_int = 0x53; // 'S'
 const REWIND_OPCODE: u8 = 0x01;
+const FORMAT_MEDIUM_OPCODE: u8 = 0x04;
 const READ_OPCODE: u8 = 0x08;
 const WRITE_OPCODE: u8 = 0x0a;
 const WRITE_FILEMARK_OPCODE: u8 = 0x10;
@@ -28,6 +29,7 @@ const TEST_UNIT_READY_OPCODE: u8 = 0x00;
 const MODE_SENSE_OPCODE: u8 = 0x1a;
 const MODE_SENSE10_OPCODE: u8 = 0x5a;
 const READ_ATTRIBUTE_OPCODE: u8 = 0x8c;
+const WRITE_ATTRIBUTE_OPCODE: u8 = 0x8d;
 const READ_POSITION_OPCODE: u8 = 0x34;
 const LOCATE16_OPCODE: u8 = 0x92;
 const SPACE16_OPCODE: u8 = 0x91;
@@ -241,11 +243,7 @@ pub fn test_unit_ready(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
 }
 
 /// 发送 6 字节 MODE SENSE，读取指定 page（0 表示当前值）。
-pub fn mode_sense(
-    fd: &impl AsRawFd,
-    page_code: u8,
-    buf: &mut [u8],
-) -> io::Result<ScsiResult> {
+pub fn mode_sense(fd: &impl AsRawFd, page_code: u8, buf: &mut [u8]) -> io::Result<ScsiResult> {
     let len = buf.len().min(u16::MAX as usize);
     let mut cdb = [0u8; 6];
     cdb[0] = MODE_SENSE_OPCODE;
@@ -281,8 +279,19 @@ pub fn read_attribute(
     alloc_len: u32,
     buf: &mut [u8],
 ) -> io::Result<ScsiResult> {
+    read_attribute_partition(fd, 0, first_attr, alloc_len, buf)
+}
+
+pub fn read_attribute_partition(
+    fd: &impl AsRawFd,
+    partition: u8,
+    first_attr: u16,
+    alloc_len: u32,
+    buf: &mut [u8],
+) -> io::Result<ScsiResult> {
     let mut cdb = [0u8; 16];
     cdb[0] = READ_ATTRIBUTE_OPCODE;
+    cdb[7] = partition;
     cdb[8] = (first_attr >> 8) as u8;
     cdb[9] = (first_attr & 0xff) as u8;
     cdb[10] = (alloc_len >> 24) as u8;
@@ -292,9 +301,39 @@ pub fn read_attribute(
     sg_io_from_device(fd, &cdb, buf)
 }
 
+/// 发送 WRITE ATTRIBUTE，把一个或多个 MAM attribute descriptor 写入分区。
+pub fn write_attribute(
+    fd: &impl AsRawFd,
+    partition: u8,
+    descriptors: &[u8],
+) -> io::Result<ScsiResult> {
+    let total_len = descriptors.len().saturating_add(4);
+    if total_len > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MAM attribute 过长",
+        ));
+    }
+    let mut parameter = Vec::with_capacity(total_len);
+    parameter.extend_from_slice(&(total_len as u32).to_be_bytes());
+    parameter.extend_from_slice(descriptors);
+    let mut cdb = [0u8; 16];
+    cdb[0] = WRITE_ATTRIBUTE_OPCODE;
+    cdb[1] = 0x01; // write through
+    cdb[7] = partition;
+    cdb[10..14].copy_from_slice(&(total_len as u32).to_be_bytes());
+    sg_io_to_device_timeout(fd, &cdb, &parameter, TAPE_TIMEOUT_MS)
+}
+
 /// 发送 SCSI REWIND。
 pub fn rewind(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
     let cdb = [REWIND_OPCODE, 0, 0, 0, 0, 0];
+    sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
+}
+
+/// 发送 SSC FORMAT MEDIUM；format=1 创建分区介质。
+pub fn format_medium(fd: &impl AsRawFd, format: u8) -> io::Result<ScsiResult> {
+    let cdb = [FORMAT_MEDIUM_OPCODE, 0, format, 0, 0, 0];
     sg_io_impl(fd, &cdb, SG_DXFER_NONE, &mut [], TAPE_TIMEOUT_MS)
 }
 
@@ -324,10 +363,7 @@ pub fn start_stop_unit(
 /// 发送 SCSI PREVENT ALLOW MEDIUM REMOVAL。
 ///
 /// `prevent=true` 锁定介质（防止移除），`false` 解锁。
-pub fn prevent_allow_medium_removal(
-    fd: &impl AsRawFd,
-    prevent: bool,
-) -> io::Result<ScsiResult> {
+pub fn prevent_allow_medium_removal(fd: &impl AsRawFd, prevent: bool) -> io::Result<ScsiResult> {
     let mut cdb = [0u8; 6];
     cdb[0] = PREVENT_ALLOW_MEDIUM_REMOVAL_OPCODE;
     if prevent {

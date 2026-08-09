@@ -75,7 +75,10 @@ fn scsi_device_dir_from_path(path: &Path) -> Option<PathBuf> {
 
 fn is_scsi_device_id(s: &str) -> bool {
     let parts: Vec<&str> = s.split(':').collect();
-    parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -115,7 +118,10 @@ mod tests {
             scsi_device_dir_from_path(p).unwrap(),
             PathBuf::from("/sys/devices/pci0000:00/0000:00:01.0/host6/target6:0:0/6:0:0:0")
         );
-        assert_eq!(scsi_device_dir_from_path(Path::new("/sys/class/scsi_tape/nst0")), None);
+        assert_eq!(
+            scsi_device_dir_from_path(Path::new("/sys/class/scsi_tape/nst0")),
+            None
+        );
     }
 
     #[test]
@@ -151,7 +157,10 @@ mod tests {
         make_class_entry(&root, "scsi_tape", "nst0", &dev.join("scsi_tape/nst0"));
         make_class_entry(&root, "scsi_generic", "sg0", &disk.join("scsi_generic/sg0"));
 
-        assert_eq!(enumerate_tape_bases(&root).unwrap(), vec!["nst0".to_string()]);
+        assert_eq!(
+            enumerate_tape_bases(&root).unwrap(),
+            vec!["nst0".to_string()]
+        );
         assert_eq!(find_sg_for_tape(&root, "nst0"), None);
 
         fs::remove_dir_all(&root).ok();

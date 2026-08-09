@@ -218,7 +218,9 @@ impl Index {
     /// 解析 LTFS index XML 文本。
     pub fn parse_xml(xml: &str) -> Result<Index, IndexError> {
         let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // 保留 XML entity 两侧属于文件名/卷名的空格；嵌套字段解析器会按
+        // 元素边界累计 Text/GeneralRef，元素间缩进不会写入字段。
+        reader.config_mut().trim_text(false);
 
         let mut root_seen = false;
         let mut version = None;
@@ -330,12 +332,14 @@ impl Index {
             generation: generation.ok_or(IndexError::MissingField("generationnumber"))?,
             update_time: update_time.ok_or(IndexError::MissingField("updatetime"))?,
             self_location: TapePos {
-                partition: self_partition
-                    .ok_or(IndexError::MissingField("location/partition"))?,
+                partition: self_partition.ok_or(IndexError::MissingField("location/partition"))?,
                 startblock: self_block.ok_or(IndexError::MissingField("location/startblock"))?,
             },
             previous_location: match (prev_partition, prev_block) {
-                (Some(partition), Some(startblock)) => Some(TapePos { partition, startblock }),
+                (Some(partition), Some(startblock)) => Some(TapePos {
+                    partition,
+                    startblock,
+                }),
                 _ => None,
             },
             allow_policy_update: allow_policy_update
@@ -354,13 +358,22 @@ impl Index {
             "<ltfsindex version=\"{}\">\n",
             escape_text(&self.version)
         ));
-        s.push_str(&format!("<creator>{}</creator>\n", escape_text(&self.creator)));
+        s.push_str(&format!(
+            "<creator>{}</creator>\n",
+            escape_text(&self.creator)
+        ));
         s.push_str(&format!(
             "<volumeuuid>{}</volumeuuid>\n",
             escape_text(&self.volume_uuid)
         ));
-        s.push_str(&format!("<generationnumber>{}</generationnumber>\n", self.generation));
-        s.push_str(&format!("<updatetime>{}</updatetime>\n", escape_text(&self.update_time)));
+        s.push_str(&format!(
+            "<generationnumber>{}</generationnumber>\n",
+            self.generation
+        ));
+        s.push_str(&format!(
+            "<updatetime>{}</updatetime>\n",
+            escape_text(&self.update_time)
+        ));
         write_tape_pos(&mut s, "location", &self.self_location);
         if let Some(prev) = &self.previous_location {
             write_tape_pos(&mut s, "previousgenerationlocation", prev);
@@ -386,7 +399,10 @@ impl Index {
 
 fn write_tape_pos(s: &mut String, tag: &str, pos: &TapePos) {
     s.push_str(&format!("<{tag}>\n"));
-    s.push_str(&format!("<partition>{}</partition>\n", partition_name(pos.partition)));
+    s.push_str(&format!(
+        "<partition>{}</partition>\n",
+        partition_name(pos.partition)
+    ));
     s.push_str(&format!("<startblock>{}</startblock>\n", pos.startblock));
     s.push_str(&format!("</{tag}>\n"));
 }
@@ -421,12 +437,18 @@ fn write_file(s: &mut String, file: &FileEntry) {
         s.push_str("<extentinfo>\n");
         for extent in &file.extents {
             s.push_str("<extent>\n");
-            s.push_str(&format!("<fileoffset>{}</fileoffset>\n", extent.file_offset));
+            s.push_str(&format!(
+                "<fileoffset>{}</fileoffset>\n",
+                extent.file_offset
+            ));
             s.push_str(&format!(
                 "<partition>{}</partition>\n",
                 partition_name(extent.partition)
             ));
-            s.push_str(&format!("<startblock>{}</startblock>\n", extent.start_block));
+            s.push_str(&format!(
+                "<startblock>{}</startblock>\n",
+                extent.start_block
+            ));
             // OpenLTFS 解析时 byteoffset 是必需字段；LTFSCopyGUI 写入恒 0。
             s.push_str("<byteoffset>0</byteoffset>\n");
             s.push_str(&format!("<bytecount>{}</bytecount>\n", extent.byte_count));
@@ -482,10 +504,7 @@ enum Section {
 
 /// 解析一个 `<directory>` 元素（reader 位于其 Start 事件之后），
 /// 返回后 reader 已越过对应的 End 事件。
-fn parse_directory(
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-) -> Result<Directory, IndexError> {
+fn parse_directory(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Directory, IndexError> {
     let mut dir = Directory::default();
     let mut pending = Pending::None;
     let mut field_text = String::new();
@@ -496,7 +515,8 @@ fn parse_directory(
                 match name.as_str() {
                     "contents" => {}
                     "file" => {
-                        dir.entries.push(DirectoryEntry::File(parse_file(reader, buf)?));
+                        dir.entries
+                            .push(DirectoryEntry::File(parse_file(reader, buf)?));
                         pending = Pending::None;
                     }
                     "directory" => {
@@ -614,9 +634,7 @@ fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry
                         &mut field_text,
                         Pending::Time(TimeField::Backup),
                     ),
-                    "symlink" => {
-                        begin_field(&mut pending, &mut field_text, Pending::SymlinkTarget)
-                    }
+                    "symlink" => begin_field(&mut pending, &mut field_text, Pending::SymlinkTarget),
                     _ => {}
                 }
             }
@@ -677,7 +695,9 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
                         Pending::FileOffset => extent.file_offset = parse_u64(&text, "fileoffset")?,
                         Pending::StartBlock => extent.start_block = parse_u64(&text, "startblock")?,
                         Pending::ByteCount => extent.byte_count = parse_u64(&text, "bytecount")?,
-                        Pending::Partition => extent.partition = parse_partition(&text, "partition")?,
+                        Pending::Partition => {
+                            extent.partition = parse_partition(&text, "partition")?
+                        }
                         _ => {}
                     }
                 }
@@ -790,7 +810,6 @@ fn unescape_text(t: &quick_xml::events::BytesText<'_>) -> Result<String, IndexEr
     let raw = t.decode().map_err(|e| IndexError::Xml(e.to_string()))?;
     Ok(quick_xml::escape::unescape(&raw)
         .map_err(|e| IndexError::Xml(e.to_string()))?
-        .trim()
         .to_string())
 }
 
@@ -916,10 +935,19 @@ mod tests {
         assert_eq!(idx.version, "2.4.0");
         assert_eq!(idx.volume_name(), Some("/"));
         assert_eq!(idx.generation, 2);
-        assert_eq!(idx.self_location, TapePos { partition: 0, startblock: 5 });
+        assert_eq!(
+            idx.self_location,
+            TapePos {
+                partition: 0,
+                startblock: 5
+            }
+        );
         assert_eq!(
             idx.previous_location,
-            Some(TapePos { partition: 0, startblock: 4 })
+            Some(TapePos {
+                partition: 0,
+                startblock: 4
+            })
         );
         assert!(!idx.allow_policy_update);
         assert_eq!(idx.volume_lock_state.as_deref(), Some("unlocked"));
@@ -936,7 +964,12 @@ mod tests {
         assert_eq!(notes.extents.len(), 1);
         assert_eq!(
             notes.extents[0],
-            Extent { file_offset: 0, partition: 1, start_block: 7, byte_count: 1024 }
+            Extent {
+                file_offset: 0,
+                partition: 1,
+                start_block: 7,
+                byte_count: 1024
+            }
         );
 
         let DirectoryEntry::Directory(sub) = &idx.root.entries[1] else {
@@ -1003,13 +1036,25 @@ mod tests {
     fn parse_real_mkltfs_index() {
         let idx = Index::parse_xml(REAL_INDEX_XML).unwrap();
         assert_eq!(idx.volume_name(), Some("tapecpy M2 test"));
-        assert_eq!(idx.creator, "IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs - Format");
+        assert_eq!(
+            idx.creator,
+            "IBM LTFS 2.4.8.4 (Prelim) - Linux - mkltfs - Format"
+        );
         assert_eq!(idx.volume_uuid, "0cc710d4-bc2f-4c54-823e-a44413987f5d");
         assert_eq!(idx.generation, 1);
-        assert_eq!(idx.self_location, TapePos { partition: 0, startblock: 5 });
+        assert_eq!(
+            idx.self_location,
+            TapePos {
+                partition: 0,
+                startblock: 5
+            }
+        );
         assert_eq!(
             idx.previous_location,
-            Some(TapePos { partition: 1, startblock: 5 })
+            Some(TapePos {
+                partition: 1,
+                startblock: 5
+            })
         );
         assert!(idx.allow_policy_update);
         assert_eq!(idx.highest_file_uid, Some(1));

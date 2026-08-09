@@ -23,6 +23,13 @@ pub enum ReadRecord {
     Eod,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MamAttributeFormat {
+    Binary = 0,
+    Ascii = 1,
+    Text = 2,
+}
+
 /// 一次面向单台磁带机的只读会话。
 pub struct TapeSession {
     fd: File,
@@ -35,7 +42,10 @@ impl TapeSession {
     /// 打开 /dev/sgX（O_RDWR | O_NONBLOCK）。
     pub fn open(path: &Path) -> Result<TapeSession, Error> {
         let mut options = File::options();
-        options.read(true).write(true).custom_flags(libc::O_NONBLOCK);
+        options
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK);
         let fd = options.open(path).map_err(|e| Error::Io {
             context: format!("打开 {} 失败", path.display()),
             source: e,
@@ -88,12 +98,11 @@ impl TapeSession {
     pub fn ensure_write_anywhere(&mut self) -> Result<(), Error> {
         const PAGE_LEN: usize = 48;
         let mut page = [0u8; PAGE_LEN];
-        let result = scsi::mode_sense10(&self.fd, 0x10, 0x01, &mut page).map_err(|e| {
-            Error::Io {
+        let result =
+            scsi::mode_sense10(&self.fd, 0x10, 0x01, &mut page).map_err(|e| Error::Io {
                 context: format!("向 {} 发送 MODE SENSE 0x10/0x01 失败", self.path.display()),
                 source: e,
-            }
-        })?;
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "MODE SENSE 0x10/0x01"));
         }
@@ -101,12 +110,11 @@ impl TapeSession {
             return Ok(());
         }
 
-        let result = scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| {
-            Error::Io {
+        let result =
+            scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| Error::Io {
                 context: format!("为切换 write-anywhere 卸载 {} 失败", self.path.display()),
                 source: e,
-            }
-        })?;
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "UNLOAD for write-anywhere"));
         }
@@ -120,31 +128,120 @@ impl TapeSession {
         page[16] &= 0x7f;
         page[21] &= 0x0f;
         let result = scsi::mode_select10(&self.fd, &page).map_err(|e| Error::Io {
-            context: format!("向 {} 发送 write-anywhere MODE SELECT 失败", self.path.display()),
+            context: format!(
+                "向 {} 发送 write-anywhere MODE SELECT 失败",
+                self.path.display()
+            ),
             source: e,
         })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "MODE SELECT write-anywhere"));
         }
 
-        let result = scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| {
-            Error::Io {
-                context: format!("切换 write-anywhere 后重新装载 {} 失败", self.path.display()),
+        let result =
+            scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| Error::Io {
+                context: format!(
+                    "切换 write-anywhere 后重新装载 {} 失败",
+                    self.path.display()
+                ),
                 source: e,
-            }
-        })?;
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "LOAD after write-anywhere"));
         }
         self.set_variable_block()
     }
 
-    /// SCSI LOAD：装载/穿带当前介质（对已装载磁带是无害的幂等操作）。
-    pub fn load(&mut self) -> Result<(), Error> {
-        let result = scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| Error::Io {
-            context: format!("向 {} 发送 LOAD 失败", self.path.display()),
+    /// 按 LTFS 标准布局把介质初始化为两个分区：P0 为最小 index 分区，
+    /// P1 使用其余容量作为 data 分区。
+    pub fn format_ltfs_partitions(&mut self) -> Result<(), Error> {
+        self.load()?;
+        let mut page = [0u8; 28];
+        let result = scsi::mode_sense10(&self.fd, 0x11, 0, &mut page).map_err(|e| Error::Io {
+            context: format!("向 {} 读取 medium partition page 失败", self.path.display()),
             source: e,
         })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SENSE medium partition"));
+        }
+        configure_ltfs_partition_page(&mut page)?;
+        let page_len = (18usize + page[17] as usize).max(28).min(page.len());
+        let result = scsi::mode_select10(&self.fd, &page[..page_len]).map_err(|e| Error::Io {
+            context: format!("向 {} 设置 LTFS 分区参数失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SELECT medium partition"));
+        }
+        let result = scsi::format_medium(&self.fd, 0x01).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 FORMAT MEDIUM 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "FORMAT MEDIUM partition"));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
+    pub fn write_mam_attribute(
+        &mut self,
+        partition: u8,
+        id: u16,
+        format: MamAttributeFormat,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        if value.len() > u16::MAX as usize {
+            return Err(Error::Protocol("MAM attribute value 过长".into()));
+        }
+        let mut descriptor = Vec::with_capacity(value.len() + 5);
+        descriptor.extend_from_slice(&id.to_be_bytes());
+        descriptor.push(format as u8);
+        descriptor.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        descriptor.extend_from_slice(value);
+        let result =
+            scsi::write_attribute(&self.fd, partition, &descriptor).map_err(|e| Error::Io {
+                context: format!(
+                    "向 {} 写 MAM attribute 0x{id:04x} 失败",
+                    self.path.display()
+                ),
+                source: e,
+            })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("WRITE ATTRIBUTE 0x{id:04x}")));
+        }
+        Ok(())
+    }
+
+    pub fn read_mam_attribute(&mut self, partition: u8, id: u16) -> Result<Vec<u8>, Error> {
+        let mut buf = vec![0u8; 512];
+        let result =
+            scsi::read_attribute_partition(&self.fd, partition, id, buf.len() as u32, &mut buf)
+                .map_err(|e| Error::Io {
+                    context: format!(
+                        "从 {} 读取 MAM attribute 0x{id:04x} 失败",
+                        self.path.display()
+                    ),
+                    source: e,
+                })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("READ ATTRIBUTE 0x{id:04x}")));
+        }
+        let len = buf.len().saturating_sub(result.resid.max(0) as usize);
+        let attribute = scsi::parse_mam_attributes(&buf[..len])
+            .into_iter()
+            .find(|attribute| attribute.id == id)
+            .ok_or_else(|| Error::Protocol(format!("MAM attribute 0x{id:04x} 不存在")))?;
+        Ok(attribute.value.to_vec())
+    }
+
+    /// SCSI LOAD：装载/穿带当前介质（对已装载磁带是无害的幂等操作）。
+    pub fn load(&mut self) -> Result<(), Error> {
+        let result =
+            scsi::start_stop_unit(&self.fd, true, false, false).map_err(|e| Error::Io {
+                context: format!("向 {} 发送 LOAD 失败", self.path.display()),
+                source: e,
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "LOAD"));
         }
@@ -156,21 +253,21 @@ impl TapeSession {
     /// 与 st 驱动 MTOFFL 语义一致：先解除介质移除保护（门锁），
     /// 再发送 START STOP（全 0，驱动器据此执行卸载/弹出）。
     pub fn unload(&mut self) -> Result<(), Error> {
-        let result = scsi::prevent_allow_medium_removal(&self.fd, false).map_err(|e| Error::Io {
-            context: format!("向 {} 发送 PREVENT ALLOW 失败", self.path.display()),
-            source: e,
-        })?;
+        let result =
+            scsi::prevent_allow_medium_removal(&self.fd, false).map_err(|e| Error::Io {
+                context: format!("向 {} 发送 PREVENT ALLOW 失败", self.path.display()),
+                source: e,
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "PREVENT ALLOW MEDIUM REMOVAL"));
         }
         // st 驱动 MTOFFL 先回绕；START STOP 全 0 触发驱动器卸载/弹出。
         self.rewind()?;
-        let result = scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| {
-            Error::Io {
+        let result =
+            scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| Error::Io {
                 context: format!("向 {} 发送 UNLOAD 失败", self.path.display()),
                 source: e,
-            }
-        })?;
+            })?;
         if !result.is_good() {
             return Err(self.scsi_error(&result, "UNLOAD"));
         }
@@ -300,6 +397,18 @@ impl TapeSession {
         Ok(())
     }
 
+    /// 用 WRITE FILEMARK count=0 强制驱动器把缓存落带。
+    pub fn flush(&mut self) -> Result<(), Error> {
+        let result = scsi::write_filemark(&self.fd, 0).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 FLUSH 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "WRITE FILEMARK(0) / FLUSH"));
+        }
+        Ok(())
+    }
+
     fn scsi_error(&self, result: &scsi::ScsiResult, op: &str) -> Error {
         Error::Scsi {
             device: format!("{} ({op})", self.path.display()),
@@ -308,5 +417,49 @@ impl TapeSession {
             driver_status: result.driver_status,
             sense: result.sense.clone(),
         }
+    }
+}
+
+fn configure_ltfs_partition_page(page: &mut [u8]) -> Result<(), Error> {
+    if page.len() < 28 || page[16] & 0x3f != 0x11 || page[18] == 0 {
+        return Err(Error::Protocol(
+            "驱动器不支持创建 LTFS 所需的额外分区".into(),
+        ));
+    }
+    page[0] = 0;
+    page[1] = 0;
+    page[16] &= 0x7f; // 清除 PS
+    page[19] = 1; // one additional partition
+    page[20] = 0x20 | (page[20] & 0x1f); // IDP=1, FDP=SDP=0
+    page[22] = 0x09; // partition size unit: GB / minimum-unit compatible
+    page[24] = 0x00;
+    page[25] = 0x01; // P0: minimum partition
+    page[26] = 0xff;
+    page[27] = 0xff; // P1: remaining capacity
+    Ok(())
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn configures_openltfs_compatible_partition_page() {
+        let mut page = [0u8; 28];
+        page[16] = 0x91;
+        page[17] = 0x0a;
+        page[18] = 1;
+        configure_ltfs_partition_page(&mut page).unwrap();
+        assert_eq!(page[16], 0x11);
+        assert_eq!(page[19], 1);
+        assert_eq!(page[20] & 0xe0, 0x20);
+        assert_eq!(&page[24..28], &[0, 1, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn rejects_drive_without_extra_partition_support() {
+        let mut page = [0u8; 28];
+        page[16] = 0x11;
+        assert!(configure_ltfs_partition_page(&mut page).is_err());
     }
 }

@@ -38,6 +38,7 @@ pub struct TapeDrive {
 /// 以便上层构造透明诊断信息。
 #[derive(Debug)]
 pub enum Error {
+    Protocol(String),
     Io {
         context: String,
         source: std::io::Error,
@@ -54,6 +55,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Protocol(message) => f.write_str(message),
             Error::Io { context, source } => write!(f, "{context}: {source}"),
             Error::Scsi {
                 device,
@@ -79,6 +81,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Error::Protocol(_) => None,
             Error::Io { source, .. } => Some(source),
             Error::Scsi { .. } => None,
         }
@@ -178,7 +181,7 @@ pub fn inspect_media(drive: &TapeDrive) -> Result<MediaInfo, Error> {
             return Err(Error::Io {
                 context: format!("读取 {} 状态失败", drive.nst_path.display()),
                 source: e,
-            })
+            });
         }
     }
 
@@ -204,7 +207,10 @@ pub fn inspect_media(drive: &TapeDrive) -> Result<MediaInfo, Error> {
 /// 需要 sg 设备以读写方式打开。
 fn open_tape_node(path: &std::path::Path, writable: bool) -> Result<std::fs::File, Error> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(writable).custom_flags(libc::O_NONBLOCK);
+    options
+        .read(true)
+        .write(writable)
+        .custom_flags(libc::O_NONBLOCK);
     options.open(path).map_err(|e| Error::Io {
         context: format!("打开 {} 失败", path.display()),
         source: e,
@@ -275,12 +281,11 @@ fn mode_sense_density(sg: &std::fs::File, path: &std::path::Path) -> Result<Opti
 fn read_mam(sg: &std::fs::File, path: &std::path::Path) -> Result<MamInfo, Error> {
     const MAM_ALLOC_LEN: usize = 8192;
     let mut buf = vec![0u8; MAM_ALLOC_LEN];
-    let result = scsi::read_attribute(sg, 0, MAM_ALLOC_LEN as u32, &mut buf).map_err(|e| {
-        Error::Io {
+    let result =
+        scsi::read_attribute(sg, 0, MAM_ALLOC_LEN as u32, &mut buf).map_err(|e| Error::Io {
             context: format!("向 {} 发送 READ ATTRIBUTE 失败", path.display()),
             source: e,
-        }
-    })?;
+        })?;
     if !result.is_good() {
         return Err(Error::Scsi {
             device: path.display().to_string(),
@@ -333,10 +338,16 @@ mod tests {
     #[test]
     fn tur_medium_not_present_means_not_loaded() {
         let sense = fixed_sense(0x02, 0x3a, 0x00);
-        assert_eq!(classify_tur_presence(0x02, &sense), MediaPresence::NotLoaded);
+        assert_eq!(
+            classify_tur_presence(0x02, &sense),
+            MediaPresence::NotLoaded
+        );
         // 3A/02：介质不在位，但 MAM 可访问
         let sense = fixed_sense(0x02, 0x3a, 0x02);
-        assert_eq!(classify_tur_presence(0x02, &sense), MediaPresence::NotLoaded);
+        assert_eq!(
+            classify_tur_presence(0x02, &sense),
+            MediaPresence::NotLoaded
+        );
     }
 
     #[test]
@@ -377,13 +388,12 @@ pub fn discover_in(sysfs_root: &Path) -> Result<Vec<TapeDrive>, Error> {
 }
 
 /// 打开 /dev/sgX 并读取 INQUIRY 身份信息。
-fn read_drive_identity(
-    nst_name: &str,
-    st_name: &str,
-    sg_path: &Path,
-) -> Result<TapeDrive, Error> {
+fn read_drive_identity(nst_name: &str, st_name: &str, sg_path: &Path) -> Result<TapeDrive, Error> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(false).custom_flags(libc::O_NONBLOCK);
+    options
+        .read(true)
+        .write(false)
+        .custom_flags(libc::O_NONBLOCK);
     let file = options.open(sg_path).map_err(|e| Error::Io {
         context: format!("打开 {} 失败", sg_path.display()),
         source: e,
