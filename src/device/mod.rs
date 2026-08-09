@@ -140,6 +140,19 @@ impl MediaInfo {
     pub fn density_name(&self) -> Option<&'static str> {
         self.density_code.and_then(density::density_name)
     }
+
+    /// 当 MAM barcode 只有 6 位卷序列而介质是 LTO 时，
+    /// 推导标准 8 位物理标签（6 位卷序列 + 介质代际码，如 E6008A + L5）。
+    ///
+    /// 仅供显示核对物理标签，不修改 MAM 内容，也不视为权威数据。
+    pub fn full_label_hint(&self) -> Option<String> {
+        let barcode = self.mam.as_ref()?.barcode.as_deref()?;
+        if barcode.len() != 6 {
+            return None;
+        }
+        let suffix = density::lto_generation_suffix(self.density_code?)?;
+        Some(format!("{barcode}{suffix}"))
+    }
 }
 
 /// 检查一台磁带机的介质状态与基本信息（Milestone 1）。

@@ -14,6 +14,27 @@ pub fn density_name(code: u8) -> Option<&'static str> {
         .map(|i| DENSITY_TABLE[i].1)
 }
 
+/// LTO 密度代码对应的标准 8 位条码介质代际码（Lx / M8）。
+///
+/// LTO 物理标签规范：8 位大写字母数字 = 6 位卷序列 + 2 位介质代际码。
+/// 常规数据磁带为 L1-L9；LTO-7 M8 磁带为 M8；WORM 磁带使用
+/// LT/LU/LV 等变体（不在此枚举，需要时由用户输入）。
+pub fn lto_generation_suffix(code: u8) -> Option<&'static str> {
+    match code {
+        0x40 => Some("L1"),
+        0x42 => Some("L2"),
+        0x44 => Some("L3"),
+        0x46 => Some("L4"),
+        0x58 => Some("L5"),
+        0x5a => Some("L6"),
+        0x5c => Some("L7"),
+        0x5d => Some("M8"),
+        0x5e => Some("L8"),
+        0x60 => Some("L9"),
+        _ => None,
+    }
+}
+
 /// (密度代码, 格式名称)。按代码升序排列，便于二分查找。
 const DENSITY_TABLE: &[(u8, &str)] = &[
     (0x00, "default"),
@@ -132,6 +153,16 @@ mod tests {
     fn unknown_code_returns_none() {
         assert_eq!(density_name(0xfe), None);
         assert_eq!(density_name(0x00), Some("default"));
+    }
+
+    #[test]
+    fn lto_generation_suffix_mapping() {
+        assert_eq!(lto_generation_suffix(0x58), Some("L5"));
+        assert_eq!(lto_generation_suffix(0x5a), Some("L6"));
+        assert_eq!(lto_generation_suffix(0x5c), Some("L7"));
+        assert_eq!(lto_generation_suffix(0x5d), Some("M8"));
+        assert_eq!(lto_generation_suffix(0x60), Some("L9"));
+        assert_eq!(lto_generation_suffix(0x19), None);
     }
 
     #[test]

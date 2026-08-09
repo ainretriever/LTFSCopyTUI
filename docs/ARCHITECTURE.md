@@ -830,6 +830,34 @@ Barcode 和 LTFS Volume Name 是 LTFS workflow 中的重要介质身份信息。
 
 物理磁带与逻辑 volume identity 不一致属于需要尽量避免的人为错误。
 
+### Barcode 的两种表示
+
+MAM attribute 0x0806（barcode）只保存写入它的软件所给的原值。
+tapecpy 读取时原样展示，不做拼接或猜测，也不把推导结果写回 MAM。
+
+LTO 物理标签的标准格式是 8 位大写字母数字：
+
+```text
+前 6 位 = 卷序列（volume serial）
+后 2 位 = 介质代际码（LTO 数据磁带为 L1-L9；LTO-7 M8 为 M8；
+          WORM 磁带另有 LT/LU/LV 等变体）
+```
+
+因此同一盘磁带可能同时表现为两种形式：
+
+* MAM barcode = 6 位卷序列，例如 `E6008A`；
+* 物理标签 = 8 位完整条码，例如 `E6008AL5`。
+
+tapecpy 的处理规则：
+
+1. 读取：原样显示 MAM barcode；当 barcode 为 6 位且密度表明是 LTO 时，
+   显示推导出的 8 位标准标签（如 `E6008AL5`）作为核对物理标签的提示，
+   并明确标注这是推导结果而非设备数据。
+2. 写入（LTFS 格式化时）：接受用户输入的 barcode 原样写入 MAM，不自动补
+   代际码；若输入为 8 位，校验后两位是否为合法的介质代际码。
+3. 身份比较：MAM 6 位 barcode 与物理 8 位标签视为同一盘磁带
+   （6 位卷序列前缀匹配）；代际码与介质代际不一致时给出警告。
+
 ---
 
 # 26. Verify

@@ -116,6 +116,11 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
     if let Some(mam) = &media.mam {
         if mam.barcode.as_deref().is_some_and(|s| !s.is_empty()) {
             println!("  Barcode:     {}", mam.barcode.as_deref().unwrap());
+            if let Some(label) = media.full_label_hint() {
+                println!(
+                    "  标准8位标签: {label}（6 位卷序列 + 介质代际码，供核对物理标签）"
+                );
+            }
         }
         if let Some(v) = &mam.volume_identifier {
             if !v.is_empty() {
