@@ -8,7 +8,7 @@
 //! - `tapecpy ls [选择器] [路径]`：浏览 LTFS 卷目录树；
 //! - `tapecpy load [选择器]` / `tapecpy unload [选择器]`：装载/弹出磁带。
 //! - `tapecpy read [选择器] <路径> [-o 输出]`：读取 LTFS 卷中的文件。
-//! - `tapecpy write <本地路径> <磁带路径> [选择器]`：写入文件或目录树并更新 index。
+//! - `tapecpy write <本地路径> <磁带路径> [选择器] [--read-back-verify]`：写入并可选回读校验。
 //! - `tapecpy format <Barcode> <Volume Name> [选择器] --force`：创建新 LTFS 卷。
 //! - `tapecpy erase <short|long|minimum> [选择器] --force`：擦除/准备介质。
 //! - `tapecpy mam [选择器]`：显示 LTFS MAM/VCI 诊断信息。
@@ -31,7 +31,8 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
   tapecpy read [选择器] <路径> 读取 LTFS 文件内容到 stdout；-o 指定输出文件
-  tapecpy write <本地> <磁带路径>  写入本地文件或目录树（单次更新 index）
+  tapecpy write <本地> <磁带路径> [选择器] [--read-back-verify]
+                              写入；该选项在提交后从磁带回读并校验 SHA-256
   tapecpy format <Barcode> <Volume Name> [选择器] --force
                               破坏性地重新格式化为 LTFS（必须显式指定 --force）
   tapecpy erase <short|long|minimum> [选择器] --force
@@ -88,8 +89,8 @@ fn cmd_list() -> Result<(), String> {
         return Ok(());
     }
     println!(
-        "{:<6}{:<10}{:<20}{:<16}{:<12}{}",
-        "序号", "厂商", "型号", "序列号", "磁带设备", "SCSI 设备"
+        "{:<6}{:<10}{:<20}{:<16}{:<12}SCSI 设备",
+        "序号", "厂商", "型号", "序列号", "磁带设备"
     );
     for (i, d) in drives.iter().enumerate() {
         println!(
@@ -156,20 +157,20 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
                 println!("  标准8位标签: {label}（6 位卷序列 + 介质代际码，供核对物理标签）");
             }
         }
-        if let Some(v) = &mam.volume_identifier {
-            if !v.is_empty() {
-                println!("  MAM 卷标识:  {v}");
-            }
+        if let Some(v) = &mam.volume_identifier
+            && !v.is_empty()
+        {
+            println!("  MAM 卷标识:  {v}");
         }
-        if let Some(v) = &mam.medium_manufacturer {
-            if !v.is_empty() {
-                println!("  介质厂商:    {v}");
-            }
+        if let Some(v) = &mam.medium_manufacturer
+            && !v.is_empty()
+        {
+            println!("  介质厂商:    {v}");
         }
-        if let Some(v) = &mam.medium_serial {
-            if !v.is_empty() {
-                println!("  介质序列号:  {v}");
-            }
+        if let Some(v) = &mam.medium_serial
+            && !v.is_empty()
+        {
+            println!("  介质序列号:  {v}");
         }
         if let Some(t) = mam.medium_type {
             println!("  介质类型:    0x{t:02x}");
@@ -183,10 +184,10 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
         if let Some(n) = mam.load_count {
             println!("  装载次数:    {n}");
         }
-        if let Some(flags) = mam.tape_alert_flags {
-            if flags != 0 {
-                println!("  TapeAlert:   0x{flags:016x}");
-            }
+        if let Some(flags) = mam.tape_alert_flags
+            && flags != 0
+        {
+            println!("  TapeAlert:   0x{flags:016x}");
         }
         if let Some(mib) = mam.total_written_mib {
             println!("  累计写入:    {}", format_capacity(mib));
@@ -409,12 +410,20 @@ fn cmd_read(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_write(args: &[String]) -> Result<(), String> {
-    if args.len() < 2 {
-        return Err("用法: tapecpy write <本地路径> <磁带路径> [选择器]".into());
+    let verify = args.iter().any(|arg| arg == "--read-back-verify");
+    let positional: Vec<&str> = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--read-back-verify")
+        .map(String::as_str)
+        .collect();
+    if positional.len() < 2 || positional.len() > 3 {
+        return Err(
+            "用法: tapecpy write <本地路径> <磁带路径> [选择器] [--read-back-verify]".into(),
+        );
     }
-    let local = &args[0];
-    let tape_path = &args[1];
-    let selector = args.get(2).map(String::as_str);
+    let local = positional[0];
+    let tape_path = positional[1];
+    let selector = positional.get(2).copied();
 
     let drives = app::discover_drives().map_err(|e| e.to_string())?;
     let drive = app::select_drive(&drives, selector)?;
@@ -452,10 +461,25 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
         app::WritePhase::UpdatingCoherency => {
             eprintln!("正在更新 MAM Volume Coherency Information……")
         }
+        app::WritePhase::Verifying => {
+            if let Some(path) = &event.current_file {
+                eprintln!("正在从磁带回读校验: {path}");
+            }
+        }
         app::WritePhase::Completed => eprintln!("写入会话已安全完成。"),
     };
-    let result =
-        app::WriteSession::new(drive).run(std::path::Path::new(local), tape_path, &mut observer)?;
+    let result = app::WriteSession::new(drive).run_with_options(
+        std::path::Path::new(local),
+        tape_path,
+        app::WriteOptions {
+            verification: if verify {
+                app::WriteVerification::ReadBackSha256
+            } else {
+                app::WriteVerification::None
+            },
+        },
+        &mut observer,
+    )?;
     println!(
         "已写入 {} 个文件 / {} 个目录 / {} 字节 -> {} (highest uid {}, index gen {})",
         result.files,
@@ -465,6 +489,12 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
         result.file_uid,
         result.generation
     );
+    for hash in &result.hashes {
+        println!("SHA-256 {}  {}", hash.sha256, hash.path);
+    }
+    if result.verification == app::WriteVerification::ReadBackSha256 {
+        println!("写后回读校验通过。")
+    }
     Ok(())
 }
 

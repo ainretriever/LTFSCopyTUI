@@ -37,6 +37,14 @@ pub struct Extent {
     pub byte_count: u64,
 }
 
+/// LTFS extended attribute。`value_type` 缺省时按规范视为 `text`。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtendedAttribute {
+    pub key: String,
+    pub value: String,
+    pub value_type: Option<String>,
+}
+
 /// LTFS 文件条目。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileEntry {
@@ -46,6 +54,7 @@ pub struct FileEntry {
     pub readonly: bool,
     pub times: FileTimes,
     pub extents: Vec<Extent>,
+    pub extended_attributes: Vec<ExtendedAttribute>,
     /// 符号链接目标；为 Some 时该条目是符号链接（LTFS 格式中 symlink
     /// 是 `<file>` 内的 `<symlink>` 子元素）。
     pub symlink_target: Option<String>,
@@ -58,6 +67,7 @@ pub struct Directory {
     pub fileuid: u64,
     pub readonly: bool,
     pub times: FileTimes,
+    pub extended_attributes: Vec<ExtendedAttribute>,
     pub entries: Vec<DirectoryEntry>,
 }
 
@@ -413,6 +423,7 @@ fn write_directory(s: &mut String, dir: &Directory) {
     s.push_str(&format!("<readonly>{}</readonly>\n", dir.readonly));
     write_times(s, &dir.times);
     s.push_str(&format!("<fileuid>{}</fileuid>\n", dir.fileuid));
+    write_extended_attributes(s, &dir.extended_attributes);
     s.push_str("<contents>\n");
     for entry in &dir.entries {
         match entry {
@@ -431,6 +442,7 @@ fn write_file(s: &mut String, file: &FileEntry) {
     s.push_str(&format!("<readonly>{}</readonly>\n", file.readonly));
     write_times(s, &file.times);
     s.push_str(&format!("<fileuid>{}</fileuid>\n", file.fileuid));
+    write_extended_attributes(s, &file.extended_attributes);
     if let Some(target) = &file.symlink_target {
         s.push_str(&format!("<symlink>{}</symlink>\n", escape_text(target)));
     } else if !file.extents.is_empty() {
@@ -457,6 +469,27 @@ fn write_file(s: &mut String, file: &FileEntry) {
         s.push_str("</extentinfo>\n");
     }
     s.push_str("</file>\n");
+}
+
+fn write_extended_attributes(s: &mut String, attrs: &[ExtendedAttribute]) {
+    if attrs.is_empty() {
+        return;
+    }
+    s.push_str("<extendedattributes>\n");
+    for attr in attrs {
+        s.push_str("<xattr>\n");
+        s.push_str(&format!("<key>{}</key>\n", escape_text(&attr.key)));
+        match &attr.value_type {
+            Some(kind) => s.push_str(&format!(
+                "<value type=\"{}\">{}</value>\n",
+                escape_text(kind),
+                escape_text(&attr.value)
+            )),
+            None => s.push_str(&format!("<value>{}</value>\n", escape_text(&attr.value))),
+        }
+        s.push_str("</xattr>\n");
+    }
+    s.push_str("</extendedattributes>\n");
 }
 
 fn write_times(s: &mut String, times: &FileTimes) {
@@ -510,7 +543,7 @@ fn parse_directory(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Dire
     let mut field_text = String::new();
     loop {
         match reader.read_event_into(buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+            Ok(Event::Start(e)) => {
                 let name = element_name(e.name());
                 match name.as_str() {
                     "contents" => {}
@@ -522,6 +555,10 @@ fn parse_directory(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Dire
                     "directory" => {
                         dir.entries
                             .push(DirectoryEntry::Directory(parse_directory(reader, buf)?));
+                        pending = Pending::None;
+                    }
+                    "extendedattributes" => {
+                        dir.extended_attributes = parse_extended_attributes(reader, buf)?;
                         pending = Pending::None;
                     }
                     "name" => begin_field(&mut pending, &mut field_text, Pending::Name),
@@ -554,6 +591,10 @@ fn parse_directory(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Dire
                     ),
                     _ => {}
                 }
+            }
+            Ok(Event::Empty(_)) => {
+                pending = Pending::None;
+                field_text.clear();
             }
             Ok(Event::Text(t)) => {
                 let text = unescape_text(&t)?;
@@ -597,12 +638,16 @@ fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry
     let mut field_text = String::new();
     loop {
         match reader.read_event_into(buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+            Ok(Event::Start(e)) => {
                 let name = element_name(e.name());
                 match name.as_str() {
                     "extentinfo" => {}
                     "extent" => {
                         file.extents.push(parse_extent(reader, buf)?);
+                        pending = Pending::None;
+                    }
+                    "extendedattributes" => {
+                        file.extended_attributes = parse_extended_attributes(reader, buf)?;
                         pending = Pending::None;
                     }
                     "name" => begin_field(&mut pending, &mut field_text, Pending::Name),
@@ -638,6 +683,10 @@ fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry
                     _ => {}
                 }
             }
+            Ok(Event::Empty(_)) => {
+                pending = Pending::None;
+                field_text.clear();
+            }
             Ok(Event::Text(t)) => {
                 let text = unescape_text(&t)?;
                 field_text.push_str(&text);
@@ -669,6 +718,70 @@ fn parse_file(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<FileEntry
             Ok(Event::Eof) => return Err(IndexError::Truncated),
             Err(e) => return Err(IndexError::Xml(e.to_string())),
             _ => {}
+        }
+    }
+}
+
+fn parse_extended_attributes(
+    reader: &mut Reader<&[u8]>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<ExtendedAttribute>, IndexError> {
+    let mut attrs = Vec::new();
+    loop {
+        match reader.read_event_into(buf) {
+            Ok(Event::Start(e)) if element_name(e.name()) == "xattr" => {
+                attrs.push(parse_xattr(reader, buf)?);
+            }
+            Ok(Event::End(e)) if element_name(e.name()) == "extendedattributes" => {
+                return Ok(attrs);
+            }
+            Ok(Event::Eof) => return Err(IndexError::Truncated),
+            Err(e) => return Err(IndexError::Xml(e.to_string())),
+            _ => {}
+        }
+    }
+}
+
+fn parse_xattr(
+    reader: &mut Reader<&[u8]>,
+    buf: &mut Vec<u8>,
+) -> Result<ExtendedAttribute, IndexError> {
+    let mut attr = ExtendedAttribute::default();
+    let mut field = None;
+    let mut text = String::new();
+    loop {
+        match reader.read_event_into(buf) {
+            Ok(Event::Start(e)) => match element_name(e.name()).as_str() {
+                "key" => {
+                    field = Some("key");
+                    text.clear();
+                }
+                "value" => {
+                    attr.value_type = attr_value(&e, "type");
+                    field = Some("value");
+                    text.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::Text(t)) => text.push_str(&unescape_text(&t)?),
+            Ok(Event::GeneralRef(r)) => text.push_str(&decode_general_ref(&r)?),
+            Ok(Event::End(e)) => match element_name(e.name()).as_str() {
+                "key" => {
+                    attr.key = std::mem::take(&mut text);
+                    field = None;
+                }
+                "value" => {
+                    attr.value = std::mem::take(&mut text);
+                    field = None;
+                }
+                "xattr" => return Ok(attr),
+                _ => {}
+            },
+            Ok(Event::Eof) => return Err(IndexError::Truncated),
+            Err(e) => return Err(IndexError::Xml(e.to_string())),
+            _ => {
+                let _ = field;
+            }
         }
     }
 }
@@ -1095,6 +1208,36 @@ mod tests {
         assert_eq!(
             reparsed.root.entries[0].name(),
             "xml&less<tag>\"quote\".bin"
+        );
+    }
+
+    #[test]
+    fn extended_attributes_round_trip_without_losing_type_or_entities() {
+        let mut idx = Index::parse_xml(INDEX_XML).unwrap();
+        let expected = vec![
+            ExtendedAttribute {
+                key: "ltfs.hash.sha256sum".into(),
+                value: "abc123".into(),
+                value_type: None,
+            },
+            ExtendedAttribute {
+                key: "vendor&key".into(),
+                value: "binary+value==".into(),
+                value_type: Some("base64".into()),
+            },
+        ];
+        idx.find_file_mut("/notes.txt").unwrap().extended_attributes = expected.clone();
+
+        let xml = idx.to_xml();
+        assert!(xml.contains("<key>vendor&amp;key</key>"));
+        assert!(xml.contains("<value type=\"base64\">binary+value==</value>"));
+        let reparsed = Index::parse_xml(&xml).unwrap();
+        assert_eq!(
+            reparsed
+                .find_file("/notes.txt")
+                .unwrap()
+                .extended_attributes,
+            expected
         );
     }
 }

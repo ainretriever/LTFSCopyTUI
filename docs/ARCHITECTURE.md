@@ -938,11 +938,18 @@ tapecpy 的处理规则：
 
 这能证明输入的数据内容，但不能证明磁带能够重新读取相同数据。
 
+当前垂直切片选择 SHA-256，在数据块成功写入时更新摘要，并以 LTFS 标准扩展
+属性 `ltfs.hash.sha256sum` 写入 index。index 模型会往返保留其他已有扩展属性。
+
 ### Read-back Verify
 
 写入完成后，重新读取磁带数据并进行比较。
 
 这是面向重要数据的可选完整校验。
+
+当前应用层用 `WriteVerification::ReadBackSha256` 明确表示这种模式；CLI 对应
+`--read-back-verify`。它在 index 和 MAM VCI 提交后使用同一 `TapeSession` 按
+extent 回读，失败必须报告“写入已提交但校验失败”。
 
 未来还可能研究：
 
@@ -1248,9 +1255,8 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ### Hash
 
-* hash 在 pipeline 哪一阶段计算；
-* 是否异步；
-* 默认算法。
+* hash 是否需要移入异步 pipeline；
+* 是否支持 SHA-256 之外的算法。
 
 ### LTFS
 

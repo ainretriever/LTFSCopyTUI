@@ -317,6 +317,7 @@ fn read_mam(sg: &std::fs::File, path: &std::path::Path) -> Result<MamInfo, Error
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

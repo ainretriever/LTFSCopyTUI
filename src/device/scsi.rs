@@ -3,6 +3,7 @@
 //! 只依赖 Linux sg 驱动提供的 SG_IO ioctl。当前实现：
 //! - INQUIRY（Milestone 0）；
 //! - TEST UNIT READY / MODE SENSE / READ ATTRIBUTE（Milestone 1）。
+//!
 //! 后续的 LOG SENSE、WRITE ATTRIBUTE 等命令可以在此基础上扩展。
 
 use std::io;

@@ -5,9 +5,13 @@
 
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 use crate::device::tape::{LongEraseStatus, MamAttributeFormat, ReadRecord, TapeSession};
 use crate::device::{self, TapeDrive};
-use crate::ltfs::index::{DirectoryEntry, Extent, FileEntry, FileTimes, Index, TapePos};
+use crate::ltfs::index::{
+    DirectoryEntry, ExtendedAttribute, Extent, FileEntry, FileTimes, Index, TapePos,
+};
 use crate::ltfs::label::{AnsiLabel, Label};
 use crate::ltfs::mam::{self, ValueFormat, VolumeCoherencyInformation};
 
@@ -649,6 +653,7 @@ fn build_initial_format_image(
             fileuid: 1,
             readonly: false,
             times,
+            extended_attributes: Vec::new(),
             entries: Vec::new(),
         },
     };
@@ -732,13 +737,12 @@ fn scan_latest_index(
                 file_records += 1;
             }
             ReadRecord::Filemark => {
-                if !records.is_empty() {
-                    if let Ok(text) = std::str::from_utf8(&records) {
-                        if let Ok(idx) = Index::parse_xml(text) {
-                            last_valid_file_start = Some(file_start);
-                            latest = Some(idx);
-                        }
-                    }
+                if !records.is_empty()
+                    && let Ok(text) = std::str::from_utf8(&records)
+                    && let Ok(idx) = Index::parse_xml(text)
+                {
+                    last_valid_file_start = Some(file_start);
+                    latest = Some(idx);
                 }
                 records.clear();
                 file_start += file_records + 1;
@@ -760,7 +764,7 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
 }
 
 /// 用已有会话检查 LTFS 卷（供需要继续使用同一会话的命令复用）。
-fn inspect_volume_session(mut session: &mut TapeSession) -> Result<VolumeInfo, device::Error> {
+fn inspect_volume_session(session: &mut TapeSession) -> Result<VolumeInfo, device::Error> {
     session.set_variable_block()?;
 
     let mut info = VolumeInfo::default();
@@ -773,7 +777,7 @@ fn inspect_volume_session(mut session: &mut TapeSession) -> Result<VolumeInfo, d
     let order = [start_partition, 1 - start_partition];
 
     for &partition in &order {
-        match probe_partition_label(&mut session, partition) {
+        match probe_partition_label(session, partition) {
             Ok(Some((ansi, label))) => {
                 let is_index = label.this_partition == label.index_partition;
                 labels.push((partition, ansi, label));
@@ -809,7 +813,7 @@ fn inspect_volume_session(mut session: &mut TapeSession) -> Result<VolumeInfo, d
         .unwrap_or_else(|| vec![start_partition]);
 
     for partition in index_phys {
-        match scan_latest_index(&mut session, partition) {
+        match scan_latest_index(session, partition) {
             Ok((Some(idx), write_block)) => {
                 if idx.self_location.partition == index_logical || info.index.is_none() {
                     info.index_write_block = write_block;
@@ -880,6 +884,28 @@ pub struct WriteResult {
     pub file_uid: u64,
     pub generation: u64,
     pub data_start_block: u64,
+    pub hashes: Vec<FileHash>,
+    pub verification: WriteVerification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHash {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// 校验类型保持显式，避免与未来的 SCSI VERIFY 或驱动器介质校验混淆。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WriteVerification {
+    #[default]
+    None,
+    /// 两个 index 和 MAM VCI 提交后，从磁带回读并比较 SHA-256。
+    ReadBackSha256,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteOptions {
+    pub verification: WriteVerification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -889,6 +915,7 @@ pub enum WritePhase {
     FinalizingDataIndex,
     SyncingIndexPartition,
     UpdatingCoherency,
+    Verifying,
     Completed,
 }
 
@@ -921,7 +948,17 @@ impl<'a> WriteSession<'a> {
         tape_path: &str,
         observer: &mut dyn FnMut(&WriteEvent),
     ) -> Result<WriteResult, String> {
-        write_with_observer(self.drive, local_path, tape_path, observer)
+        self.run_with_options(local_path, tape_path, WriteOptions::default(), observer)
+    }
+
+    pub fn run_with_options(
+        &self,
+        local_path: &Path,
+        tape_path: &str,
+        options: WriteOptions,
+        observer: &mut dyn FnMut(&WriteEvent),
+    ) -> Result<WriteResult, String> {
+        write_with_observer(self.drive, local_path, tape_path, options, observer)
     }
 }
 
@@ -1010,6 +1047,7 @@ fn plan_entry(
             readonly: false,
             times,
             extents: Vec::new(),
+            extended_attributes: Vec::new(),
             symlink_target: None,
         }));
         plan.total_bytes += metadata.len();
@@ -1031,6 +1069,7 @@ fn plan_entry(
             fileuid: uid,
             readonly: false,
             times,
+            extended_attributes: Vec::new(),
             entries: Vec::new(),
         }));
     plan.directories += 1;
@@ -1098,6 +1137,7 @@ fn write_with_observer(
     drive: &TapeDrive,
     local_path: &Path,
     tape_path: &str,
+    options: WriteOptions,
     observer: &mut dyn FnMut(&WriteEvent),
 ) -> Result<WriteResult, String> {
     let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
@@ -1170,12 +1210,14 @@ fn write_with_observer(
     let mut total = 0u64;
     let mut buf = vec![0u8; blocksize];
     let mut first_write = true;
+    let mut hashes = Vec::with_capacity(plan.files.len());
     for planned in &plan.files {
         progress.emit(WritePhase::WritingData, Some(&planned.target));
         let mut file = std::fs::File::open(&planned.source)
             .map_err(|e| format!("打开 {} 失败: {e}", planned.source.display()))?;
         let file_start = data_pos;
         let mut file_total = 0u64;
+        let mut hasher = Sha256::new();
         loop {
             use std::io::Read;
             let n = file
@@ -1194,6 +1236,7 @@ fn write_with_observer(
                 return Err(format!("写入 {} 失败: {e}", planned.source.display()));
             }
             first_write = false;
+            hasher.update(&buf[..n]);
             file_total += n as u64;
             total += n as u64;
             progress.bytes_written = total;
@@ -1221,6 +1264,19 @@ fn write_with_observer(
         } else {
             Vec::new()
         };
+        let sha256 = format!("{:x}", hasher.finalize());
+        entry
+            .extended_attributes
+            .retain(|attr| !attr.key.eq_ignore_ascii_case("ltfs.hash.sha256sum"));
+        entry.extended_attributes.push(ExtendedAttribute {
+            key: "ltfs.hash.sha256sum".into(),
+            value: sha256.clone(),
+            value_type: None,
+        });
+        hashes.push(FileHash {
+            path: planned.target.clone(),
+            sha256,
+        });
         progress.files_completed += 1;
         progress.emit(WritePhase::WritingData, Some(&planned.target));
     }
@@ -1281,6 +1337,18 @@ fn write_with_observer(
     )
     .map_err(|e| format!("两个 index 已写完，但更新 MAM VCI 失败：{e}"))?;
 
+    if options.verification == WriteVerification::ReadBackSha256 {
+        for hash in &hashes {
+            progress.emit(WritePhase::Verifying, Some(&hash.path));
+            verify_file_hash(&mut session, &index, hash).map_err(|e| {
+                format!(
+                    "写入已提交（index generation {}、MAM VCI 已更新），但写后校验失败：{e}",
+                    index.generation
+                )
+            })?;
+        }
+    }
+
     progress.emit(WritePhase::Completed, None);
 
     Ok(WriteResult {
@@ -1290,7 +1358,55 @@ fn write_with_observer(
         file_uid: plan.highest_uid,
         generation: index.generation,
         data_start_block: data_append,
+        hashes,
+        verification: options.verification,
     })
+}
+
+fn verify_file_hash(
+    session: &mut TapeSession,
+    index: &Index,
+    expected: &FileHash,
+) -> Result<(), String> {
+    let file = index
+        .find_file(&expected.path)
+        .ok_or_else(|| format!("index 中找不到 {}", expected.path))?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0u64;
+    for extent in &file.extents {
+        session
+            .locate(extent.partition, extent.start_block)
+            .map_err(|e| format!("定位 {} 失败: {e}", expected.path))?;
+        let mut remaining = extent.byte_count;
+        while remaining > 0 {
+            match session
+                .read_record()
+                .map_err(|e| format!("回读 {} 失败: {e}", expected.path))?
+            {
+                ReadRecord::Data(buf) => {
+                    let n = buf.len().min(remaining as usize);
+                    hasher.update(&buf[..n]);
+                    bytes += n as u64;
+                    remaining -= n as u64;
+                }
+                _ => return Err(format!("回读 {} 时磁带记录意外结束", expected.path)),
+            }
+        }
+    }
+    if bytes != file.length {
+        return Err(format!(
+            "{} 长度不匹配：index {} 字节，回读 {} 字节",
+            expected.path, file.length, bytes
+        ));
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected.sha256 {
+        return Err(format!(
+            "{} SHA-256 不匹配：期望 {}，实际 {}",
+            expected.path, expected.sha256, actual
+        ));
+    }
+    Ok(())
 }
 
 /// 根据 index 分区指向的 data index 确定安全追加位置。
@@ -1353,13 +1469,13 @@ fn locate_checked_data_append(
                     referenced_end = Some(after_mark);
                 } else {
                     saw_tail = true;
-                    if let Ok(text) = std::str::from_utf8(&group) {
-                        if let Ok(idx) = Index::parse_xml(text) {
-                            newer_generation =
-                                Some(newer_generation.map_or(idx.generation, |current: u64| {
-                                    current.max(idx.generation)
-                                }));
-                        }
+                    if let Ok(text) = std::str::from_utf8(&group)
+                        && let Ok(idx) = Index::parse_xml(text)
+                    {
+                        newer_generation =
+                            Some(newer_generation.map_or(idx.generation, |current: u64| {
+                                current.max(idx.generation)
+                            }));
                     }
                 }
                 group.clear();

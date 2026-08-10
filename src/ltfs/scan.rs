@@ -36,12 +36,11 @@ where
                 saw_data = true;
             }
             ScanRecord::Filemark | ScanRecord::Eod => {
-                if saw_data {
-                    if let Ok(text) = std::str::from_utf8(&current) {
-                        if Index::parse_xml(text).is_ok() {
-                            latest = Some(text.to_string());
-                        }
-                    }
+                if saw_data
+                    && let Ok(text) = std::str::from_utf8(&current)
+                    && Index::parse_xml(text).is_ok()
+                {
+                    latest = Some(text.to_string());
                 }
                 current.clear();
                 saw_data = false;

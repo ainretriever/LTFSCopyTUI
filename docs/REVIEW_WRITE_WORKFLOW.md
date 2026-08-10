@@ -239,6 +239,8 @@ Preparing
 WritingData
 FinalizingDataIndex
 SyncingIndexPartition
+UpdatingCoherency
+[Verifying]
 Completed
 ```
 
@@ -271,3 +273,42 @@ OpenLTFS full medium consistency check 后成功挂载 generation 2，识别完�
 并读出相同 SHA-256。安全卸载 OpenLTFS 后再次由 tapecpy 写入单文件，
 generation 2→3，index 分区同步完成且 label 保持可解析，覆盖了最初暴露问题的
 跨程序驱动器状态场景。
+
+## 10. 写入时 SHA-256 与回读校验（2026-08-10）
+
+对照 SNIA LTFS 2.4.0 Annex F.3 和 LTFSCopyGUI 后确认：SHA-256 文件属性键为
+`ltfs.hash.sha256sum`，值是 64 个 UTF-8 十六进制字符；LTFSCopyGUI 在写入
+数据流经过 pipeline 时计算摘要，写完后调用 `SetXattr` 保存。
+
+tapecpy 据此实现：
+
+1. `FileEntry` 和 `Directory` 都能解析、序列化并保留任意 LTFS extended
+   attributes，包括 `value type="base64"`，防止后续 index 更新抹掉已有属性；
+2. 每个数据块在 WRITE 成功后进入 SHA-256，空文件也记录标准空内容摘要；
+3. index 以 `ltfs.hash.sha256sum` 保存写入流摘要；
+4. `WriteVerification::ReadBackSha256` / CLI `--read-back-verify` 在两个 index
+   与 MAM VCI 提交后，使用同一 `TapeSession` 按新 extent 回读并比较摘要；
+5. 回读失败会明确报告“写入已提交、校验失败”，不把已经完成的卷更新误报为
+   未提交。
+
+Quantum ULTRIUM 5 测试卷 generation 2 上写入 1,048,699-byte
+`/hash-verify.bin`（跨三个 512 KiB records），结果：
+
+```text
+source SHA-256:   d38086f6cf00a20681062621c307d733feb803da4a7c7092123f32711f922405
+write-stream:     d38086f6cf00a20681062621c307d733feb803da4a7c7092123f32711f922405
+read-back verify: passed
+generation:       2 -> 3
+VCI:              a:5 / b:15, generation 3
+```
+
+独立 `tapecpy read | sha256sum` 得到相同摘要。OpenLTFS 2.4.8.4 未执行 full
+medium consistency check，直接挂载 `(a,5) -> (b,15)`，文件读取摘要一致，且
+通过 FUSE xattr 看到：
+
+```text
+user.ltfs.hash.sha256sum="d38086f6cf00a20681062621c307d733feb803da4a7c7092123f32711f922405"
+```
+
+尚未覆盖的边界包括：多文件批次的全量回读校验、故意损坏数据后的 mismatch
+路径，以及回读过程中设备错误/取消的恢复与 TUI 表示。
