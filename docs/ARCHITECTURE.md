@@ -1206,8 +1206,9 @@ erase
 LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 long
 已经真实验证，全带 long 因耗时过长明确留待未来维护窗口测试。实现范围、参考
 行为和兼容性边界见 `docs/REVIEW_FORMAT_WORKFLOW.md` 和
-`docs/REVIEW_ERASE_WORKFLOW.md`。普通写入结束后更新 MAM VCI 仍是进入完整
-write workflow 前需要处理的遗留项。
+`docs/REVIEW_ERASE_WORKFLOW.md`。普通写入结束后的 MAM VCI 更新已实现并验证，
+详见 `docs/REVIEW_MAM_WORKFLOW.md`；下一阶段继续处理完整 write workflow 的
+校验、故障注入和恢复语义。
 
 实际 milestone 顺序允许根据实现过程中发现的问题调整。
 

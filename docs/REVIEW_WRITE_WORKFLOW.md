@@ -188,8 +188,9 @@ data/index 分区不一致：检测到 generation 9 data index；拒绝写入以
 
 ## 7. 当前仍未解决的问题
 
-- tapecpy 尚未更新 MAM Volume Coherency Information。OpenLTFS 挂载时会
-  因此执行 full medium consistency check，随后自行更新 MAM coherency data。
+- 普通写入后的 MAM Volume Coherency Information 已于 2026-08-10 实现；
+  OpenLTFS 首次挂载刚写完的 generation 2 卷不再执行 full medium consistency
+  check。实现和验证见 `docs/REVIEW_MAM_WORKFLOW.md`。
 - data/index 代际分叉目前能够在写入前检测并拒绝，但 tapecpy 尚不能自行把
   data 分区的更新 index 恢复到 index 分区，仍需借助 OpenLTFS 或未来的
   repair workflow。

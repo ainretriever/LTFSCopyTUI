@@ -9,6 +9,7 @@ use crate::device::tape::{LongEraseStatus, MamAttributeFormat, ReadRecord, TapeS
 use crate::device::{self, TapeDrive};
 use crate::ltfs::index::{DirectoryEntry, Extent, FileEntry, FileTimes, Index, TapePos};
 use crate::ltfs::label::{AnsiLabel, Label};
+use crate::ltfs::mam::{self, ValueFormat, VolumeCoherencyInformation};
 
 /// 发现当前系统上的全部磁带机。
 pub fn discover_drives() -> Result<Vec<TapeDrive>, device::Error> {
@@ -70,6 +71,69 @@ pub struct VolumeInfo {
     pub index: Option<Index>,
     /// index 分区中最新 index 前的 filemark 块号（刷新 index 时的覆盖起点）。
     pub index_write_block: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MamDiagnosticAttribute {
+    pub id: u16,
+    pub format: u8,
+    pub value: Vec<u8>,
+    pub vci: Option<VolumeCoherencyInformation>,
+    pub parse_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionMamDiagnostic {
+    pub partition: u8,
+    pub attributes: Vec<MamDiagnosticAttribute>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MamDiagnostic {
+    pub partitions: Vec<PartitionMamDiagnostic>,
+    pub warnings: Vec<String>,
+}
+
+/// 读取两个 LTFS 分区的 MAM。partition 1 不存在时保留警告，不掩盖 partition 0。
+pub fn inspect_mam(drive: &TapeDrive) -> Result<MamDiagnostic, String> {
+    let mut tape = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
+    let mut report = MamDiagnostic::default();
+    for partition in [0u8, 1u8] {
+        match tape.read_mam_attributes(partition) {
+            Ok(records) => {
+                let attributes = records
+                    .into_iter()
+                    .filter(|record| matches!(record.id, 0x0800..=0x080c | 0x0820 | 0x0009))
+                    .map(|record| {
+                        let (vci, parse_warning) = if record.id == mam::VOLUME_COHERENCY_INFORMATION
+                        {
+                            match VolumeCoherencyInformation::parse(&record.value) {
+                                Ok(vci) => (Some(vci), None),
+                                Err(error) => (None, Some(error)),
+                            }
+                        } else {
+                            (None, None)
+                        };
+                        MamDiagnosticAttribute {
+                            id: record.id,
+                            format: record.format,
+                            value: record.value,
+                            vci,
+                            parse_warning,
+                        }
+                    })
+                    .collect();
+                report.partitions.push(PartitionMamDiagnostic {
+                    partition,
+                    attributes,
+                });
+            }
+            Err(error) => report
+                .warnings
+                .push(format!("partition {partition} MAM 读取失败: {error}")),
+        }
+    }
+    Ok(report)
 }
 
 /// 创建新 LTFS 卷所需的用户参数。
@@ -354,7 +418,9 @@ impl<'a> FormatSession<'a> {
             FormatPhase::WritingMam,
             "写入 LTFS MAM attributes",
         );
-        write_format_mam(&mut tape, options, &format_time)?;
+        for warning in write_format_mam(&mut tape, options, &format_time, &volume_uuid)? {
+            emit_format(observer, FormatPhase::WritingMam, &warning);
+        }
 
         emit_format(
             observer,
@@ -386,7 +452,7 @@ impl<'a> FormatSession<'a> {
             FormatPhase::WritingCoherency,
             "写入两分区 Volume Coherency Information",
         );
-        write_initial_vci(&mut tape, &volume_uuid)?;
+        update_volume_coherency(&mut tape, &volume_uuid, 1, &[(0, 5), (1, 5)])?;
         emit_format(observer, FormatPhase::Completed, "LTFS format 完成");
         Ok(FormatResult {
             barcode: options.barcode.clone(),
@@ -435,84 +501,62 @@ fn write_format_mam(
     tape: &mut TapeSession,
     options: &FormatOptions,
     format_time: &str,
-) -> Result<(), String> {
-    let app_version = env!("CARGO_PKG_VERSION");
+    volume_uuid: &str,
+) -> Result<Vec<String>, String> {
     let written = format_time
         .chars()
         .filter(char::is_ascii_digit)
         .take(12)
         .collect::<String>();
-    let attributes = [
-        (0x0800, MamAttributeFormat::Ascii, padded_ascii("OPEN", 8)),
-        (
-            0x0801,
-            MamAttributeFormat::Ascii,
-            padded_ascii("tapecpy", 32),
-        ),
-        (
-            0x0802,
-            MamAttributeFormat::Ascii,
-            padded_ascii(app_version, 8),
-        ),
-        (
-            0x0803,
-            MamAttributeFormat::Text,
-            padded_bytes(options.volume_name.as_bytes(), 160, 0),
-        ),
-        (0x0805, MamAttributeFormat::Binary, vec![0x81]),
-        (
-            0x0806,
-            MamAttributeFormat::Ascii,
-            padded_ascii(&options.barcode, 32),
-        ),
-        (0x080b, MamAttributeFormat::Ascii, padded_ascii("2.4.0", 16)),
-        (
-            0x0804,
-            MamAttributeFormat::Ascii,
-            padded_ascii(&written, 12),
-        ),
-    ];
-    for (id, format, value) in attributes {
-        tape.write_mam_attribute(0, id, format, &value)
-            .map_err(|e| e.to_string())?;
+    let attributes = mam::format_host_attributes(
+        &options.volume_name,
+        &options.barcode,
+        volume_uuid,
+        env!("CARGO_PKG_VERSION"),
+        &written,
+    );
+    let mut warnings = Vec::new();
+    for attribute in attributes {
+        let format = match attribute.format {
+            ValueFormat::Binary => MamAttributeFormat::Binary,
+            ValueFormat::Ascii => MamAttributeFormat::Ascii,
+            ValueFormat::Text => MamAttributeFormat::Text,
+        };
+        if let Err(error) = tape.write_mam_attribute(0, attribute.id, format, &attribute.value) {
+            if attribute.required {
+                return Err(error.to_string());
+            }
+            warnings.push(format!(
+                "可选 MAM attribute 0x{:04X} 不受支持：{}",
+                attribute.id, error
+            ));
+        }
     }
-    Ok(())
+    Ok(warnings)
 }
 
-fn padded_ascii(value: &str, len: usize) -> Vec<u8> {
-    padded_bytes(value.as_bytes(), len, b' ')
-}
-
-fn padded_bytes(value: &[u8], len: usize, fill: u8) -> Vec<u8> {
-    let mut out = vec![fill; len];
-    let n = value.len().min(len);
-    out[..n].copy_from_slice(&value[..n]);
-    out
-}
-
-fn write_initial_vci(tape: &mut TapeSession, volume_uuid: &str) -> Result<(), String> {
-    // LTFSCopyGUI WriteVCI 先用 WRITE FILEMARK count=0 flush，确保刚写完的
-    // index/filemark 已落带且 Volume Change Reference 不再变化。
+fn update_volume_coherency(
+    tape: &mut TapeSession,
+    volume_uuid: &str,
+    generation: u64,
+    partitions: &[(u8, u64)],
+) -> Result<(), String> {
+    // LTFS 2.4 §10.3：index 完成后先落带，再立即读 VCR，随后为所有完整
+    // 分区写 VCI。WRITE ATTRIBUTE 不写逻辑对象，不会使刚读取的 VCR 失效。
     tape.flush().map_err(|e| e.to_string())?;
     let vcr = tape
-        .read_mam_attribute(0, 0x0009)
+        .read_mam_attribute(0, mam::VOLUME_CHANGE_REFERENCE)
         .map_err(|e| e.to_string())?;
-    let mut vcr_u64 = [0u8; 8];
-    let copy = vcr.len().min(8);
-    vcr_u64[8 - copy..].copy_from_slice(&vcr[vcr.len() - copy..]);
-    for (partition, block) in [(0u8, 5u64), (1u8, 5u64)] {
-        let mut value = vec![0u8; 70];
-        value[0] = 8;
-        value[1..9].copy_from_slice(&vcr_u64);
-        value[9..17].copy_from_slice(&1u64.to_be_bytes());
-        value[17..25].copy_from_slice(&block.to_be_bytes());
-        value[25..27].copy_from_slice(&43u16.to_be_bytes());
-        value[27..32].copy_from_slice(b"LTFS\0");
-        let uuid = volume_uuid.as_bytes();
-        value[32..32 + uuid.len().min(36)].copy_from_slice(&uuid[..uuid.len().min(36)]);
-        value[69] = 1;
-        tape.write_mam_attribute(partition, 0x080c, MamAttributeFormat::Binary, &value)
-            .map_err(|e| e.to_string())?;
+    for &(partition, block) in partitions {
+        let value =
+            VolumeCoherencyInformation::new(&vcr, generation, block, volume_uuid)?.to_bytes()?;
+        tape.write_mam_attribute(
+            partition,
+            mam::VOLUME_COHERENCY_INFORMATION,
+            MamAttributeFormat::Binary,
+            &value,
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -844,6 +888,7 @@ pub enum WritePhase {
     WritingData,
     FinalizingDataIndex,
     SyncingIndexPartition,
+    UpdatingCoherency,
     Completed,
 }
 
@@ -1223,6 +1268,18 @@ fn write_with_observer(
         session.write_record(chunk).map_err(|e| e.to_string())?;
     }
     session.write_filemark().map_err(|e| e.to_string())?;
+
+    progress.emit(WritePhase::UpdatingCoherency, None);
+    update_volume_coherency(
+        &mut session,
+        &index.volume_uuid,
+        index.generation,
+        &[
+            (label.index_partition, idx_copy_start),
+            (label.data_partition, data_index_start),
+        ],
+    )
+    .map_err(|e| format!("两个 index 已写完，但更新 MAM VCI 失败：{e}"))?;
 
     progress.emit(WritePhase::Completed, None);
 

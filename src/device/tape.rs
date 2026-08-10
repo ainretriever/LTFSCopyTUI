@@ -30,6 +30,13 @@ pub enum MamAttributeFormat {
     Text = 2,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MamAttributeRecord {
+    pub id: u16,
+    pub format: u8,
+    pub value: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LongEraseStatus {
     InProgress { progress: Option<u16> },
@@ -350,6 +357,33 @@ impl TapeSession {
             .find(|attribute| attribute.id == id)
             .ok_or_else(|| Error::Protocol(format!("MAM attribute 0x{id:04x} 不存在")))?;
         Ok(attribute.value.to_vec())
+    }
+
+    /// 读取一个分区可见的完整 MAM attribute 列表，供诊断和一致性检查使用。
+    pub fn read_mam_attributes(&mut self, partition: u8) -> Result<Vec<MamAttributeRecord>, Error> {
+        const ALLOC_LEN: usize = 8192;
+        let mut buf = vec![0u8; ALLOC_LEN];
+        let result =
+            scsi::read_attribute_partition(&self.fd, partition, 0, ALLOC_LEN as u32, &mut buf)
+                .map_err(|e| Error::Io {
+                    context: format!(
+                        "从 {} 读取 partition {partition} MAM 列表失败",
+                        self.path.display()
+                    ),
+                    source: e,
+                })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("READ ATTRIBUTE partition {partition}")));
+        }
+        let len = buf.len().saturating_sub(result.resid.max(0) as usize);
+        Ok(scsi::parse_mam_attributes(&buf[..len])
+            .into_iter()
+            .map(|attribute| MamAttributeRecord {
+                id: attribute.id,
+                format: attribute.format,
+                value: attribute.value.to_vec(),
+            })
+            .collect())
     }
 
     /// SCSI LOAD：装载/穿带当前介质（对已装载磁带是无害的幂等操作）。

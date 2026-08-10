@@ -67,8 +67,8 @@ Volume Name 中的 XML 特殊字符，parser 也保留 entity 前后的空白。
 
 格式化写入以下 application attributes：
 
-- 0x0800 Application Vendor：`OPEN`；
-- 0x0801 Application Name：`tapecpy`；
+- 0x0800 Application Vendor：`tapecpy`；
+- 0x0801 Application Name：`LTFS tapecpy`；
 - 0x0802 Application Version；
 - 0x0803 User Medium Text Label（Volume Name）；
 - 0x0804 Date and Time Last Written；
@@ -76,6 +76,10 @@ Volume Name 中的 XML 特殊字符，parser 也保留 entity 前后的空白。
 - 0x0806 Barcode；
 - 0x080B Application Format Version：`2.4.0`；
 - 0x080C Volume Coherency Information。
+
+2026-08-10 对照 LTFS 2.4 第 10.4 节后补充尝试写入可选 0x0820 Volume
+UUID。Quantum LTO-5 不支持该属性，格式化会报告警告并继续；Mandatory
+attributes 失败仍会终止。
 
 真实设备测试发现，只在写完 index 后直接读取 VCR 会使首次 OpenLTFS 挂载
 执行 full medium consistency check。LTFSCopyGUI 的 `WriteVCI` 在读 VCR 前
@@ -102,9 +106,9 @@ generation 1: a:5 -> b:5
    tapecpy 读回 SHA-256 与源文件一致；
 4. OpenLTFS 能挂载 generation 2，并读回相同 SHA-256。
 
-generation 2 首次由 OpenLTFS 挂载时仍会执行 full medium consistency check，
-因为现有 WriteSession 尚未在普通写入完成后更新 MAM VCI。OpenLTFS 更新 VCI
-后再次挂载不再检查。这是写入里程碑已知遗留项，不是格式化初始布局错误。
+该限制已于 2026-08-10 解决：普通 WriteSession 现在也会在两个 index 完整写入
+后 flush、读取 VCR，并更新两份 VCI。新的 generation 2 实测可被 OpenLTFS
+首次直接挂载，不执行 full medium consistency check。
 
 ## 6. 当前限制与下一步
 

@@ -10,4 +10,5 @@
 
 pub mod index;
 pub mod label;
+pub mod mam;
 pub mod scan;

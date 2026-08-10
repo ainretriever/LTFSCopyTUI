@@ -11,6 +11,7 @@
 //! - `tapecpy write <本地路径> <磁带路径> [选择器]`：写入文件或目录树并更新 index。
 //! - `tapecpy format <Barcode> <Volume Name> [选择器] --force`：创建新 LTFS 卷。
 //! - `tapecpy erase <short|long|minimum> [选择器] --force`：擦除/准备介质。
+//! - `tapecpy mam [选择器]`：显示 LTFS MAM/VCI 诊断信息。
 
 use std::env;
 use std::process::ExitCode;
@@ -25,6 +26,7 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy info [选择器]        显示一台磁带机的身份信息
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
   tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
+  tapecpy mam [选择器]         显示两个分区的 LTFS MAM/VCI 诊断信息
   tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
@@ -60,6 +62,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("info") => cmd_info(args.get(1).map(String::as_str)),
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
+        Some("mam") => cmd_mam(args.get(1).map(String::as_str)),
         Some("ls") => cmd_ls(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -259,6 +262,49 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_mam(selector: Option<&str>) -> Result<(), String> {
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    print_drive_header(drive);
+    let report = app::inspect_mam(drive)?;
+    for partition in report.partitions {
+        println!("\nMAM partition {}:", partition.partition);
+        for attribute in partition.attributes {
+            print!("  0x{:04X}  format={}  ", attribute.id, attribute.format);
+            if let Some(vci) = attribute.vci {
+                println!(
+                    "VCI vcr={} gen={} block={} uuid={} version={}",
+                    hex_compact(&vci.vcr),
+                    vci.generation,
+                    vci.block,
+                    vci.volume_uuid,
+                    vci.acsi_version
+                );
+            } else if matches!(attribute.format, 1 | 2) {
+                let text = String::from_utf8_lossy(&attribute.value)
+                    .trim_end_matches(['\0', ' '])
+                    .to_string();
+                println!("{text:?}");
+            } else {
+                println!("{}", hex_compact(&attribute.value));
+            }
+            if let Some(warning) = attribute.parse_warning {
+                println!("    警告: VCI 解析失败: {warning}");
+            }
+        }
+    }
+    print_warnings(&report.warnings);
+    Ok(())
+}
+
+fn hex_compact(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
     use tapecpy::ltfs::index::DirectoryEntry;
 
@@ -402,6 +448,9 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
         }
         app::WritePhase::SyncingIndexPartition => {
             eprintln!("正在同步 index 分区……")
+        }
+        app::WritePhase::UpdatingCoherency => {
+            eprintln!("正在更新 MAM Volume Coherency Information……")
         }
         app::WritePhase::Completed => eprintln!("写入会话已安全完成。"),
     };
