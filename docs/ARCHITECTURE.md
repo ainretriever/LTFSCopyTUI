@@ -472,7 +472,6 @@ Telemetry 是 tapecpy 的核心功能，而不是单纯的 TUI 装饰。
 tapecpy 希望观察：
 
 * 当前写入速度；
-* 平均速度；
 * 速度历史；
 * recovered write error；
 * recovered read error；
@@ -509,9 +508,9 @@ Telemetry  ───→ 磁带机
 TUI        ───→ 磁带机
 ```
 
-Telemetry polling 的具体实现方式、周期和并发模型暂不确定。
-
-第一版代码完成后，根据真实磁带机行为再决定。
+写入期间的第一版实现由统一写入会话在安全命令边界每 5 秒采样一次。实时吞吐
+按相邻成功采样点间的有效载荷字节差和实际时间差计算，与通道错误率共享时间戳、
+partition 和 position，并使用同一份 10 分钟滚动历史。它不统计会话平均速度。
 
 ---
 
@@ -547,6 +546,29 @@ Recovered Write Errors = 120
 因此 telemetry 设计必须允许记录 baseline。
 
 具体数据模型在开始实现 LOG SENSE 后确定。
+
+当前第一版数据模型读取 cumulative-values LOG SENSE page：写错误 02h、读错误
+03h、TapeAlert 2Eh。设备层保留原始累计计数；Application 层在写入会话开始和
+完成时各取一次快照，并用 `checked_sub` 形成操作期间差值。若计数下降（驱动器
+重置、介质/统计域变化或回绕）则差值为 unknown，不能用饱和减法伪报为 0。
+
+首版只在阶段边界采样。周期采样必须以后通过统一 `TapeSession` 所有权实现，
+不能由 telemetry 线程另开句柄并与写入并发发送命令。
+
+面向用户和社区交流的主要“通道错误率”必须兼容 LTFSCopyGUI：读取厂商
+RECEIVE DIAGNOSTIC RESULTS page 88h（write）/87h（read），以相邻样本的 C1
+error 与 CCP 差值计算 `log10(ΔC1 / ΔCCP / 2 / 1920)`。标准 LOG SENSE
+corrected/uncorrected counters 继续保留为另一组原始诊断数据，但不得用它们计算
+或命名为 LTFSCopyGUI 通道错误率。
+
+通道错误率的目标采样间隔为 5 秒。TUI 只保留最近 10 分钟滚动历史（最多
+120 个样本），默认显示最近 5 分钟（60 个样本）。不照搬 LTFSCopyGUI 为速度
+曲线设置的 6 小时容量，因为通道错误率的主要用途是观察近期变化，而不是事后
+回看数小时的逐点数据。
+
+滚动历史之外，整个写入会话仍应保留最差通道错误率摘要，包括数值、通道、
+采样时间和当时的 partition/logical position。这样长任务完成后仍能报告早先的
+最差情况，而无需保存完整的长时间曲线。
 
 ---
 

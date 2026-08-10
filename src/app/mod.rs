@@ -3,6 +3,7 @@
 //! Milestone 0/1 包含设备发现、选择与介质检查。后续的 LTFS 格式化、
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -51,6 +52,129 @@ pub fn select_drive<'a>(
         }
     };
     Ok(drive)
+}
+
+/// 不改变磁带位置的驱动器/介质健康快照。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DriveHealth {
+    pub write_errors: Option<device::log::ErrorCounters>,
+    pub read_errors: Option<device::log::ErrorCounters>,
+    pub tape_alerts: Vec<u16>,
+    pub write_channels: Option<Vec<device::channel_error::ChannelCounters>>,
+    pub read_channels: Option<Vec<device::channel_error::ChannelCounters>>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DriveHealthDelta {
+    pub corrected_write_errors: Option<u64>,
+    pub hard_write_errors: Option<u64>,
+    pub corrected_read_errors: Option<u64>,
+    pub hard_read_errors: Option<u64>,
+    pub active_tape_alerts: Vec<u16>,
+    pub write_channel_rates: Vec<device::channel_error::ChannelRate>,
+    pub worst_write_channel_rate: Option<f64>,
+}
+
+impl DriveHealthDelta {
+    fn between(before: &DriveHealth, after: &DriveHealth) -> Self {
+        let write_channel_rates = before
+            .write_channels
+            .as_deref()
+            .zip(after.write_channels.as_deref())
+            .map_or_else(Vec::new, |(before, after)| {
+                device::channel_error::rates(before, after)
+            });
+        let worst_write_channel_rate = device::channel_error::worst_rate(&write_channel_rates);
+        Self {
+            corrected_write_errors: counter_delta(
+                before.write_errors.as_ref().and_then(|c| c.total_corrected),
+                after.write_errors.as_ref().and_then(|c| c.total_corrected),
+            ),
+            hard_write_errors: counter_delta(
+                before.write_errors.as_ref().and_then(|c| c.uncorrected),
+                after.write_errors.as_ref().and_then(|c| c.uncorrected),
+            ),
+            corrected_read_errors: counter_delta(
+                before.read_errors.as_ref().and_then(|c| c.total_corrected),
+                after.read_errors.as_ref().and_then(|c| c.total_corrected),
+            ),
+            hard_read_errors: counter_delta(
+                before.read_errors.as_ref().and_then(|c| c.uncorrected),
+                after.read_errors.as_ref().and_then(|c| c.uncorrected),
+            ),
+            active_tape_alerts: after.tape_alerts.clone(),
+            write_channel_rates,
+            worst_write_channel_rate,
+        }
+    }
+}
+
+fn counter_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
+    after?.checked_sub(before?)
+}
+
+pub fn read_drive_health(drive: &TapeDrive) -> Result<DriveHealth, String> {
+    let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
+    Ok(read_drive_health_session(&mut session))
+}
+
+fn read_drive_health_session(session: &mut TapeSession) -> DriveHealth {
+    let mut health = DriveHealth::default();
+    for (page, kind) in [(0x02, "write error"), (0x03, "read error")] {
+        match session.read_log_page(page, 0) {
+            Ok(raw) => match device::log::parse_page(&raw, page) {
+                Ok(parameters) => {
+                    let counters = device::log::error_counters(&parameters);
+                    if page == 0x02 {
+                        health.write_errors = Some(counters);
+                    } else {
+                        health.read_errors = Some(counters);
+                    }
+                }
+                Err(error) => health
+                    .warnings
+                    .push(format!("解析 {kind} LOG SENSE page 失败: {error:?}")),
+            },
+            Err(error) => health
+                .warnings
+                .push(format!("读取 {kind} LOG SENSE page 失败: {error}")),
+        }
+    }
+    match session.read_log_page(0x2e, 0) {
+        Ok(raw) => match device::log::parse_page(&raw, 0x2e) {
+            Ok(parameters) => {
+                health.tape_alerts = device::log::active_tape_alerts(&parameters);
+            }
+            Err(error) => health
+                .warnings
+                .push(format!("解析 TapeAlert LOG SENSE page 失败: {error:?}")),
+        },
+        Err(error) => health
+            .warnings
+            .push(format!("读取 TapeAlert LOG SENSE page 失败: {error}")),
+    }
+    for kind in [
+        device::channel_error::PageKind::Write,
+        device::channel_error::PageKind::Read,
+    ] {
+        match session.read_diagnostic_page(kind.page_code()) {
+            Ok(raw) => match device::channel_error::parse_page(&raw, kind) {
+                Ok(channels) => match kind {
+                    device::channel_error::PageKind::Write => {
+                        health.write_channels = Some(channels)
+                    }
+                    device::channel_error::PageKind::Read => health.read_channels = Some(channels),
+                },
+                Err(error) => health.warnings.push(error),
+            },
+            Err(error) => health.warnings.push(format!(
+                "读取 channel diagnostic page 0x{:02x} 失败: {error}",
+                kind.page_code()
+            )),
+        }
+    }
+    health
 }
 
 /// 检查一台磁带机的介质状态与基本信息（Milestone 1）。
@@ -876,7 +1000,7 @@ pub fn read_file(
 }
 
 /// 写入结果摘要。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WriteResult {
     pub bytes: u64,
     pub files: usize,
@@ -886,6 +1010,12 @@ pub struct WriteResult {
     pub data_start_block: u64,
     pub hashes: Vec<FileHash>,
     pub verification: WriteVerification,
+    pub health_before: DriveHealth,
+    pub health_after: DriveHealth,
+    pub health_delta: DriveHealthDelta,
+    pub telemetry_history: Vec<ChannelTelemetrySample>,
+    pub session_worst_channel_rate: Option<SessionWorstChannelRate>,
+    pub telemetry_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -908,6 +1038,32 @@ pub struct WriteOptions {
     pub verification: WriteVerification,
 }
 
+pub const CHANNEL_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+pub const CHANNEL_HISTORY_CAPACITY: usize = 120;
+pub const CHANNEL_DEFAULT_VISIBLE_SAMPLES: usize = 60;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelTelemetrySample {
+    pub elapsed_millis: u64,
+    pub timestamp: String,
+    pub partition: u8,
+    pub logical_block: u64,
+    /// 与上一个成功遥测点之间的应用层有效载荷吞吐（bytes/s）。
+    pub throughput_bytes_per_second: f64,
+    pub channel_rates: Vec<device::channel_error::ChannelRate>,
+    pub worst_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionWorstChannelRate {
+    pub rate: f64,
+    pub channel: usize,
+    pub elapsed_millis: u64,
+    pub timestamp: String,
+    pub partition: u8,
+    pub logical_block: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WritePhase {
     Preparing,
@@ -919,7 +1075,7 @@ pub enum WritePhase {
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WriteEvent {
     pub phase: WritePhase,
     pub current_file: Option<String>,
@@ -927,6 +1083,7 @@ pub struct WriteEvent {
     pub files_total: usize,
     pub bytes_written: u64,
     pub bytes_total: u64,
+    pub telemetry: Option<ChannelTelemetrySample>,
 }
 
 /// 一次完整 LTFS 写入事务的应用层入口。
@@ -958,7 +1115,31 @@ impl<'a> WriteSession<'a> {
         options: WriteOptions,
         observer: &mut dyn FnMut(&WriteEvent),
     ) -> Result<WriteResult, String> {
-        write_with_observer(self.drive, local_path, tape_path, options, observer)
+        write_with_observer(
+            self.drive,
+            WriteSourceRequest::Local(local_path),
+            tape_path,
+            options,
+            observer,
+        )
+    }
+
+    /// 写入一个不落盘、长度固定且可由 seed 重现的伪随机测试文件。
+    pub fn run_pseudorandom(
+        &self,
+        size: u64,
+        seed: u64,
+        tape_path: &str,
+        options: WriteOptions,
+        observer: &mut dyn FnMut(&WriteEvent),
+    ) -> Result<WriteResult, String> {
+        write_with_observer(
+            self.drive,
+            WriteSourceRequest::Pseudorandom { size, seed },
+            tape_path,
+            options,
+            observer,
+        )
     }
 }
 
@@ -972,6 +1153,15 @@ struct WriteProgress<'a> {
 
 impl WriteProgress<'_> {
     fn emit(&mut self, phase: WritePhase, current_file: Option<&str>) {
+        self.emit_with_telemetry(phase, current_file, None);
+    }
+
+    fn emit_with_telemetry(
+        &mut self,
+        phase: WritePhase,
+        current_file: Option<&str>,
+        telemetry: Option<ChannelTelemetrySample>,
+    ) {
         (self.observer)(&WriteEvent {
             phase,
             current_file: current_file.map(str::to_owned),
@@ -979,15 +1169,174 @@ impl WriteProgress<'_> {
             files_total: self.files_total,
             bytes_written: self.bytes_written,
             bytes_total: self.bytes_total,
+            telemetry,
         });
     }
 }
 
+struct ChannelTelemetryState {
+    started: std::time::Instant,
+    last_sample: std::time::Instant,
+    last_throughput_sample: std::time::Instant,
+    last_throughput_bytes: u64,
+    previous: Option<Vec<device::channel_error::ChannelCounters>>,
+    history: VecDeque<ChannelTelemetrySample>,
+    session_worst: Option<SessionWorstChannelRate>,
+    warnings: Vec<String>,
+}
+
+impl ChannelTelemetryState {
+    fn new(previous: Option<Vec<device::channel_error::ChannelCounters>>) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last_sample: now,
+            last_throughput_sample: now,
+            last_throughput_bytes: 0,
+            previous,
+            history: VecDeque::with_capacity(CHANNEL_HISTORY_CAPACITY),
+            session_worst: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn sample_if_due(
+        &mut self,
+        session: &mut TapeSession,
+        partition: u8,
+        logical_block: u64,
+        bytes_written: u64,
+    ) -> Option<ChannelTelemetrySample> {
+        if self.last_sample.elapsed() < CHANNEL_SAMPLE_INTERVAL {
+            return None;
+        }
+        self.last_sample = std::time::Instant::now();
+        let current = match read_channel_counters(session, device::channel_error::PageKind::Write) {
+            Ok(current) => current,
+            Err(error) => {
+                self.warnings.push(error);
+                return None;
+            }
+        };
+        let previous = self.previous.replace(current.clone())?;
+        let channel_rates = device::channel_error::rates(&previous, &current);
+        let worst_rate = device::channel_error::worst_rate(&channel_rates);
+        let throughput_now = std::time::Instant::now();
+        let throughput_elapsed = throughput_now.duration_since(self.last_throughput_sample);
+        let throughput_bytes = bytes_written.saturating_sub(self.last_throughput_bytes);
+        let throughput_bytes_per_second = payload_throughput(throughput_bytes, throughput_elapsed);
+        self.last_throughput_sample = throughput_now;
+        self.last_throughput_bytes = bytes_written;
+        let sample = ChannelTelemetrySample {
+            elapsed_millis: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            timestamp: ltfs_time_now(),
+            partition,
+            logical_block,
+            throughput_bytes_per_second,
+            channel_rates,
+            worst_rate,
+        };
+        self.record_sample(sample.clone());
+        Some(sample)
+    }
+
+    fn begin_data(&mut self) {
+        let now = std::time::Instant::now();
+        self.started = now;
+        self.last_sample = now;
+        self.last_throughput_sample = now;
+        self.last_throughput_bytes = 0;
+    }
+
+    fn record_sample(&mut self, sample: ChannelTelemetrySample) {
+        self.update_session_worst(&sample);
+        if self.history.len() == CHANNEL_HISTORY_CAPACITY {
+            self.history.pop_front();
+        }
+        self.history.push_back(sample);
+    }
+
+    fn update_session_worst(&mut self, sample: &ChannelTelemetrySample) {
+        let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0) else {
+            return;
+        };
+        let Some(channel) = sample.channel_rates.iter().find_map(|channel| {
+            channel
+                .log10_bit_error_rate
+                .filter(|value| value.total_cmp(&rate).is_eq())
+                .map(|_| channel.channel)
+        }) else {
+            return;
+        };
+        if self
+            .session_worst
+            .as_ref()
+            .is_none_or(|current| rate > current.rate)
+        {
+            self.session_worst = Some(SessionWorstChannelRate {
+                rate,
+                channel,
+                elapsed_millis: sample.elapsed_millis,
+                timestamp: sample.timestamp.clone(),
+                partition: sample.partition,
+                logical_block: sample.logical_block,
+            });
+        }
+    }
+}
+
+fn payload_throughput(bytes: u64, elapsed: std::time::Duration) -> f64 {
+    if elapsed.is_zero() {
+        0.0
+    } else {
+        bytes as f64 / elapsed.as_secs_f64()
+    }
+}
+
+fn read_channel_counters(
+    session: &mut TapeSession,
+    kind: device::channel_error::PageKind,
+) -> Result<Vec<device::channel_error::ChannelCounters>, String> {
+    let raw = session
+        .read_diagnostic_page(kind.page_code())
+        .map_err(|error| format!("读取 channel page 0x{:02x} 失败: {error}", kind.page_code()))?;
+    device::channel_error::parse_page(&raw, kind)
+}
+
 #[derive(Debug)]
 struct PlannedFile {
-    source: std::path::PathBuf,
+    source: PlannedSource,
     target: String,
     size: u64,
+}
+
+#[derive(Debug)]
+enum PlannedSource {
+    Local(std::path::PathBuf),
+    Pseudorandom { seed: u64 },
+}
+
+impl PlannedSource {
+    fn open(&self, size: u64) -> Result<Box<dyn std::io::Read>, String> {
+        match self {
+            Self::Local(path) => std::fs::File::open(path)
+                .map(|file| Box::new(file) as Box<dyn std::io::Read>)
+                .map_err(|e| format!("打开 {} 失败: {e}", path.display())),
+            Self::Pseudorandom { seed } => Ok(Box::new(PseudorandomReader::new(*seed, size))),
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Local(path) => path.display().to_string(),
+            Self::Pseudorandom { seed } => format!("pseudorandom(seed={seed})"),
+        }
+    }
+}
+
+enum WriteSourceRequest<'a> {
+    Local(&'a Path),
+    Pseudorandom { size: u64, seed: u64 },
 }
 
 #[derive(Debug, Default)]
@@ -1052,7 +1401,7 @@ fn plan_entry(
         }));
         plan.total_bytes += metadata.len();
         plan.files.push(PlannedFile {
-            source: source.to_path_buf(),
+            source: PlannedSource::Local(source.to_path_buf()),
             target: target.to_string(),
             size: metadata.len(),
         });
@@ -1087,6 +1436,111 @@ fn plan_entry(
         plan_entry(index, &child.path(), &child_target, now, plan)?;
     }
     Ok(())
+}
+
+fn plan_pseudorandom_file(
+    index: &mut Index,
+    target: &str,
+    size: u64,
+    seed: u64,
+    now: &str,
+) -> Result<WritePlan, String> {
+    let (parent_path, name) = split_target_path(target)?;
+    let uid = index.highest_file_uid.unwrap_or(0) + 1;
+    let parent = index
+        .find_directory_mut(&parent_path)
+        .ok_or_else(|| format!("目标父目录不存在: /{parent_path}"))?;
+    if parent.entries.iter().any(|entry| entry.name() == name) {
+        return Err(format!(
+            "目标已存在: {}",
+            normalized_target(&parent_path, &name)
+        ));
+    }
+    parent.entries.push(DirectoryEntry::File(FileEntry {
+        name,
+        fileuid: uid,
+        length: size,
+        readonly: false,
+        times: planned_times(now),
+        extents: Vec::new(),
+        extended_attributes: vec![
+            ExtendedAttribute {
+                key: "tapecpy.test.pseudorandom.algorithm".into(),
+                value: "splitmix64-le".into(),
+                value_type: None,
+            },
+            ExtendedAttribute {
+                key: "tapecpy.test.pseudorandom.seed".into(),
+                value: seed.to_string(),
+                value_type: None,
+            },
+            ExtendedAttribute {
+                key: "tapecpy.test.pseudorandom.size".into(),
+                value: size.to_string(),
+                value_type: None,
+            },
+        ],
+        symlink_target: None,
+    }));
+    Ok(WritePlan {
+        files: vec![PlannedFile {
+            source: PlannedSource::Pseudorandom { seed },
+            target: target.to_string(),
+            size,
+        }],
+        directories: 0,
+        total_bytes: size,
+        highest_uid: uid,
+    })
+}
+
+/// SplitMix64：快速、确定性测试数据生成器；不用于密码学用途。
+struct PseudorandomReader {
+    state: u64,
+    remaining: u64,
+    word: [u8; 8],
+    word_offset: usize,
+}
+
+impl PseudorandomReader {
+    fn new(seed: u64, size: u64) -> Self {
+        Self {
+            state: seed,
+            remaining: size,
+            word: [0; 8],
+            word_offset: 8,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = self.state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+}
+
+impl std::io::Read for PseudorandomReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = buf
+            .len()
+            .min(self.remaining.min(usize::MAX as u64) as usize);
+        let mut offset = 0;
+        while offset < len {
+            if self.word_offset == self.word.len() {
+                self.word = self.next_u64().to_le_bytes();
+                self.word_offset = 0;
+            }
+            let take = (len - offset).min(self.word.len() - self.word_offset);
+            buf[offset..offset + take]
+                .copy_from_slice(&self.word[self.word_offset..self.word_offset + take]);
+            offset += take;
+            self.word_offset += take;
+        }
+        self.remaining -= len as u64;
+        Ok(len)
+    }
 }
 
 fn split_target_path(target: &str) -> Result<(String, String), String> {
@@ -1135,12 +1589,14 @@ pub fn write_file(
 
 fn write_with_observer(
     drive: &TapeDrive,
-    local_path: &Path,
+    source: WriteSourceRequest<'_>,
     tape_path: &str,
     options: WriteOptions,
     observer: &mut dyn FnMut(&WriteEvent),
 ) -> Result<WriteResult, String> {
     let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
+    let health_before = read_drive_health_session(&mut session);
+    let mut channel_telemetry = ChannelTelemetryState::new(health_before.write_channels.clone());
     let mut volume = inspect_volume_session(&mut session).map_err(|e| e.to_string())?;
     if !volume.recognized {
         return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
@@ -1165,7 +1621,14 @@ fn write_with_observer(
         ));
     }
     let now = ltfs_time_now();
-    let plan = plan_source_tree(&mut index, local_path, tape_path, &now)?;
+    let plan = match source {
+        WriteSourceRequest::Local(local_path) => {
+            plan_source_tree(&mut index, local_path, tape_path, &now)?
+        }
+        WriteSourceRequest::Pseudorandom { size, seed } => {
+            plan_pseudorandom_file(&mut index, tape_path, size, seed, &now)?
+        }
+    };
     let mut progress = WriteProgress {
         observer,
         files_total: plan.files.len(),
@@ -1211,10 +1674,11 @@ fn write_with_observer(
     let mut buf = vec![0u8; blocksize];
     let mut first_write = true;
     let mut hashes = Vec::with_capacity(plan.files.len());
+    channel_telemetry.begin_data();
     for planned in &plan.files {
         progress.emit(WritePhase::WritingData, Some(&planned.target));
-        let mut file = std::fs::File::open(&planned.source)
-            .map_err(|e| format!("打开 {} 失败: {e}", planned.source.display()))?;
+        let mut file = planned.source.open(planned.size)?;
+        let source_description = planned.source.description();
         let file_start = data_pos;
         let mut file_total = 0u64;
         let mut hasher = Sha256::new();
@@ -1222,7 +1686,7 @@ fn write_with_observer(
             use std::io::Read;
             let n = file
                 .read(&mut buf)
-                .map_err(|e| format!("读取 {} 失败: {e}", planned.source.display()))?;
+                .map_err(|e| format!("读取 {source_description} 失败: {e}"))?;
             if n == 0 {
                 break;
             }
@@ -1233,7 +1697,7 @@ fn write_with_observer(
                          这可能是因为格式化后驱动器 EOD 标记未与内容同步。详情: {e}"
                     ));
                 }
-                return Err(format!("写入 {} 失败: {e}", planned.source.display()));
+                return Err(format!("写入 {source_description} 失败: {e}"));
             }
             first_write = false;
             hasher.update(&buf[..n]);
@@ -1241,13 +1705,23 @@ fn write_with_observer(
             total += n as u64;
             progress.bytes_written = total;
             data_pos += 1;
+            if let Some(sample) = channel_telemetry.sample_if_due(
+                &mut session,
+                label.data_partition,
+                data_pos,
+                progress.bytes_written,
+            ) {
+                progress.emit_with_telemetry(
+                    WritePhase::WritingData,
+                    Some(&planned.target),
+                    Some(sample),
+                );
+            }
         }
         if file_total != planned.size {
             return Err(format!(
                 "源文件大小在规划后发生变化：{}（计划 {} 字节，实际读取 {} 字节）",
-                planned.source.display(),
-                planned.size,
-                file_total
+                source_description, planned.size, file_total
             ));
         }
         let entry = index
@@ -1349,7 +1823,10 @@ fn write_with_observer(
         }
     }
 
+    let health_after = read_drive_health_session(&mut session);
+    let health_delta = DriveHealthDelta::between(&health_before, &health_after);
     progress.emit(WritePhase::Completed, None);
+    let telemetry_history = channel_telemetry.history.into_iter().collect();
 
     Ok(WriteResult {
         bytes: total,
@@ -1360,6 +1837,12 @@ fn write_with_observer(
         data_start_block: data_append,
         hashes,
         verification: options.verification,
+        health_before,
+        health_after,
+        health_delta,
+        telemetry_history,
+        session_worst_channel_rate: channel_telemetry.session_worst,
+        telemetry_warnings: channel_telemetry.warnings,
     })
 }
 
@@ -1657,6 +2140,107 @@ mod tests {
         assert_eq!(events[2].bytes_written, 10);
         assert!(events.iter().all(|event| event.files_total == 2));
         assert!(events.iter().all(|event| event.bytes_total == 30));
+    }
+
+    #[test]
+    fn health_delta_uses_session_baseline_and_detects_counter_reset() {
+        let before = DriveHealth {
+            write_errors: Some(device::log::ErrorCounters {
+                total_corrected: Some(100),
+                uncorrected: Some(2),
+                ..Default::default()
+            }),
+            read_errors: Some(device::log::ErrorCounters {
+                total_corrected: Some(50),
+                uncorrected: Some(4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let after = DriveHealth {
+            write_errors: Some(device::log::ErrorCounters {
+                total_corrected: Some(107),
+                uncorrected: Some(2),
+                ..Default::default()
+            }),
+            read_errors: Some(device::log::ErrorCounters {
+                total_corrected: Some(3),
+                uncorrected: Some(5),
+                ..Default::default()
+            }),
+            tape_alerts: vec![3, 20],
+            ..Default::default()
+        };
+        let delta = DriveHealthDelta::between(&before, &after);
+        assert_eq!(delta.corrected_write_errors, Some(7));
+        assert_eq!(delta.hard_write_errors, Some(0));
+        assert_eq!(delta.corrected_read_errors, None);
+        assert_eq!(delta.hard_read_errors, Some(1));
+        assert_eq!(delta.active_tape_alerts, vec![3, 20]);
+    }
+
+    #[test]
+    fn pseudorandom_stream_is_bounded_and_reproducible() {
+        use std::io::Read;
+
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        PseudorandomReader::new(42, 19)
+            .read_to_end(&mut first)
+            .unwrap();
+        PseudorandomReader::new(42, 19)
+            .read_to_end(&mut second)
+            .unwrap();
+        assert_eq!(first.len(), 19);
+        assert_eq!(first, second);
+        assert_ne!(first, vec![0; 19]);
+
+        let mut chunked = PseudorandomReader::new(42, 19);
+        let mut pieces = Vec::new();
+        let mut three = [0u8; 3];
+        loop {
+            let n = chunked.read(&mut three).unwrap();
+            if n == 0 {
+                break;
+            }
+            pieces.extend_from_slice(&three[..n]);
+        }
+        assert_eq!(first, pieces);
+    }
+
+    #[test]
+    fn telemetry_history_rolls_but_session_worst_survives() {
+        let mut state = ChannelTelemetryState::new(None);
+        for i in 0..CHANNEL_HISTORY_CAPACITY + 5 {
+            let rate = if i == 0 { -2.5 } else { -6.0 };
+            state.record_sample(ChannelTelemetrySample {
+                elapsed_millis: i as u64 * 5_000,
+                timestamp: format!("sample-{i}"),
+                partition: 1,
+                logical_block: i as u64,
+                throughput_bytes_per_second: i as f64 * 1024.0,
+                channel_rates: vec![device::channel_error::ChannelRate {
+                    channel: 3,
+                    log10_bit_error_rate: Some(rate),
+                    ccp_advanced: true,
+                }],
+                worst_rate: Some(rate),
+            });
+        }
+        assert_eq!(state.history.len(), CHANNEL_HISTORY_CAPACITY);
+        assert_eq!(state.history.front().unwrap().logical_block, 5);
+        let worst = state.session_worst.unwrap();
+        assert_eq!(worst.rate, -2.5);
+        assert_eq!(worst.logical_block, 0);
+    }
+
+    #[test]
+    fn telemetry_throughput_is_interval_payload_rate() {
+        assert_eq!(
+            payload_throughput(10 * 1024 * 1024, std::time::Duration::from_secs(5),),
+            2.0 * 1024.0 * 1024.0
+        );
+        assert_eq!(payload_throughput(123, std::time::Duration::ZERO), 0.0);
     }
 
     #[test]

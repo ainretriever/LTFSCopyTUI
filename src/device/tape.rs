@@ -74,6 +74,74 @@ impl TapeSession {
         &self.path
     }
 
+    /// 读取完整 LOG SENSE page。先取 4-byte header，再按 page length 重读。
+    pub fn read_log_page(&mut self, page: u8, subpage: u8) -> Result<Vec<u8>, Error> {
+        let mut header = [0u8; 4];
+        let result =
+            scsi::log_sense(&self.fd, page, subpage, 1, &mut header).map_err(|e| Error::Io {
+                context: format!(
+                    "从 {} 读取 LOG SENSE 0x{page:02x} header 失败",
+                    self.path.display()
+                ),
+                source: e,
+            })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("LOG SENSE 0x{page:02x}")));
+        }
+        let page_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+        let total = page_len.saturating_add(4).min(u16::MAX as usize);
+        let mut buf = vec![0u8; total];
+        let result =
+            scsi::log_sense(&self.fd, page, subpage, 1, &mut buf).map_err(|e| Error::Io {
+                context: format!(
+                    "从 {} 读取 LOG SENSE 0x{page:02x} 失败",
+                    self.path.display()
+                ),
+                source: e,
+            })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("LOG SENSE 0x{page:02x}")));
+        }
+        let received = buf.len().saturating_sub(result.resid.max(0) as usize);
+        buf.truncate(received);
+        Ok(buf)
+    }
+
+    /// 读取完整 RECEIVE DIAGNOSTIC RESULTS page（例如 LTO channel error pages）。
+    pub fn read_diagnostic_page(&mut self, page: u8) -> Result<Vec<u8>, Error> {
+        let mut header = [0u8; 4];
+        let result =
+            scsi::receive_diagnostic_results(&self.fd, page, &mut header).map_err(|e| {
+                Error::Io {
+                    context: format!(
+                        "从 {} 读取 diagnostic page 0x{page:02x} header 失败",
+                        self.path.display()
+                    ),
+                    source: e,
+                }
+            })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("RECEIVE DIAGNOSTIC 0x{page:02x}")));
+        }
+        let page_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+        let total = page_len.saturating_add(4).min(u16::MAX as usize);
+        let mut buf = vec![0u8; total];
+        let result =
+            scsi::receive_diagnostic_results(&self.fd, page, &mut buf).map_err(|e| Error::Io {
+                context: format!(
+                    "从 {} 读取 diagnostic page 0x{page:02x} 失败",
+                    self.path.display()
+                ),
+                source: e,
+            })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, &format!("RECEIVE DIAGNOSTIC 0x{page:02x}")));
+        }
+        let received = buf.len().saturating_sub(result.resid.max(0) as usize);
+        buf.truncate(received);
+        Ok(buf)
+    }
+
     /// 把驱动器设置为可变块模式（块描述符 block length = 0）。
     ///
     /// 需要保留当前密度代码，因此先 MODE SENSE 再 MODE SELECT。

@@ -5,7 +5,9 @@
 //! - 通过 SG_IO 发送 SCSI 命令，取得设备身份与介质信息；
 //! - 通过 st 驱动的 MTIOCGET 读取磁带状态。
 
+pub mod channel_error;
 pub mod density;
+pub mod log;
 pub mod mtio;
 pub mod scsi;
 pub mod sysfs;

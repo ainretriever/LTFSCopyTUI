@@ -33,6 +33,8 @@ const MODE_SENSE_OPCODE: u8 = 0x1a;
 const MODE_SENSE10_OPCODE: u8 = 0x5a;
 const READ_ATTRIBUTE_OPCODE: u8 = 0x8c;
 const WRITE_ATTRIBUTE_OPCODE: u8 = 0x8d;
+const LOG_SENSE_OPCODE: u8 = 0x4d;
+const RECEIVE_DIAGNOSTIC_RESULTS_OPCODE: u8 = 0x1c;
 const READ_POSITION_OPCODE: u8 = 0x34;
 const LOCATE16_OPCODE: u8 = 0x92;
 const SPACE16_OPCODE: u8 = 0x91;
@@ -243,6 +245,42 @@ pub fn inquiry(
 pub fn test_unit_ready(fd: &impl AsRawFd) -> io::Result<ScsiResult> {
     let cdb = [TEST_UNIT_READY_OPCODE, 0, 0, 0, 0, 0];
     sg_io_none(fd, &cdb)
+}
+
+/// 发送 10 字节 LOG SENSE。`page_control=1` 读取 cumulative values。
+pub fn log_sense(
+    fd: &impl AsRawFd,
+    page_code: u8,
+    subpage_code: u8,
+    page_control: u8,
+    buf: &mut [u8],
+) -> io::Result<ScsiResult> {
+    let len = buf.len().min(u16::MAX as usize);
+    let mut cdb = [0u8; 10];
+    cdb[0] = LOG_SENSE_OPCODE;
+    cdb[2] = ((page_control & 0x03) << 6) | (page_code & 0x3f);
+    cdb[3] = subpage_code;
+    cdb[7] = (len >> 8) as u8;
+    cdb[8] = len as u8;
+    sg_io_from_device(fd, &cdb, buf)
+}
+
+/// 读取厂商 diagnostic page；PCV=1，page code 位于 CDB byte 2。
+pub fn receive_diagnostic_results(
+    fd: &impl AsRawFd,
+    page_code: u8,
+    buf: &mut [u8],
+) -> io::Result<ScsiResult> {
+    let len = buf.len().min(u16::MAX as usize);
+    let cdb = [
+        RECEIVE_DIAGNOSTIC_RESULTS_OPCODE,
+        0x01,
+        page_code,
+        (len >> 8) as u8,
+        len as u8,
+        0,
+    ];
+    sg_io_from_device(fd, &cdb, buf)
 }
 
 /// 发送 6 字节 MODE SENSE，读取指定 page（0 表示当前值）。

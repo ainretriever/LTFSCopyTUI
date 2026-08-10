@@ -12,6 +12,7 @@
 //! - `tapecpy format <Barcode> <Volume Name> [选择器] --force`：创建新 LTFS 卷。
 //! - `tapecpy erase <short|long|minimum> [选择器] --force`：擦除/准备介质。
 //! - `tapecpy mam [选择器]`：显示 LTFS MAM/VCI 诊断信息。
+//! - `tapecpy health [选择器]`：显示 LOG SENSE 错误计数和 TapeAlert。
 
 use std::env;
 use std::process::ExitCode;
@@ -27,12 +28,15 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
   tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
   tapecpy mam [选择器]         显示两个分区的 LTFS MAM/VCI 诊断信息
+  tapecpy health [选择器]      显示读写错误累计计数和当前 TapeAlert
   tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
   tapecpy read [选择器] <路径> 读取 LTFS 文件内容到 stdout；-o 指定输出文件
   tapecpy write <本地> <磁带路径> [选择器] [--read-back-verify]
                               写入；该选项在提交后从磁带回读并校验 SHA-256
+  tapecpy write-random <大小> <磁带路径> [选择器] [--seed=N]
+                              流式写入可重现的伪随机测试数据（如 80GiB）
   tapecpy format <Barcode> <Volume Name> [选择器] --force
                               破坏性地重新格式化为 LTFS（必须显式指定 --force）
   tapecpy erase <short|long|minimum> [选择器] --force
@@ -64,6 +68,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
         Some("mam") => cmd_mam(args.get(1).map(String::as_str)),
+        Some("health") => cmd_health(args.get(1).map(String::as_str)),
         Some("ls") => cmd_ls(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -72,6 +77,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("unload") => cmd_load_unload(args.get(1).map(String::as_str), false),
         Some("read") => cmd_read(&args[1..]),
         Some("write") => cmd_write(&args[1..]),
+        Some("write-random") => cmd_write_random(&args[1..]),
         Some("format") => cmd_format(&args[1..]),
         Some("erase") => cmd_erase(&args[1..]),
         Some("--help") | Some("-h") => {
@@ -80,6 +86,56 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some(other) => Err(format!("未知命令 `{other}`\n\n{USAGE}")),
     }
+}
+
+fn cmd_health(selector: Option<&str>) -> Result<(), String> {
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    let health = app::read_drive_health(drive)?;
+    println!("磁带机: {} ({})", drive.sg_path.display(), drive.model);
+    print_error_counters("写入", health.write_errors.as_ref());
+    print_error_counters("读取", health.read_errors.as_ref());
+    if health.tape_alerts.is_empty() {
+        println!("TapeAlert: 无活动 flag");
+    } else {
+        let flags = health
+            .tape_alerts
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("TapeAlert: {flags}");
+    }
+    for warning in health.warnings {
+        eprintln!("警告: {warning}");
+    }
+    if let Some(channels) = health.write_channels {
+        println!("写通道 diagnostic baseline: {} 个通道", channels.len());
+    }
+    Ok(())
+}
+
+fn print_error_counters(label: &str, counters: Option<&tapecpy::device::log::ErrorCounters>) {
+    let Some(counters) = counters else {
+        println!("{label}错误计数: 不可用");
+        return;
+    };
+    println!(
+        "{label}错误计数: corrected={}，uncorrected={}，processed={}",
+        display_counter(counters.total_corrected),
+        display_counter(counters.uncorrected),
+        display_counter(counters.data_processed),
+    );
+    println!(
+        "  without-delay={}，with-delay={}，correction-runs={}",
+        display_counter(counters.corrected_without_delay),
+        display_counter(counters.corrected_with_delay),
+        display_counter(counters.correction_processed),
+    );
+}
+
+fn display_counter(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".into(), |value| value.to_string())
 }
 
 fn cmd_list() -> Result<(), String> {
@@ -427,13 +483,93 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
 
     let drives = app::discover_drives().map_err(|e| e.to_string())?;
     let drive = app::select_drive(&drives, selector)?;
+    let mut observer = write_cli_observer();
+    let result = app::WriteSession::new(drive).run_with_options(
+        std::path::Path::new(local),
+        tape_path,
+        app::WriteOptions {
+            verification: if verify {
+                app::WriteVerification::ReadBackSha256
+            } else {
+                app::WriteVerification::None
+            },
+        },
+        &mut observer,
+    )?;
+    print_write_result(tape_path, &result);
+    Ok(())
+}
+
+fn cmd_write_random(args: &[String]) -> Result<(), String> {
+    let mut positional = Vec::new();
+    let mut seed = None;
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--seed=") {
+            seed = Some(
+                value
+                    .parse::<u64>()
+                    .map_err(|_| format!("无效 seed: {value}"))?,
+            );
+        } else {
+            positional.push(arg.as_str());
+        }
+    }
+    if positional.len() < 2 || positional.len() > 3 {
+        return Err("用法: tapecpy write-random <大小> <磁带路径> [选择器] [--seed=N]".into());
+    }
+    let size = parse_byte_size(positional[0])?;
+    if size == 0 {
+        return Err("随机流大小必须大于 0".into());
+    }
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    });
+    let tape_path = positional[1];
+    let drives = app::discover_drives().map_err(|e| e.to_string())?;
+    let drive = app::select_drive(&drives, positional.get(2).copied())?;
+    eprintln!("流式随机测试源: {size} 字节，seed={seed}");
+    let mut observer = write_cli_observer();
+    let result = app::WriteSession::new(drive).run_pseudorandom(
+        size,
+        seed,
+        tape_path,
+        app::WriteOptions::default(),
+        &mut observer,
+    )?;
+    print_write_result(tape_path, &result);
+    Ok(())
+}
+
+fn write_cli_observer() -> impl FnMut(&app::WriteEvent) {
     let mut last_completed = 0usize;
-    let mut observer = |event: &app::WriteEvent| match event.phase {
+    move |event: &app::WriteEvent| match event.phase {
         app::WritePhase::Preparing => eprintln!(
             "准备写入 {} 个文件 / {} 字节",
             event.files_total, event.bytes_total
         ),
         app::WritePhase::WritingData => {
+            if let Some(sample) = &event.telemetry {
+                match sample.worst_rate {
+                    Some(rate) => eprintln!(
+                        "  遥测 t={:.1}s p{}b{} speed={:.1} MiB/s worst={rate:.2}",
+                        sample.elapsed_millis as f64 / 1000.0,
+                        sample.partition,
+                        sample.logical_block,
+                        sample.throughput_bytes_per_second / (1024.0 * 1024.0)
+                    ),
+                    None => eprintln!(
+                        "  遥测 t={:.1}s p{}b{} speed={:.1} MiB/s worst=n/a",
+                        sample.elapsed_millis as f64 / 1000.0,
+                        sample.partition,
+                        sample.logical_block,
+                        sample.throughput_bytes_per_second / (1024.0 * 1024.0)
+                    ),
+                }
+                return;
+            }
             if event.files_completed > last_completed {
                 eprintln!(
                     "  已完成 {}/{}（{}/{} 字节）",
@@ -467,19 +603,10 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
             }
         }
         app::WritePhase::Completed => eprintln!("写入会话已安全完成。"),
-    };
-    let result = app::WriteSession::new(drive).run_with_options(
-        std::path::Path::new(local),
-        tape_path,
-        app::WriteOptions {
-            verification: if verify {
-                app::WriteVerification::ReadBackSha256
-            } else {
-                app::WriteVerification::None
-            },
-        },
-        &mut observer,
-    )?;
+    }
+}
+
+fn print_write_result(tape_path: &str, result: &app::WriteResult) {
     println!(
         "已写入 {} 个文件 / {} 个目录 / {} 字节 -> {} (highest uid {}, index gen {})",
         result.files,
@@ -495,7 +622,87 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
     if result.verification == app::WriteVerification::ReadBackSha256 {
         println!("写后回读校验通过。")
     }
-    Ok(())
+    println!(
+        "本次设备计数变化: corrected-write={} hard-write={} corrected-read={} hard-read={}",
+        display_counter(result.health_delta.corrected_write_errors),
+        display_counter(result.health_delta.hard_write_errors),
+        display_counter(result.health_delta.corrected_read_errors),
+        display_counter(result.health_delta.hard_read_errors),
+    );
+    if result.health_delta.write_channel_rates.is_empty() {
+        println!("LTFSCopyGUI 通道错误率: n/a（本次没有可比较的通道样本）");
+    } else {
+        for rate in &result.health_delta.write_channel_rates {
+            match rate.log10_bit_error_rate {
+                Some(value) => println!("  Channel {}: {:.2}", rate.channel, value),
+                None => println!("  Channel {}: n/a", rate.channel),
+            }
+        }
+        match result.health_delta.worst_write_channel_rate {
+            Some(value) => println!("LTFSCopyGUI 最大通道错误率指数: {value:.2}"),
+            None => println!("LTFSCopyGUI 最大通道错误率指数: n/a"),
+        }
+    }
+    if !result.health_delta.active_tape_alerts.is_empty() {
+        eprintln!(
+            "警告: 写入完成时存在 TapeAlert flags: {}",
+            result
+                .health_delta
+                .active_tape_alerts
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for warning in result
+        .health_before
+        .warnings
+        .iter()
+        .chain(&result.health_after.warnings)
+    {
+        eprintln!("遥测警告: {warning}");
+    }
+    for warning in &result.telemetry_warnings {
+        eprintln!("周期遥测警告: {warning}");
+    }
+    println!(
+        "通道错误率历史: {} samples（容量 {}，默认显示 {}）",
+        result.telemetry_history.len(),
+        app::CHANNEL_HISTORY_CAPACITY,
+        app::CHANNEL_DEFAULT_VISIBLE_SAMPLES
+    );
+    if let Some(worst) = &result.session_worst_channel_rate {
+        println!(
+            "会话最差: {:.2} channel {} @ {:.1}s p{}b{} ({})",
+            worst.rate,
+            worst.channel,
+            worst.elapsed_millis as f64 / 1000.0,
+            worst.partition,
+            worst.logical_block,
+            worst.timestamp
+        );
+    }
+}
+
+fn parse_byte_size(text: &str) -> Result<u64, String> {
+    let split = text
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(text.len());
+    let number = text[..split]
+        .parse::<u64>()
+        .map_err(|_| format!("无效大小: {text}"))?;
+    let multiplier = match text[split..].to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "mib" => 1024_u64.pow(2),
+        "gib" => 1024_u64.pow(3),
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        _ => return Err(format!("不支持的大小单位: {text}")),
+    };
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("大小溢出: {text}"))
 }
 
 fn cmd_format(args: &[String]) -> Result<(), String> {
