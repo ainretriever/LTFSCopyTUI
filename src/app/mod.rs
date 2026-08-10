@@ -202,6 +202,122 @@ pub struct VolumeInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexCandidateDiagnostic {
+    pub physical_partition: u8,
+    pub actual_start_block: u64,
+    pub byte_len: usize,
+    pub index: Option<Index>,
+    pub parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeConsistency {
+    Healthy,
+    MamUnavailable,
+    NoUsableIndex,
+    IndexCopyMissing,
+    DivergentIndexes,
+    ForeignIndex,
+    InvalidIndexLocation,
+    StaleVci,
+    DivergentVci,
+    DivergentLabels,
+    UnindexedTail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeDiagnosis {
+    pub label_uuid: Option<String>,
+    pub candidates: Vec<IndexCandidateDiagnostic>,
+    pub vci: Vec<(u8, VolumeCoherencyInformation)>,
+    pub partition_errors: Vec<String>,
+    pub consistency: VolumeConsistency,
+    pub safe_for_normal_write: bool,
+}
+
+fn classify_volume_consistency(
+    label_uuid: Option<&str>,
+    candidates: &[IndexCandidateDiagnostic],
+    vci: &[(u8, VolumeCoherencyInformation)],
+) -> (VolumeConsistency, bool) {
+    let valid: Vec<&IndexCandidateDiagnostic> = candidates
+        .iter()
+        .filter(|candidate| candidate.index.is_some())
+        .collect();
+    if valid.is_empty() {
+        return (VolumeConsistency::NoUsableIndex, false);
+    }
+    if label_uuid.is_some_and(|uuid| {
+        valid
+            .iter()
+            .any(|candidate| candidate.index.as_ref().unwrap().volume_uuid != uuid)
+    }) {
+        return (VolumeConsistency::ForeignIndex, false);
+    }
+    if valid.iter().any(|candidate| {
+        let index = candidate.index.as_ref().unwrap();
+        index.self_location.partition != candidate.physical_partition
+            || index.self_location.startblock != candidate.actual_start_block
+    }) {
+        return (VolumeConsistency::InvalidIndexLocation, false);
+    }
+    let latest_by_partition: Vec<&IndexCandidateDiagnostic> = [0u8, 1u8]
+        .iter()
+        .filter_map(|partition| {
+            valid
+                .iter()
+                .filter(|candidate| candidate.physical_partition == *partition)
+                .max_by_key(|candidate| candidate.index.as_ref().unwrap().generation)
+                .copied()
+        })
+        .collect();
+    if latest_by_partition.len() < 2 {
+        return (VolumeConsistency::IndexCopyMissing, false);
+    }
+    if latest_by_partition.iter().any(|latest| {
+        candidates.iter().any(|candidate| {
+            candidate.physical_partition == latest.physical_partition
+                && candidate.actual_start_block > latest.actual_start_block
+        })
+    }) {
+        return (VolumeConsistency::UnindexedTail, false);
+    }
+    let first = latest_by_partition[0].index.as_ref().unwrap();
+    if latest_by_partition.iter().skip(1).any(|candidate| {
+        let index = candidate.index.as_ref().unwrap();
+        index.generation != first.generation || index.volume_uuid != first.volume_uuid
+    }) {
+        return (VolumeConsistency::DivergentIndexes, false);
+    }
+    if vci.is_empty() {
+        return (VolumeConsistency::MamUnavailable, true);
+    }
+    if vci.len() != 2
+        || vci.iter().any(|(_, copy)| {
+            copy.generation != vci[0].1.generation
+                || copy.volume_uuid != vci[0].1.volume_uuid
+                || copy.vcr != vci[0].1.vcr
+        })
+    {
+        return (VolumeConsistency::DivergentVci, false);
+    }
+    if vci.iter().any(|(_, copy)| {
+        copy.generation != first.generation || copy.volume_uuid != first.volume_uuid
+    }) {
+        return (VolumeConsistency::StaleVci, false);
+    }
+    if vci.iter().any(|(partition, copy)| {
+        latest_by_partition
+            .iter()
+            .find(|candidate| candidate.physical_partition == *partition)
+            .is_none_or(|candidate| copy.block != candidate.actual_start_block)
+    }) {
+        return (VolumeConsistency::StaleVci, false);
+    }
+    (VolumeConsistency::Healthy, true)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MamDiagnosticAttribute {
     pub id: u16,
     pub format: u8,
@@ -689,6 +805,35 @@ fn update_volume_coherency(
     Ok(())
 }
 
+fn update_write_volume_coherency(
+    tape: &mut TapeSession,
+    volume_uuid: &str,
+    generation: u64,
+    partitions: &[(u8, u64)],
+    options: &WriteOptions,
+) -> Result<(), String> {
+    tape.flush().map_err(|e| e.to_string())?;
+    check_write_stop(options, WriteFailpoint::AfterIndexes)?;
+    let vcr = tape
+        .read_mam_attribute(0, mam::VOLUME_CHANGE_REFERENCE)
+        .map_err(|e| e.to_string())?;
+    for (index, &(partition, block)) in partitions.iter().enumerate() {
+        let value =
+            VolumeCoherencyInformation::new(&vcr, generation, block, volume_uuid)?.to_bytes()?;
+        tape.write_mam_attribute(
+            partition,
+            mam::VOLUME_COHERENCY_INFORMATION,
+            MamAttributeFormat::Binary,
+            &value,
+        )
+        .map_err(|e| e.to_string())?;
+        if index == 0 {
+            check_write_stop(options, WriteFailpoint::AfterFirstVci)?;
+        }
+    }
+    Ok(())
+}
+
 fn generate_uuid_v4() -> Result<String, String> {
     use std::io::Read;
     let mut bytes = [0u8; 16];
@@ -879,12 +1024,270 @@ fn scan_latest_index(
     Ok((latest, write_block))
 }
 
+fn scan_index_candidates(
+    session: &mut TapeSession,
+    partition: u8,
+) -> Result<Vec<IndexCandidateDiagnostic>, device::Error> {
+    session.locate(partition, 4)?;
+    let mut candidates = Vec::new();
+    let mut records = Vec::new();
+    let mut byte_len = 0usize;
+    let mut looks_like_index = None;
+    let mut file_start = 4u64;
+    let mut file_records = 0u64;
+    loop {
+        match session.read_record()? {
+            ReadRecord::Data(data) => {
+                byte_len = byte_len.saturating_add(data.len());
+                let is_index = *looks_like_index.get_or_insert_with(|| {
+                    data.starts_with(b"<?xml") || data.starts_with(b"\xef\xbb\xbf<?xml")
+                });
+                // 普通 data file 可能占满整盘，绝不能为诊断把它全部缓存到内存。
+                if is_index {
+                    records.extend_from_slice(&data);
+                }
+                file_records += 1;
+            }
+            ReadRecord::Filemark => {
+                if byte_len > 0 {
+                    candidates.push(index_candidate_from_records(
+                        partition,
+                        file_start,
+                        byte_len,
+                        looks_like_index == Some(true),
+                        &records,
+                    ));
+                }
+                records.clear();
+                byte_len = 0;
+                looks_like_index = None;
+                file_start += file_records + 1;
+                file_records = 0;
+            }
+            ReadRecord::Eod => {
+                if byte_len > 0 {
+                    candidates.push(index_candidate_from_records(
+                        partition,
+                        file_start,
+                        byte_len,
+                        looks_like_index == Some(true),
+                        &records,
+                    ));
+                }
+                return Ok(candidates);
+            }
+        }
+    }
+}
+
+fn index_candidate_from_records(
+    partition: u8,
+    start_block: u64,
+    byte_len: usize,
+    looks_like_index: bool,
+    records: &[u8],
+) -> IndexCandidateDiagnostic {
+    let (index, parse_error) = if !looks_like_index {
+        (
+            None,
+            Some("record group 不是 XML index（可能是普通 data）".into()),
+        )
+    } else {
+        match std::str::from_utf8(records) {
+            Ok(xml) => match Index::parse_xml(xml.trim_start_matches('\u{feff}')) {
+                Ok(index) => (Some(index), None),
+                Err(error) => (None, Some(error.to_string())),
+            },
+            Err(error) => (None, Some(format!("index 不是有效 UTF-8: {error}"))),
+        }
+    };
+    IndexCandidateDiagnostic {
+        physical_partition: partition,
+        actual_start_block: start_block,
+        byte_len,
+        index,
+        parse_error,
+    }
+}
+
+fn read_index_candidate_at(
+    session: &mut TapeSession,
+    partition: u8,
+    start_block: u64,
+) -> Result<IndexCandidateDiagnostic, device::Error> {
+    const MAX_INDEX_BYTES: usize = 512 * 1024 * 1024;
+    session.locate(partition, start_block)?;
+    let mut records = Vec::new();
+    let mut byte_len = 0usize;
+    let mut looks_like_index = None;
+    loop {
+        match session.read_record()? {
+            ReadRecord::Data(data) => {
+                byte_len = byte_len.saturating_add(data.len());
+                let is_index = *looks_like_index.get_or_insert_with(|| {
+                    data.starts_with(b"<?xml") || data.starts_with(b"\xef\xbb\xbf<?xml")
+                });
+                if !is_index {
+                    return Ok(index_candidate_from_records(
+                        partition,
+                        start_block,
+                        byte_len,
+                        false,
+                        &[],
+                    ));
+                }
+                if records.len().saturating_add(data.len()) > MAX_INDEX_BYTES {
+                    return Ok(IndexCandidateDiagnostic {
+                        physical_partition: partition,
+                        actual_start_block: start_block,
+                        byte_len,
+                        index: None,
+                        parse_error: Some(format!(
+                            "index candidate 超过诊断上限 {MAX_INDEX_BYTES} bytes"
+                        )),
+                    });
+                }
+                records.extend_from_slice(&data);
+            }
+            ReadRecord::Filemark | ReadRecord::Eod => {
+                return Ok(index_candidate_from_records(
+                    partition,
+                    start_block,
+                    byte_len,
+                    looks_like_index == Some(true),
+                    &records,
+                ));
+            }
+        }
+    }
+}
+
 /// 检查一台磁带机上的 LTFS 卷（Milestone 2）。
 ///
 /// 流程：读取两个物理分区的 label → 确定 index 分区 → 扫描最新 index。
 pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
     let mut session = TapeSession::open(&drive.sg_path)?;
     inspect_volume_session(&mut session)
+}
+
+/// 只读扫描两个 partition 的 label、所有 index 文件和 VCI，用于不一致卷诊断。
+/// 与普通 `inspect_volume` 不同，本函数不静默丢弃损坏的 index candidate。
+pub fn diagnose_volume(drive: &TapeDrive) -> Result<VolumeDiagnosis, String> {
+    diagnose_volume_with_options(drive, false)
+}
+
+pub fn diagnose_volume_full(drive: &TapeDrive) -> Result<VolumeDiagnosis, String> {
+    diagnose_volume_with_options(drive, true)
+}
+
+fn diagnose_volume_with_options(
+    drive: &TapeDrive,
+    full_data_scan: bool,
+) -> Result<VolumeDiagnosis, String> {
+    let mut session = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    session
+        .set_variable_block()
+        .map_err(|error| error.to_string())?;
+    let mut label_uuids = Vec::new();
+    let mut candidates = Vec::new();
+    let mut vci = Vec::new();
+    let mut partition_errors = Vec::new();
+
+    for partition in [0u8, 1u8] {
+        match probe_partition_label(&mut session, partition) {
+            Ok(Some((_, label))) => label_uuids.push((partition, label.volume_uuid)),
+            Ok(None) => partition_errors.push(format!("partition {partition}: 无有效 LTFS label")),
+            Err(error) => partition_errors.push(format!(
+                "partition {partition}: label 读取失败（不是不存在）: {error}"
+            )),
+        }
+        match session.read_mam_attribute(partition, mam::VOLUME_COHERENCY_INFORMATION) {
+            Ok(raw) => match VolumeCoherencyInformation::parse(&raw) {
+                Ok(copy) => vci.push((partition, copy)),
+                Err(error) => {
+                    partition_errors.push(format!("partition {partition}: VCI 解析失败: {error}"))
+                }
+            },
+            Err(error) => {
+                partition_errors.push(format!("partition {partition}: VCI 读取失败: {error}"))
+            }
+        }
+    }
+
+    match scan_index_candidates(&mut session, 0) {
+        Ok(mut found) => candidates.append(&mut found),
+        Err(error) => {
+            partition_errors.push(format!("partition 0: index 扫描发生设备错误: {error}"))
+        }
+    }
+    if full_data_scan {
+        match scan_index_candidates(&mut session, 1) {
+            Ok(mut found) => candidates.append(&mut found),
+            Err(error) => {
+                partition_errors.push(format!("partition 1: index 扫描发生设备错误: {error}"))
+            }
+        }
+    } else {
+        let mut targets: Vec<u64> = vci
+            .iter()
+            .filter(|(partition, _)| *partition == 1)
+            .map(|(_, copy)| copy.block)
+            .collect();
+        targets.extend(candidates.iter().filter_map(|candidate| {
+            candidate
+                .index
+                .as_ref()?
+                .previous_location
+                .as_ref()
+                .filter(|location| location.partition == 1)
+                .map(|location| location.startblock)
+        }));
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            partition_errors.push(
+                "partition 1: 没有 VCI/index chain 可信目标，默认有界诊断未执行全分区扫描".into(),
+            );
+        }
+        for block in targets {
+            match read_index_candidate_at(&mut session, 1, block) {
+                Ok(candidate) => candidates.push(candidate),
+                Err(error) => partition_errors.push(format!(
+                    "partition 1 block {block}: 定点 index 读取失败: {error}"
+                )),
+            }
+        }
+    }
+
+    let label_uuid = label_uuids.first().map(|(_, uuid)| uuid.clone());
+    let divergent_labels = label_uuids
+        .iter()
+        .skip(1)
+        .any(|(_, uuid)| Some(uuid) != label_uuid.as_ref());
+    if divergent_labels {
+        partition_errors.push(format!(
+            "两个 partition 的 label UUID 不一致: {label_uuids:?}"
+        ));
+    }
+    let (mut consistency, mut safe_for_normal_write) =
+        classify_volume_consistency(label_uuid.as_deref(), &candidates, &vci);
+    if label_uuids.len() != 2 {
+        safe_for_normal_write = false;
+        if consistency == VolumeConsistency::Healthy {
+            consistency = VolumeConsistency::IndexCopyMissing;
+        }
+    } else if divergent_labels {
+        consistency = VolumeConsistency::DivergentLabels;
+        safe_for_normal_write = false;
+    }
+    Ok(VolumeDiagnosis {
+        label_uuid,
+        candidates,
+        vci,
+        partition_errors,
+        consistency,
+        safe_for_normal_write,
+    })
 }
 
 /// 用已有会话检查 LTFS 卷（供需要继续使用同一会话的命令复用）。
@@ -1033,10 +1436,118 @@ pub enum WriteVerification {
     ReadBackSha256,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct WriteOptions {
     pub verification: WriteVerification,
+    /// 仅用于可破坏集成测试；在已完成的语义步骤边界停止工作流。
+    pub failpoint: Option<WriteFailpoint>,
+    pub cancellation: Option<CancellationToken>,
+    /// 仅供集成测试在确定的安全边界触发 cancellation token。
+    pub cancelpoint: Option<WriteFailpoint>,
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancellationToken {
+    pub fn request_cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteFailpoint {
+    AfterFirstDataRecord,
+    AfterDataIndex,
+    AfterIndexes,
+    AfterFirstVci,
+    BeforeVerify,
+}
+
+impl std::str::FromStr for WriteFailpoint {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "after-first-data-record" => Ok(Self::AfterFirstDataRecord),
+            "after-data-index" => Ok(Self::AfterDataIndex),
+            "after-indexes" => Ok(Self::AfterIndexes),
+            "after-first-vci" => Ok(Self::AfterFirstVci),
+            "before-verify" => Ok(Self::BeforeVerify),
+            _ => Err(format!("未知 write failpoint: {value}")),
+        }
+    }
+}
+
+fn check_write_stop(options: &WriteOptions, point: WriteFailpoint) -> Result<(), String> {
+    if options.cancelpoint == Some(point)
+        && let Some(token) = &options.cancellation
+    {
+        token.request_cancel();
+    }
+    if options
+        .cancellation
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return Err(format!("[cancelled]用户在安全边界 {point:?} 请求取消"));
+    }
+    if options.failpoint == Some(point) {
+        let marker = if point == WriteFailpoint::AfterFirstVci {
+            "[state:C4]"
+        } else {
+            ""
+        };
+        return Err(format!("{marker}测试 failpoint：在安全边界 {point:?} 停止"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WriteCommitState {
+    #[default]
+    NotStarted,
+    DataIncomplete,
+    DataIndexOnly,
+    IndexesWritten,
+    CoherencyPartial,
+    Committed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteFailure {
+    pub phase: WritePhase,
+    pub commit_state: WriteCommitState,
+    pub message: String,
+    pub current_file: Option<String>,
+    pub files_completed: usize,
+    pub bytes_written: u64,
+    pub partition: Option<u8>,
+    pub logical_block: Option<u64>,
+    pub safe_to_retry: bool,
+    pub requires_diagnosis: bool,
+    pub cancelled: bool,
+}
+
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} [phase={:?}, commit={:?}, bytes={}",
+            self.message, self.phase, self.commit_state, self.bytes_written
+        )?;
+        if let (Some(partition), Some(block)) = (self.partition, self.logical_block) {
+            write!(f, ", position=p{partition}b{block}")?;
+        }
+        f.write_str("]")
+    }
+}
+
+impl std::error::Error for WriteFailure {}
 
 pub const CHANNEL_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 pub const CHANNEL_HISTORY_CAPACITY: usize = 120;
@@ -1072,6 +1583,7 @@ pub enum WritePhase {
     SyncingIndexPartition,
     UpdatingCoherency,
     Verifying,
+    Failed,
     Completed,
 }
 
@@ -1083,7 +1595,10 @@ pub struct WriteEvent {
     pub files_total: usize,
     pub bytes_written: u64,
     pub bytes_total: u64,
+    pub partition: Option<u8>,
+    pub logical_block: Option<u64>,
     pub telemetry: Option<ChannelTelemetrySample>,
+    pub failure: Option<WriteFailure>,
 }
 
 /// 一次完整 LTFS 写入事务的应用层入口。
@@ -1124,6 +1639,22 @@ impl<'a> WriteSession<'a> {
         )
     }
 
+    pub fn run_detailed_with_options(
+        &self,
+        local_path: &Path,
+        tape_path: &str,
+        options: WriteOptions,
+        observer: &mut dyn FnMut(&WriteEvent),
+    ) -> Result<WriteResult, WriteFailure> {
+        write_with_observer_detailed(
+            self.drive,
+            WriteSourceRequest::Local(local_path),
+            tape_path,
+            options,
+            observer,
+        )
+    }
+
     /// 写入一个不落盘、长度固定且可由 seed 重现的伪随机测试文件。
     pub fn run_pseudorandom(
         &self,
@@ -1141,6 +1672,23 @@ impl<'a> WriteSession<'a> {
             observer,
         )
     }
+
+    pub fn run_pseudorandom_detailed(
+        &self,
+        size: u64,
+        seed: u64,
+        tape_path: &str,
+        options: WriteOptions,
+        observer: &mut dyn FnMut(&WriteEvent),
+    ) -> Result<WriteResult, WriteFailure> {
+        write_with_observer_detailed(
+            self.drive,
+            WriteSourceRequest::Pseudorandom { size, seed },
+            tape_path,
+            options,
+            observer,
+        )
+    }
 }
 
 struct WriteProgress<'a> {
@@ -1149,6 +1697,8 @@ struct WriteProgress<'a> {
     bytes_total: u64,
     files_completed: usize,
     bytes_written: u64,
+    partition: Option<u8>,
+    logical_block: Option<u64>,
 }
 
 impl WriteProgress<'_> {
@@ -1169,7 +1719,10 @@ impl WriteProgress<'_> {
             files_total: self.files_total,
             bytes_written: self.bytes_written,
             bytes_total: self.bytes_total,
+            partition: self.partition,
+            logical_block: self.logical_block,
             telemetry,
+            failure: None,
         });
     }
 }
@@ -1594,6 +2147,93 @@ fn write_with_observer(
     options: WriteOptions,
     observer: &mut dyn FnMut(&WriteEvent),
 ) -> Result<WriteResult, String> {
+    write_with_observer_detailed(drive, source, tape_path, options, observer)
+        .map_err(|error| error.to_string())
+}
+
+fn write_with_observer_detailed(
+    drive: &TapeDrive,
+    source: WriteSourceRequest<'_>,
+    tape_path: &str,
+    options: WriteOptions,
+    observer: &mut dyn FnMut(&WriteEvent),
+) -> Result<WriteResult, WriteFailure> {
+    let mut last_event = None;
+    let result = {
+        let mut forwarding = |event: &WriteEvent| {
+            last_event = Some(event.clone());
+            observer(event);
+        };
+        write_with_observer_inner(drive, source, tape_path, options, &mut forwarding)
+    };
+    result.map_err(|message| {
+        let failure = classify_write_failure(last_event.as_ref(), message);
+        observer(&WriteEvent {
+            phase: WritePhase::Failed,
+            current_file: failure.current_file.clone(),
+            files_completed: failure.files_completed,
+            files_total: last_event.as_ref().map_or(0, |event| event.files_total),
+            bytes_written: failure.bytes_written,
+            bytes_total: last_event.as_ref().map_or(0, |event| event.bytes_total),
+            partition: failure.partition,
+            logical_block: failure.logical_block,
+            telemetry: None,
+            failure: Some(failure.clone()),
+        });
+        failure
+    })
+}
+
+fn classify_write_failure(last: Option<&WriteEvent>, message: String) -> WriteFailure {
+    let phase = last.map_or(WritePhase::Preparing, |event| event.phase);
+    let bytes_written = last.map_or(0, |event| event.bytes_written);
+    let commit_state = if message.contains("[state:C4]") {
+        WriteCommitState::CoherencyPartial
+    } else {
+        match phase {
+            WritePhase::Preparing => WriteCommitState::NotStarted,
+            WritePhase::WritingData if bytes_written == 0 => WriteCommitState::NotStarted,
+            WritePhase::WritingData | WritePhase::FinalizingDataIndex => {
+                WriteCommitState::DataIncomplete
+            }
+            WritePhase::SyncingIndexPartition => WriteCommitState::DataIndexOnly,
+            WritePhase::UpdatingCoherency => WriteCommitState::IndexesWritten,
+            WritePhase::Verifying | WritePhase::Completed => WriteCommitState::Committed,
+            WritePhase::Failed => WriteCommitState::NotStarted,
+        }
+    };
+    let (partition, logical_block) =
+        last.map_or((None, None), |event| (event.partition, event.logical_block));
+    let requires_diagnosis = matches!(
+        commit_state,
+        WriteCommitState::DataIncomplete
+            | WriteCommitState::DataIndexOnly
+            | WriteCommitState::IndexesWritten
+            | WriteCommitState::CoherencyPartial
+    ) || message.contains("不一致")
+        || message.contains("coherency");
+    WriteFailure {
+        phase,
+        commit_state,
+        message: message.replace("[state:C4]", "").replace("[cancelled]", ""),
+        current_file: last.and_then(|event| event.current_file.clone()),
+        files_completed: last.map_or(0, |event| event.files_completed),
+        bytes_written,
+        partition,
+        logical_block,
+        safe_to_retry: commit_state == WriteCommitState::NotStarted && !requires_diagnosis,
+        requires_diagnosis,
+        cancelled: message.contains("[cancelled]"),
+    }
+}
+
+fn write_with_observer_inner(
+    drive: &TapeDrive,
+    source: WriteSourceRequest<'_>,
+    tape_path: &str,
+    options: WriteOptions,
+    observer: &mut dyn FnMut(&WriteEvent),
+) -> Result<WriteResult, String> {
     let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
     let health_before = read_drive_health_session(&mut session);
     let mut channel_telemetry = ChannelTelemetryState::new(health_before.write_channels.clone());
@@ -1609,6 +2249,8 @@ fn write_with_observer(
         .index
         .take()
         .ok_or_else(|| "没有可用的 index".to_string())?;
+
+    validate_write_vci(&mut session, &label, &index)?;
 
     if index
         .volume_lock_state
@@ -1635,6 +2277,8 @@ fn write_with_observer(
         bytes_total: plan.total_bytes,
         files_completed: 0,
         bytes_written: 0,
+        partition: None,
+        logical_block: None,
     };
     progress.emit(WritePhase::Preparing, None);
     let index_write_block = volume
@@ -1667,6 +2311,8 @@ fn write_with_observer(
         index.generation,
     )?;
     let data_append = data_pos;
+    progress.partition = Some(label.data_partition);
+    progress.logical_block = Some(data_pos);
 
     // 分块写入本地文件内容。普通文件之间不写 filemark；最终由下面写入
     // data index 前的 filemark 结束数据文件区。
@@ -1705,6 +2351,17 @@ fn write_with_observer(
             total += n as u64;
             progress.bytes_written = total;
             data_pos += 1;
+            progress.logical_block = Some(data_pos);
+            if options.failpoint == Some(WriteFailpoint::AfterFirstDataRecord)
+                || options.cancelpoint == Some(WriteFailpoint::AfterFirstDataRecord)
+                || options
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+            {
+                progress.emit(WritePhase::WritingData, Some(&planned.target));
+                check_write_stop(&options, WriteFailpoint::AfterFirstDataRecord)?;
+            }
             if let Some(sample) = channel_telemetry.sample_if_due(
                 &mut session,
                 label.data_partition,
@@ -1764,6 +2421,7 @@ fn write_with_observer(
     progress.emit(WritePhase::FinalizingDataIndex, None);
     session.write_filemark().map_err(|e| e.to_string())?;
     data_pos += 1;
+    progress.logical_block = Some(data_pos);
     let data_index_start = data_pos;
     index.self_location = TapePos {
         partition: label.data_partition,
@@ -1778,12 +2436,16 @@ fn write_with_observer(
 
     // 镜像到 index 分区：[FM][index][FM]（参考 RefreshIndexPartition）
     progress.emit(WritePhase::SyncingIndexPartition, None);
+    check_write_stop(&options, WriteFailpoint::AfterDataIndex)?;
     session
         .locate(label.index_partition, index_write_block)
         .map_err(|e| e.to_string())?;
+    progress.partition = Some(label.index_partition);
+    progress.logical_block = Some(index_write_block);
     let mut idx_pos = index_write_block;
     session.write_filemark().map_err(|e| e.to_string())?;
     idx_pos += 1;
+    progress.logical_block = Some(idx_pos);
     let idx_copy_start = idx_pos;
     index.self_location = TapePos {
         partition: label.index_partition,
@@ -1800,7 +2462,7 @@ fn write_with_observer(
     session.write_filemark().map_err(|e| e.to_string())?;
 
     progress.emit(WritePhase::UpdatingCoherency, None);
-    update_volume_coherency(
+    update_write_volume_coherency(
         &mut session,
         &index.volume_uuid,
         index.generation,
@@ -1808,10 +2470,13 @@ fn write_with_observer(
             (label.index_partition, idx_copy_start),
             (label.data_partition, data_index_start),
         ],
+        &options,
     )
     .map_err(|e| format!("两个 index 已写完，但更新 MAM VCI 失败：{e}"))?;
 
     if options.verification == WriteVerification::ReadBackSha256 {
+        progress.emit(WritePhase::Verifying, None);
+        check_write_stop(&options, WriteFailpoint::BeforeVerify)?;
         for hash in &hashes {
             progress.emit(WritePhase::Verifying, Some(&hash.path));
             verify_file_hash(&mut session, &index, hash).map_err(|e| {
@@ -1888,6 +2553,60 @@ fn verify_file_hash(
             "{} SHA-256 不匹配：期望 {}，实际 {}",
             expected.path, expected.sha256, actual
         ));
+    }
+    Ok(())
+}
+
+fn validate_write_vci(
+    session: &mut TapeSession,
+    label: &Label,
+    index: &Index,
+) -> Result<(), String> {
+    let data_location = index
+        .previous_location
+        .as_ref()
+        .filter(|location| location.partition == label.data_partition)
+        .ok_or_else(|| "index 缺少有效的 data previous-generation location".to_string())?;
+    let expected = [
+        (label.index_partition, index.self_location.startblock),
+        (label.data_partition, data_location.startblock),
+    ];
+    let mut copies = Vec::new();
+    let mut errors = Vec::new();
+    for (partition, block) in expected {
+        match session.read_mam_attribute(partition, mam::VOLUME_COHERENCY_INFORMATION) {
+            Ok(raw) => match VolumeCoherencyInformation::parse(&raw) {
+                Ok(vci) => copies.push((partition, block, vci)),
+                Err(error) => errors.push(format!("P{partition} VCI 解析失败: {error}")),
+            },
+            Err(error) => errors.push(format!("P{partition} VCI 读取失败: {error}")),
+        }
+    }
+    // 两份均不可用视为设备不支持 VCI；LTFS constructs 仍是事实来源。
+    if copies.is_empty() {
+        return Ok(());
+    }
+    if copies.len() != 2 {
+        return Err(format!(
+            "卷 coherency 不一致：只有一份可用 VCI（{}）",
+            errors.join("; ")
+        ));
+    }
+    for (partition, block, vci) in copies {
+        if vci.generation != index.generation
+            || vci.volume_uuid != index.volume_uuid
+            || vci.block != block
+        {
+            return Err(format!(
+                "卷 coherency 不一致：P{partition} VCI 指向 gen {} block {} uuid {}，期望 gen {} block {} uuid {}",
+                vci.generation,
+                vci.block,
+                vci.volume_uuid,
+                index.generation,
+                block,
+                index.volume_uuid
+            ));
+        }
     }
     Ok(())
 }
@@ -2121,6 +2840,8 @@ mod tests {
                 bytes_total: 30,
                 files_completed: 0,
                 bytes_written: 0,
+                partition: None,
+                logical_block: None,
             };
             progress.emit(WritePhase::Preparing, None);
             progress.emit(WritePhase::WritingData, Some("/a"));
@@ -2140,6 +2861,195 @@ mod tests {
         assert_eq!(events[2].bytes_written, 10);
         assert!(events.iter().all(|event| event.files_total == 2));
         assert!(events.iter().all(|event| event.bytes_total == 30));
+    }
+
+    #[test]
+    fn write_failure_classifies_commit_boundaries() {
+        let event = |phase, bytes_written| WriteEvent {
+            phase,
+            current_file: Some("/test.bin".into()),
+            files_completed: 0,
+            files_total: 1,
+            bytes_written,
+            bytes_total: 1024,
+            partition: Some(1),
+            logical_block: Some(7),
+            telemetry: None,
+            failure: None,
+        };
+        let cases = [
+            (WritePhase::Preparing, 0, WriteCommitState::NotStarted),
+            (WritePhase::WritingData, 1, WriteCommitState::DataIncomplete),
+            (
+                WritePhase::FinalizingDataIndex,
+                1024,
+                WriteCommitState::DataIncomplete,
+            ),
+            (
+                WritePhase::SyncingIndexPartition,
+                1024,
+                WriteCommitState::DataIndexOnly,
+            ),
+            (
+                WritePhase::UpdatingCoherency,
+                1024,
+                WriteCommitState::IndexesWritten,
+            ),
+            (WritePhase::Verifying, 1024, WriteCommitState::Committed),
+        ];
+        for (phase, bytes, expected) in cases {
+            let event = event(phase, bytes);
+            let failure = classify_write_failure(Some(&event), "injected".into());
+            assert_eq!(failure.commit_state, expected);
+            assert_eq!(
+                failure.safe_to_retry,
+                expected == WriteCommitState::NotStarted
+            );
+            assert_eq!(
+                failure.requires_diagnosis,
+                !matches!(
+                    expected,
+                    WriteCommitState::NotStarted | WriteCommitState::Committed
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn partial_vci_failure_requires_diagnosis() {
+        let event = WriteEvent {
+            phase: WritePhase::UpdatingCoherency,
+            current_file: None,
+            files_completed: 1,
+            files_total: 1,
+            bytes_written: 10,
+            bytes_total: 10,
+            partition: Some(0),
+            logical_block: Some(5),
+            telemetry: None,
+            failure: None,
+        };
+        let failure = classify_write_failure(Some(&event), "[state:C4]second VCI failed".into());
+        assert_eq!(failure.commit_state, WriteCommitState::CoherencyPartial);
+        assert!(failure.requires_diagnosis);
+        assert_eq!(failure.message, "second VCI failed");
+    }
+
+    #[test]
+    fn cancellation_token_is_distinct_from_failure() {
+        let token = CancellationToken::default();
+        assert!(!token.is_cancelled());
+        token.request_cancel();
+        assert!(token.is_cancelled());
+        let options = WriteOptions {
+            cancellation: Some(token),
+            ..WriteOptions::default()
+        };
+        let error = check_write_stop(&options, WriteFailpoint::AfterDataIndex).unwrap_err();
+        let failure = classify_write_failure(None, error);
+        assert!(failure.cancelled);
+    }
+
+    fn index_candidate(partition: u8, block: u64, generation: u64) -> IndexCandidateDiagnostic {
+        let mut index = empty_index();
+        index.generation = generation;
+        index.self_location = TapePos {
+            partition,
+            startblock: block,
+        };
+        IndexCandidateDiagnostic {
+            physical_partition: partition,
+            actual_start_block: block,
+            byte_len: 100,
+            index: Some(index),
+            parse_error: None,
+        }
+    }
+
+    fn test_vci(partition: u8, block: u64, generation: u64) -> (u8, VolumeCoherencyInformation) {
+        (
+            partition,
+            VolumeCoherencyInformation {
+                vcr: vec![1],
+                generation,
+                block,
+                volume_uuid: "00000000-0000-0000-0000-000000000000".into(),
+                acsi_version: 1,
+            },
+        )
+    }
+
+    #[test]
+    fn consistency_requires_matching_index_and_vci_copies() {
+        let candidates = vec![index_candidate(0, 5, 4), index_candidate(1, 9, 4)];
+        let vci = vec![test_vci(0, 5, 4), test_vci(1, 9, 4)];
+        assert_eq!(
+            classify_volume_consistency(
+                Some("00000000-0000-0000-0000-000000000000"),
+                &candidates,
+                &vci
+            ),
+            (VolumeConsistency::Healthy, true)
+        );
+
+        let mut split = candidates.clone();
+        split[1].index.as_mut().unwrap().generation = 3;
+        assert_eq!(
+            classify_volume_consistency(None, &split, &vci).0,
+            VolumeConsistency::DivergentIndexes
+        );
+
+        let stale_vci = vec![test_vci(0, 5, 3), test_vci(1, 9, 3)];
+        assert_eq!(
+            classify_volume_consistency(None, &candidates, &stale_vci).0,
+            VolumeConsistency::StaleVci
+        );
+
+        let split_vci = vec![test_vci(0, 5, 4), test_vci(1, 9, 3)];
+        assert_eq!(
+            classify_volume_consistency(None, &candidates, &split_vci).0,
+            VolumeConsistency::DivergentVci
+        );
+    }
+
+    #[test]
+    fn consistency_rejects_foreign_missing_and_mislocated_indexes() {
+        let candidates = vec![index_candidate(0, 5, 4), index_candidate(1, 9, 4)];
+        assert_eq!(
+            classify_volume_consistency(Some("foreign"), &candidates, &[]).0,
+            VolumeConsistency::ForeignIndex
+        );
+        assert_eq!(
+            classify_volume_consistency(None, &candidates[..1], &[]).0,
+            VolumeConsistency::IndexCopyMissing
+        );
+        let mut misplaced = candidates.clone();
+        misplaced[0].actual_start_block = 6;
+        assert_eq!(
+            classify_volume_consistency(None, &misplaced, &[]).0,
+            VolumeConsistency::InvalidIndexLocation
+        );
+        assert_eq!(
+            classify_volume_consistency(None, &[], &[]).0,
+            VolumeConsistency::NoUsableIndex
+        );
+        assert_eq!(
+            classify_volume_consistency(None, &candidates, &[]),
+            (VolumeConsistency::MamUnavailable, true)
+        );
+
+        let mut tail = candidates.clone();
+        tail.push(IndexCandidateDiagnostic {
+            physical_partition: 1,
+            actual_start_block: 10,
+            byte_len: 512,
+            index: None,
+            parse_error: Some("ordinary data".into()),
+        });
+        assert_eq!(
+            classify_volume_consistency(None, &tail, &[]).0,
+            VolumeConsistency::UnindexedTail
+        );
     }
 
     #[test]

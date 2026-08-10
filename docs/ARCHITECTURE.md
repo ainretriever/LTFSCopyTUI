@@ -552,8 +552,9 @@ Recovered Write Errors = 120
 完成时各取一次快照，并用 `checked_sub` 形成操作期间差值。若计数下降（驱动器
 重置、介质/统计域变化或回绕）则差值为 unknown，不能用饱和减法伪报为 0。
 
-首版只在阶段边界采样。周期采样必须以后通过统一 `TapeSession` 所有权实现，
-不能由 telemetry 线程另开句柄并与写入并发发送命令。
+首版在任务开始和结束读取完整健康快照，并在数据写入的安全记录边界周期采样。
+所有查询都复用统一 `TapeSession`，不能由 telemetry 线程另开句柄并与写入并发
+发送命令。
 
 面向用户和社区交流的主要“通道错误率”必须兼容 LTFSCopyGUI：读取厂商
 RECEIVE DIAGNOSTIC RESULTS page 88h（write）/87h（read），以相邻样本的 C1
@@ -1237,7 +1238,13 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 行为和兼容性边界见 `docs/REVIEW_FORMAT_WORKFLOW.md` 和
 `docs/REVIEW_ERASE_WORKFLOW.md`。普通写入结束后的 MAM VCI 更新已实现并验证，
 详见 `docs/REVIEW_MAM_WORKFLOW.md`；下一阶段继续处理完整 write workflow 的
-校验、故障注入和恢复语义。
+校验、故障注入和恢复语义。Milestone 11 的提交状态、自动化故障注入、测试带
+集成场景和真实故障带只读验收见 `docs/MILESTONE_11_TEST_MATRIX.md`；测试专用
+磁带结果见 `docs/REVIEW_FAILURE_WORKFLOW.md`。
+
+只读 `diagnose` 默认完整扫描较小的 index partition，并按 VCI/index chain 定点
+读取 data partition index，避免大卷诊断隐式触发数小时全带读取。只有显式
+`--full` 才允许顺序扫描完整 data partition。
 
 实际 milestone 顺序允许根据实现过程中发现的问题调整。
 

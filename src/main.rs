@@ -13,6 +13,7 @@
 //! - `tapecpy erase <short|long|minimum> [选择器] --force`：擦除/准备介质。
 //! - `tapecpy mam [选择器]`：显示 LTFS MAM/VCI 诊断信息。
 //! - `tapecpy health [选择器]`：显示 LOG SENSE 错误计数和 TapeAlert。
+//! - `tapecpy diagnose [选择器]`：只读扫描两分区 index/VCI 一致性。
 
 use std::env;
 use std::process::ExitCode;
@@ -29,6 +30,8 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy volume [选择器]      识别 LTFS 并显示 volume 基本信息
   tapecpy mam [选择器]         显示两个分区的 LTFS MAM/VCI 诊断信息
   tapecpy health [选择器]      显示读写错误累计计数和当前 TapeAlert
+  tapecpy diagnose [选择器] [--full]
+                              只读诊断；--full 才顺序扫描整个 data partition
   tapecpy ls [选择器] [路径]   浏览 LTFS 卷目录树（默认根目录 /）
   tapecpy load [选择器]        装载磁带（推入后驱动器未识别时使用）
   tapecpy unload [选择器]      弹出磁带
@@ -37,6 +40,7 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
                               写入；该选项在提交后从磁带回读并校验 SHA-256
   tapecpy write-random <大小> <磁带路径> [选择器] [--seed=N]
                               流式写入可重现的伪随机测试数据（如 80GiB）
+                              测试可加 --failpoint/--cancelpoint=<语义步骤>（破坏性）
   tapecpy format <Barcode> <Volume Name> [选择器] --force
                               破坏性地重新格式化为 LTFS（必须显式指定 --force）
   tapecpy erase <short|long|minimum> [选择器] --force
@@ -69,6 +73,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
         Some("mam") => cmd_mam(args.get(1).map(String::as_str)),
         Some("health") => cmd_health(args.get(1).map(String::as_str)),
+        Some("diagnose") => cmd_diagnose(&args[1..]),
         Some("ls") => cmd_ls(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -86,6 +91,66 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some(other) => Err(format!("未知命令 `{other}`\n\n{USAGE}")),
     }
+}
+
+fn cmd_diagnose(args: &[String]) -> Result<(), String> {
+    let full = args.iter().any(|argument| argument == "--full");
+    let selector = args
+        .iter()
+        .find(|argument| argument.as_str() != "--full")
+        .map(String::as_str);
+    let drives = app::discover_drives().map_err(|error| error.to_string())?;
+    let drive = app::select_drive(&drives, selector)?;
+    print_drive_header(drive);
+    if full {
+        eprintln!("只读完整扫描两个 partition；大卷可能需要数小时。");
+    } else {
+        eprintln!("只读有界诊断：完整扫描 index partition，定点读取 data index。");
+    }
+    let diagnosis = if full {
+        app::diagnose_volume_full(drive)?
+    } else {
+        app::diagnose_volume(drive)?
+    };
+    println!("一致性: {:?}", diagnosis.consistency);
+    println!("普通写入安全: {}", diagnosis.safe_for_normal_write);
+    if let Some(uuid) = &diagnosis.label_uuid {
+        println!("Label UUID: {uuid}");
+    }
+    for candidate in diagnosis.candidates {
+        if let Some(index) = candidate.index {
+            println!(
+                "P{} B{} {} bytes: index gen={} uuid={} self=p{}b{} previous={:?}",
+                candidate.physical_partition,
+                candidate.actual_start_block,
+                candidate.byte_len,
+                index.generation,
+                index.volume_uuid,
+                index.self_location.partition,
+                index.self_location.startblock,
+                index.previous_location
+            );
+        } else {
+            println!(
+                "P{} B{} {} bytes: INVALID: {}",
+                candidate.physical_partition,
+                candidate.actual_start_block,
+                candidate.byte_len,
+                candidate.parse_error.as_deref().unwrap_or("未知解析错误")
+            );
+        }
+    }
+    for (partition, vci) in diagnosis.vci {
+        println!(
+            "P{partition} VCI: gen={} block={} uuid={} vcr={}",
+            vci.generation,
+            vci.block,
+            vci.volume_uuid,
+            hex_compact(&vci.vcr)
+        );
+    }
+    print_warnings(&diagnosis.partition_errors);
+    Ok(())
 }
 
 fn cmd_health(selector: Option<&str>) -> Result<(), String> {
@@ -493,6 +558,9 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
             } else {
                 app::WriteVerification::None
             },
+            failpoint: None,
+            cancellation: None,
+            cancelpoint: None,
         },
         &mut observer,
     )?;
@@ -503,6 +571,8 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
 fn cmd_write_random(args: &[String]) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut seed = None;
+    let mut failpoint = None;
+    let mut cancelpoint = None;
     for arg in args {
         if let Some(value) = arg.strip_prefix("--seed=") {
             seed = Some(
@@ -510,6 +580,10 @@ fn cmd_write_random(args: &[String]) -> Result<(), String> {
                     .parse::<u64>()
                     .map_err(|_| format!("无效 seed: {value}"))?,
             );
+        } else if let Some(value) = arg.strip_prefix("--failpoint=") {
+            failpoint = Some(value.parse::<app::WriteFailpoint>()?);
+        } else if let Some(value) = arg.strip_prefix("--cancelpoint=") {
+            cancelpoint = Some(value.parse::<app::WriteFailpoint>()?);
         } else {
             positional.push(arg.as_str());
         }
@@ -532,13 +606,31 @@ fn cmd_write_random(args: &[String]) -> Result<(), String> {
     let drive = app::select_drive(&drives, positional.get(2).copied())?;
     eprintln!("流式随机测试源: {size} 字节，seed={seed}");
     let mut observer = write_cli_observer();
-    let result = app::WriteSession::new(drive).run_pseudorandom(
-        size,
-        seed,
-        tape_path,
-        app::WriteOptions::default(),
-        &mut observer,
-    )?;
+    if let Some(point) = failpoint {
+        eprintln!("警告：已启用破坏性 write failpoint {point:?}");
+    }
+    if let Some(point) = cancelpoint {
+        eprintln!("测试：将在安全边界 {point:?} 请求取消");
+    }
+    let cancellation = cancelpoint.map(|_| app::CancellationToken::default());
+    let result = app::WriteSession::new(drive)
+        .run_pseudorandom_detailed(
+            size,
+            seed,
+            tape_path,
+            app::WriteOptions {
+                verification: if failpoint == Some(app::WriteFailpoint::BeforeVerify) {
+                    app::WriteVerification::ReadBackSha256
+                } else {
+                    app::WriteVerification::None
+                },
+                failpoint,
+                cancellation,
+                cancelpoint,
+            },
+            &mut observer,
+        )
+        .map_err(|error| error.to_string())?;
     print_write_result(tape_path, &result);
     Ok(())
 }
@@ -600,6 +692,20 @@ fn write_cli_observer() -> impl FnMut(&app::WriteEvent) {
         app::WritePhase::Verifying => {
             if let Some(path) = &event.current_file {
                 eprintln!("正在从磁带回读校验: {path}");
+            }
+        }
+        app::WritePhase::Failed => {
+            if let Some(failure) = &event.failure {
+                eprintln!(
+                    "写入失败：phase={:?} commit={:?} safe_to_retry={} requires_diagnosis={}",
+                    failure.phase,
+                    failure.commit_state,
+                    failure.safe_to_retry,
+                    failure.requires_diagnosis
+                );
+                if failure.cancelled {
+                    eprintln!("结果类型：用户取消");
+                }
             }
         }
         app::WritePhase::Completed => eprintln!("写入会话已安全完成。"),
