@@ -80,6 +80,7 @@ pub enum JobPhase {
     Running,
     Finalizing,
     Verifying,
+    Ejecting,
     CancellationRequested,
     Cancelled,
     Completed,
@@ -96,6 +97,7 @@ impl JobPhase {
                 | Self::Running
                 | Self::Finalizing
                 | Self::Verifying
+                | Self::Ejecting
                 | Self::CancellationRequested
         )
     }
@@ -103,6 +105,34 @@ impl JobPhase {
     pub fn is_terminal(self) -> bool {
         !self.is_active()
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionAction {
+    #[default]
+    KeepLoaded,
+    EjectAfterCommit,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    #[default]
+    NotRequested,
+    Running,
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status", content = "message")]
+pub enum EjectStatus {
+    #[default]
+    NotRequested,
+    Pending,
+    Succeeded,
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +152,12 @@ pub struct JobSpec {
     pub source: Endpoint,
     pub destination: Endpoint,
     pub read_back_verify: bool,
+    #[serde(default)]
+    pub completion_action: CompletionAction,
+    #[serde(default)]
+    pub volume_barcode: Option<String>,
+    #[serde(default)]
+    pub volume_name: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub write_preflight: Option<WritePreflight>,
@@ -181,9 +217,24 @@ impl JobSpec {
             source,
             destination,
             read_back_verify,
+            completion_action: CompletionAction::KeepLoaded,
+            volume_barcode: None,
+            volume_name: None,
             created_at: timestamp_now(),
             write_preflight: None,
         }
+    }
+
+    pub fn with_completion(
+        mut self,
+        action: CompletionAction,
+        barcode: Option<String>,
+        volume_name: Option<String>,
+    ) -> Self {
+        self.completion_action = action;
+        self.volume_barcode = barcode;
+        self.volume_name = volume_name;
+        self
     }
 
     pub fn with_write_preflight(
@@ -239,6 +290,11 @@ impl JobSpec {
         }
         if self.operation == OperationKind::Read && self.destination.path == "-" {
             return Err("脱离式 Read 不能使用 stdout，必须指定输出文件或目录".into());
+        }
+        if self.operation == OperationKind::Read
+            && (self.read_back_verify || self.completion_action != CompletionAction::KeepLoaded)
+        {
+            return Err("Read job 不能使用 Write read-back verify 或提交后 eject 策略".into());
         }
         if let Some(preflight) = &self.write_preflight {
             if self.operation != OperationKind::Write {
@@ -315,6 +371,21 @@ pub struct JobState {
     pub progress: JobProgress,
     pub error: Option<String>,
     pub requires_diagnosis: bool,
+    #[serde(default)]
+    pub completion: JobCompletion,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobCompletion {
+    pub index_committed: bool,
+    pub generation: Option<u64>,
+    pub verification: VerificationStatus,
+    pub eject: EjectStatus,
+    pub corrected_write_errors: Option<u64>,
+    pub hard_write_errors: Option<u64>,
+    pub corrected_read_errors: Option<u64>,
+    pub hard_read_errors: Option<u64>,
+    pub tape_alerts: Vec<u16>,
 }
 
 impl JobState {
@@ -331,6 +402,7 @@ impl JobState {
             progress: JobProgress::default(),
             error: None,
             requires_diagnosis: false,
+            completion: JobCompletion::default(),
         })
     }
 
@@ -347,12 +419,20 @@ impl JobState {
                 JobPhase::Cancelled
             }
             WritePhase::Failed => JobPhase::Failed,
-            WritePhase::Completed => JobPhase::Completed,
+            // Application 完成表示 index/VCI/可选 verify 已结束；runner 可能还要 eject。
+            // 在 runner 明确发布最终完成结果前不能提前释放 TUI 的设备所有权。
+            WritePhase::Completed => JobPhase::Finalizing,
         };
         if self.phase != JobPhase::CancellationRequested || next_phase.is_terminal() {
             self.phase = next_phase;
         }
         self.message = format!("{:?}", event.phase);
+        if event.phase == WritePhase::Verifying {
+            self.completion.index_committed = true;
+            self.completion.verification = VerificationStatus::Running;
+        } else if event.phase == WritePhase::Completed && self.spec.read_back_verify {
+            self.completion.verification = VerificationStatus::Passed;
+        }
         self.progress.current_item = event.current_file.clone();
         self.progress.items_completed = event.files_completed as u64;
         self.progress.items_total = event.files_total as u64;
@@ -401,6 +481,12 @@ impl JobState {
         if let Some(failure) = &event.failure {
             self.error = Some(failure.message.clone());
             self.requires_diagnosis = failure.requires_diagnosis;
+            if failure.commit_state == crate::app::WriteCommitState::Committed {
+                self.completion.index_committed = true;
+                if self.spec.read_back_verify {
+                    self.completion.verification = VerificationStatus::Failed;
+                }
+            }
         }
     }
 }
@@ -905,7 +991,7 @@ fn run_operation(
                     state.apply_write_event(event, timestamp_now());
                 });
             };
-            crate::app::WriteSession::new(drive)
+            let result = crate::app::WriteSession::new(drive)
                 .run_detailed_with_options(
                     Path::new(&spec.source.path),
                     &spec.destination.path,
@@ -929,6 +1015,56 @@ fn run_operation(
                     &mut observer,
                 )
                 .map_err(|error| error.to_string())?;
+            control.update(|state| {
+                state.revision += 1;
+                state.updated_at = timestamp_now();
+                state.completion.index_committed = true;
+                state.completion.generation = Some(result.generation);
+                state.completion.verification = if spec.read_back_verify {
+                    VerificationStatus::Passed
+                } else {
+                    VerificationStatus::NotRequested
+                };
+                state.completion.corrected_write_errors =
+                    result.health_delta.corrected_write_errors;
+                state.completion.hard_write_errors = result.health_delta.hard_write_errors;
+                state.completion.corrected_read_errors = result.health_delta.corrected_read_errors;
+                state.completion.hard_read_errors = result.health_delta.hard_read_errors;
+                state.completion.tape_alerts = result.health_delta.active_tape_alerts.clone();
+                state.completion.eject = match spec.completion_action {
+                    CompletionAction::KeepLoaded => EjectStatus::NotRequested,
+                    CompletionAction::EjectAfterCommit => EjectStatus::Pending,
+                };
+                state.phase = if spec.completion_action == CompletionAction::EjectAfterCommit {
+                    JobPhase::Ejecting
+                } else {
+                    JobPhase::Completed
+                };
+                state.message = if spec.completion_action == CompletionAction::EjectAfterCommit {
+                    "写入和索引提交已完成，正在自动 Unload / Eject".into()
+                } else {
+                    "Write operation 已完成；磁带保持装载".into()
+                };
+            })?;
+            if spec.completion_action == CompletionAction::EjectAfterCommit {
+                match crate::app::unload_tape(drive) {
+                    Ok(()) => control.update(|state| {
+                        state.revision += 1;
+                        state.updated_at = timestamp_now();
+                        state.phase = JobPhase::Completed;
+                        state.completion.eject = EjectStatus::Succeeded;
+                        state.message = "Write operation 已完成，磁带已自动弹出".into();
+                    })?,
+                    Err(error) => control.update(|state| {
+                        state.revision += 1;
+                        state.updated_at = timestamp_now();
+                        state.phase = JobPhase::Completed;
+                        state.completion.eject = EjectStatus::Failed(error.to_string());
+                        state.message = "写入和索引提交成功，但自动弹出失败".into();
+                        state.error = Some(format!("自动 Unload / Eject 失败：{error}"));
+                    })?,
+                };
+            }
         }
         OperationKind::Read => {
             let output_path = Path::new(&spec.destination.path);
@@ -1130,6 +1266,9 @@ mod tests {
                 mount_source: None,
             },
             read_back_verify: false,
+            completion_action: CompletionAction::KeepLoaded,
+            volume_barcode: None,
+            volume_name: None,
             created_at: "2026-08-10T00:00:00Z".into(),
             write_preflight: None,
         }
@@ -1140,6 +1279,16 @@ mod tests {
         let mut value = spec(OperationKind::Read);
         value.destination.path = "-".into();
         assert!(value.validate().unwrap_err().contains("stdout"));
+    }
+
+    #[test]
+    fn detached_read_rejects_write_completion_options() {
+        let mut value = spec(OperationKind::Read);
+        value.completion_action = CompletionAction::EjectAfterCommit;
+        assert!(value.validate().unwrap_err().contains("Read job"));
+        value.completion_action = CompletionAction::KeepLoaded;
+        value.read_back_verify = true;
+        assert!(value.validate().unwrap_err().contains("Read job"));
     }
 
     #[test]
@@ -1186,6 +1335,40 @@ mod tests {
         object.remove("write_preflight");
         let decoded: JobSpec = serde_json::from_value(object.into()).unwrap();
         assert!(decoded.write_preflight.is_none());
+    }
+
+    #[test]
+    fn legacy_job_spec_defaults_to_keep_loaded() {
+        let value = serde_json::to_value(spec(OperationKind::Write)).unwrap();
+        let mut object = value.as_object().unwrap().clone();
+        object.remove("completion_action");
+        object.remove("volume_barcode");
+        object.remove("volume_name");
+        let decoded: JobSpec = serde_json::from_value(object.into()).unwrap();
+        assert_eq!(decoded.completion_action, CompletionAction::KeepLoaded);
+        assert!(decoded.volume_barcode.is_none());
+        assert!(decoded.volume_name.is_none());
+    }
+
+    #[test]
+    fn application_completed_event_waits_for_runner_completion_action() {
+        let mut state = JobState::queued(spec(OperationKind::Write)).unwrap();
+        let event = WriteEvent {
+            phase: WritePhase::Completed,
+            current_file: None,
+            files_completed: 1,
+            files_total: 1,
+            bytes_written: 10,
+            bytes_total: 10,
+            partition: Some(1),
+            logical_block: Some(20),
+            telemetry: None,
+            performance: None,
+            failure: None,
+        };
+        state.apply_write_event(&event, "done".into());
+        assert_eq!(state.phase, JobPhase::Finalizing);
+        assert!(!state.phase.is_terminal());
     }
 
     #[test]

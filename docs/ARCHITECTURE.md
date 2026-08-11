@@ -942,8 +942,10 @@ tapecpy 的处理规则：
 1. 读取：原样显示 MAM barcode；当 barcode 为 6 位且密度表明是 LTO 时，
    显示推导出的 8 位标准标签（如 `E6008AL5`）作为核对物理标签的提示，
    并明确标注这是推导结果而非设备数据。
-2. 写入（LTFS 格式化时）：接受用户输入的 barcode 原样写入 MAM，不自动补
-   代际码；若输入为 8 位，校验后两位是否为合法的介质代际码。
+2. 写入（LTFS 格式化时）：TUI 接受并规范化为大写的 6 位 ASCII 字母数字
+   volume serial；根据已装载介质的 density 派生只读 Media ID 和 8 位物理标签。
+   LTFS ANSI label 与 MAM barcode 写入 6 位 volume serial，不把派生的代际码
+   写回设备数据。density 未知时禁止从 TUI 启动格式化，避免生成无法核对的标签。
 3. 身份比较：MAM 6 位 barcode 与物理 8 位标签视为同一盘磁带
    （6 位卷序列前缀匹配）；代际码与介质代际不一致时给出警告。
 
@@ -1451,6 +1453,56 @@ Write runner，另一个 CLI `diagnose` 被拒绝并显示 `kind=job-runner oper
 和 runner 互斥；当前 tapeserver 部署均由 `ain` 运行。若未来允许多个 Unix 用户直接
 访问同一磁带机，需要改为具备明确 group/ACL 策略的主机级 `/run/lock`，或由设备
 broker 统一持有设备，不能为每个用户各自建立互不相见的 lease。
+
+## 33.4 Milestone 13 提交后完成策略
+
+LTFS index 与 MAM VCI 提交是 Write transaction 的硬性组成部分，不是用户选项。
+`JobSpec` 的可选项是提交后的 `CompletionAction`：`KeepLoaded`（默认）或
+`EjectAfterCommit`。为兼容已经持久化的 job，旧 spec 缺少该字段时反序列化为
+`KeepLoaded`。
+
+runner 在 Application `WriteSession` 完成后继续持有同一个 device lease。Application
+发出的 `WritePhase::Completed` 在 job 层仍映射为非终态 `Finalizing`，避免 TUI 因
+看到 terminal state 而提前恢复 device worker。runner 随后持久化 generation、
+read-back verify 结果、error counter delta、TapeAlert 和 session worst；若选择自动
+弹出，则进入 `Ejecting` 并调用当前驱动支持的合并 `Unload / Eject`，最后才发布
+`Completed`。
+
+错误语义保持分层：index/VCI 失败时不尝试 eject，并按现有 commit-state 规则要求
+诊断；read-back verify 失败保持“已提交但校验失败”；eject 失败仍是已提交的
+`Completed` operation，但完成结果携带 eject failure，不能降级或覆盖已经成功的
+写入事务。Barcode、Volume Name、generation、校验和 eject 结果保存在 retained job
+中，使 TUI/SSH 退出或介质已经弹出后仍能显示物理贴标所需信息。
+
+Quantum LTO-5 实机使用 NFS 上 744,737,034 bytes 的媒体文件完成了组合验收：job
+先提交 generation 4 的 data/index 两份 index 和 MAM VCI，再完成 SHA-256 read-back
+verify，随后进入独立 `Ejecting` phase 并成功自动弹出。retained state 明确记录
+`index_committed=true`、`generation=4`、`verification=Passed` 和
+`eject=Succeeded`。重新执行 SCSI LOAD 后，有界诊断确认 `p0b5`、`p1b4681` 以及
+两个 VCI 均为 generation 4，卷状态为 `Healthy`。
+
+## 33.5 TUI Format / Barcode 工作流
+
+Format 是破坏性但相对短时的设备管理操作，当前仍由 TUI device worker 在统一
+device lease 内执行；它不会创建 detached job。只有 Read/Write 开始时才创建可脱离
+任务，这与当前任务生命周期约束一致。格式化运行期间 TUI 禁用退出和其他设备命令；
+因此当前已知限制是 SSH/TUI 进程意外终止仍可能中断 Format，后续若实测耗时或可靠性
+要求变化，再决定是否把 Format 也迁移到 runner。
+
+入口只在介质已装载并绕带、未写保护、没有活动 detached job、且 density 能映射到
+已知 LTO Media ID 时开放。表单要求 6 位 ASCII 字母数字 volume serial，输入自动转为
+大写；Volume Name 支持最多 255 个 Unicode 字符。Media ID 和完整 8 位物理条码只读
+派生，避免用户把介质代际码写错。提交前有独立的最终破坏性确认页。
+
+worker 在同一 lease 中执行 `FormatSession` 的分区、MAM、两分区 label/index 和 VCI
+写入；完成后仍在该 lease 中执行完整 volume inspect，再把结果与新 snapshot 一起送回
+TUI。完成页显示 volume serial、派生物理条码、Volume Name、UUID 和 generation。
+
+Quantum LTO-5 测试带完成了真实 TUI 验收：输入 volume serial `M13FMT`，TUI 派生
+Media ID `L5` 和物理条码 `M13FMTL5`，卷名为 `Milestone 13 Format`。格式化后独立
+`volume` 检查确认 LTFS 2.4.0、512 KiB、压缩启用、ANSI/MAM barcode 为 `M13FMT`；
+有界 `diagnose` 确认 p0/p1 index 与两份 VCI 均为 generation 1、UUID 一致，最终状态
+为 `Healthy`。
 
 # 34. 暂时不决定的架构问题
 

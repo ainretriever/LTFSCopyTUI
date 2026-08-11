@@ -61,17 +61,27 @@
 
 用户需要设置：
 
-* Barcode；
+* 6 位 Volume Serial；
 * LTFS Volume Name。
 
 例如：
 
 ```text
-Barcode: E62115
+Volume Serial: E62115
+Media ID: L5（由已装载介质自动推导，只读）
+Physical Barcode: E62115L5
 Volume Name: e621 Archive 15
 ```
 
-Barcode 在整个后续工作流程中应保持明显可见。
+TUI 只允许 6 位 ASCII 字母数字 Volume Serial，并自动转为大写。完整 8 位物理
+Barcode 由 Volume Serial 和介质代际码组合；ANSI label 与 MAM 保存 6 位 serial，
+不能把派生的 Media ID 混入设备数据。Barcode 在整个后续工作流程中应保持明显可见。
+
+格式化入口要求磁带已装载并绕带、未写保护、没有活动 Read/Write 任务，且介质密度
+能够可靠映射到 Media ID。开始前必须显示独立的最终破坏性确认。当前 Format 由 TUI
+device worker 持有统一设备 lease 执行，不是可脱离任务；运行期间禁止退出和其他设备
+操作。完成后应重新读取 LTFS volume，显示 generation、UUID、Volume Name 和物理
+Barcode，不能只凭命令返回成功就结束。
 
 ## 5. 选择写入内容
 
@@ -181,6 +191,21 @@ CLI 通过显式选项 `--read-back-verify` 启用这一行为。校验发生在
 ## 9. 弹出磁带
 
 所有要求的操作完成后，安全 unload / eject 磁带。
+
+索引更新不是可选行为：正常 Write 必须先提交 data/index 两份 index 和 MAM VCI，
+才能报告写入完成。用户可以选择完成策略：默认在提交（以及可选 read-back verify）
+后保持装载，或选择 `EjectAfterCommit` 自动执行 `Unload / Eject`。自动弹出同样由
+detached runner 执行，不依赖 TUI 或 SSH 存活。
+
+自动弹出的顺序固定为：
+
+```text
+写入数据 → 提交两个 index → 更新 MAM VCI → 可选 read-back verify → 可选 eject
+```
+
+index/VCI 提交失败时禁止自动弹出并要求诊断；read-back verify 失败表示写入已经
+提交，但默认保留介质供诊断；eject 失败则报告“写入成功、弹出失败”，不能把已经
+提交的写入误报为失败。
 
 弹出以后仍然明显显示：
 

@@ -24,7 +24,7 @@ use crate::app::{
     self, ChannelTelemetryFrame, ChannelTelemetryTracker, DeviceSnapshot, MediaLifecycle,
 };
 use crate::device::TapeDrive;
-use crate::job::{self, JobPhase, JobState};
+use crate::job::{self, CompletionAction, EjectStatus, JobPhase, JobState, VerificationStatus};
 
 const MIN_WIDTH: u16 = 100;
 const MIN_HEIGHT: u16 = 30;
@@ -35,8 +35,24 @@ enum Page {
     Ltfs,
     Health,
     Jobs,
+    JobCompletion,
     ErrorDetails,
     WriteSource,
+    Format,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormatView {
+    Editing,
+    Confirm,
+    Running,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormatField {
+    VolumeSerial,
+    VolumeName,
 }
 
 enum FileCommand {
@@ -69,6 +85,7 @@ enum WorkerCommand {
     ReadLtfs,
     Load,
     Unload,
+    Format(app::FormatOptions),
     Suspend(Sender<()>),
     Resume,
     Stop,
@@ -90,6 +107,13 @@ enum WorkerEvent {
     Snapshot(Box<DeviceSnapshot>, ChannelTelemetryFrame, SnapshotScope),
     Telemetry(Box<app::DriveHealth>, ChannelTelemetryFrame, String),
     TelemetryUnavailable(ChannelTelemetryFrame, String, String),
+    FormatProgress(app::FormatEvent),
+    FormatCompleted(
+        app::FormatResult,
+        Box<DeviceSnapshot>,
+        ChannelTelemetryFrame,
+    ),
+    FormatFailed(String),
     Status(String),
     Error(String),
 }
@@ -139,7 +163,16 @@ struct UiState {
     tape_directories: Vec<String>,
     tape_target: Option<String>,
     capacity_acknowledged: bool,
+    read_back_verify: bool,
+    completion_action: CompletionAction,
     start_confirm: bool,
+    format_view: FormatView,
+    format_field: FormatField,
+    format_volume_serial: String,
+    format_volume_name: String,
+    format_media_id: Option<String>,
+    format_message: String,
+    format_result: Option<app::FormatResult>,
     quit: bool,
 }
 
@@ -171,7 +204,16 @@ impl Default for UiState {
             tape_directories: Vec::new(),
             tape_target: None,
             capacity_acknowledged: false,
+            read_back_verify: false,
+            completion_action: CompletionAction::KeepLoaded,
             start_confirm: false,
+            format_view: FormatView::Editing,
+            format_field: FormatField::VolumeSerial,
+            format_volume_serial: String::new(),
+            format_volume_name: String::new(),
+            format_media_id: None,
+            format_message: String::new(),
+            format_result: None,
             quit: false,
         }
     }
@@ -457,6 +499,40 @@ fn device_worker(commands: Receiver<WorkerCommand>, events: Sender<WorkerEvent>)
                     reject_suspended_command(&events, "Unload");
                 }
             }
+            Ok(WorkerCommand::Format(options)) => {
+                if ownership.allows_device_access()
+                    && let Some(drive) = selected.as_ref()
+                {
+                    let acquired = with_worker_lease(drive, "format", &events, || {
+                        let mut observer = |event: &app::FormatEvent| {
+                            let _ = events.send(WorkerEvent::FormatProgress(event.clone()));
+                        };
+                        match app::FormatSession::new(drive).run(&options, &mut observer) {
+                            Ok(result) => {
+                                let snapshot = app::inspect_device_snapshot(drive);
+                                let channels = channel_tracker
+                                    .observe(snapshot.health.as_ref(), &snapshot.refreshed_at);
+                                let _ = events.send(WorkerEvent::FormatCompleted(
+                                    result,
+                                    Box::new(snapshot),
+                                    channels,
+                                ));
+                            }
+                            Err(error) => {
+                                let _ = events.send(WorkerEvent::FormatFailed(error));
+                            }
+                        }
+                    });
+                    if !acquired {
+                        let _ = events.send(WorkerEvent::FormatFailed(
+                            "Device lease unavailable; format was not started".into(),
+                        ));
+                    }
+                    last_telemetry = Instant::now();
+                } else if !ownership.allows_device_access() {
+                    reject_suspended_command(&events, "Format");
+                }
+            }
             Ok(WorkerCommand::Suspend(acknowledge)) => {
                 ownership = WorkerOwnershipState::Suspending;
                 debug_assert_eq!(ownership, WorkerOwnershipState::Suspending);
@@ -517,16 +593,20 @@ fn with_worker_lease(
     operation: &str,
     events: &Sender<WorkerEvent>,
     action: impl FnOnce(),
-) {
+) -> bool {
     match crate::device::lease::DeviceLease::try_acquire(
         &drive.serial,
         crate::device::lease::LeaseOwner::new("tui-worker", operation),
     ) {
-        Ok(_lease) => action(),
+        Ok(_lease) => {
+            action();
+            true
+        }
         Err(error) => {
             let _ = events.send(WorkerEvent::Error(format!(
                 "Device lease unavailable for {operation}: {error}"
             )));
+            false
         }
     }
 }
@@ -607,6 +687,29 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.channels = channels;
             state.status = format!("Telemetry stale at {timestamp}: {reason}");
         }
+        WorkerEvent::FormatProgress(event) => {
+            state.format_view = FormatView::Running;
+            state.format_message = format!("{:?}: {}", event.phase, event.message);
+            state.status = state.format_message.clone();
+            state.busy = None;
+        }
+        WorkerEvent::FormatCompleted(result, snapshot, channels) => {
+            state.format_result = Some(result);
+            state.snapshot = Some(*snapshot);
+            state.channels = channels;
+            state.ltfs_read = true;
+            state.format_view = FormatView::Complete;
+            state.format_message = "LTFS format completed and generation-1 volume verified".into();
+            state.status = state.format_message.clone();
+            state.busy = None;
+        }
+        WorkerEvent::FormatFailed(error) => {
+            state.format_view = FormatView::Complete;
+            state.format_message = format!("FORMAT FAILED: {error}");
+            state.last_error = Some(error.clone());
+            state.status = state.format_message.clone();
+            state.busy = None;
+        }
         WorkerEvent::Status(message) => {
             state.status = message;
             state.busy = None;
@@ -680,6 +783,16 @@ fn handle_key(
         handle_job_key(state, code, job_commands);
         return;
     }
+    if state.page == Page::JobCompletion {
+        if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+            state.page = Page::Jobs;
+        }
+        return;
+    }
+    if state.page == Page::Format {
+        handle_format_key(state, code, commands);
+        return;
+    }
     if matches!(code, KeyCode::F(4) | KeyCode::Char('4')) {
         state.page = Page::Jobs;
         return;
@@ -749,6 +862,9 @@ fn handle_key(
                         .into();
             }
         }
+        KeyCode::Char('f') | KeyCode::Char('F') => {
+            open_format_workflow(state);
+        }
         KeyCode::Char('i') | KeyCode::Char('I') => {
             if selected_device_claimed(state) {
                 state.status = "LTFS read blocked: detached operation owns this drive".into();
@@ -787,6 +903,143 @@ fn handle_key(
             }
         }
         _ => {}
+    }
+}
+
+fn open_format_workflow(state: &mut UiState) {
+    if selected_device_claimed(state) {
+        state.status = "Format blocked: detached operation owns this drive".into();
+        return;
+    }
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        state.status = "Format requires a device snapshot".into();
+        return;
+    };
+    if snapshot.lifecycle != MediaLifecycle::LoadedThreaded {
+        state.status = "Format requires loaded / threaded media".into();
+        return;
+    }
+    if snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.tape_status)
+        .is_some_and(|status| status.is_write_protected())
+    {
+        state.status = "Format blocked: cartridge is write protected".into();
+        return;
+    }
+    let media_id = snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.density_code)
+        .and_then(crate::device::density::lto_generation_suffix)
+        .map(str::to_owned);
+    if media_id.is_none() {
+        state.status = "Format blocked: unable to derive LTO Media ID".into();
+        return;
+    }
+    state.format_media_id = media_id;
+    state.format_volume_serial = snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.mam.as_ref())
+        .and_then(|mam| mam.barcode.as_deref())
+        .map(|barcode| barcode.chars().take(6).collect())
+        .unwrap_or_default();
+    state.format_volume_name.clear();
+    state.format_field = FormatField::VolumeSerial;
+    state.format_view = FormatView::Editing;
+    state.format_result = None;
+    state.format_message = "Enter a six-character Volume Serial and LTFS Volume Name".into();
+    state.page = Page::Format;
+}
+
+fn handle_format_key(state: &mut UiState, code: KeyCode, device_commands: &Sender<WorkerCommand>) {
+    match state.format_view {
+        FormatView::Running => {
+            state.status = "Format is running; TUI exit and device commands are disabled".into();
+        }
+        FormatView::Complete => {
+            if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+                state.page = Page::Overview;
+            }
+        }
+        FormatView::Confirm => match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let options = app::FormatOptions::new(
+                    state.format_volume_serial.clone(),
+                    state.format_volume_name.clone(),
+                );
+                state.format_view = FormatView::Running;
+                state.format_message = "Starting destructive LTFS format".into();
+                if device_commands
+                    .send(WorkerCommand::Format(options))
+                    .is_err()
+                {
+                    state.format_view = FormatView::Complete;
+                    state.format_message = "FORMAT FAILED: device worker is unavailable".into();
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                state.format_view = FormatView::Editing;
+            }
+            _ => {}
+        },
+        FormatView::Editing => match code {
+            KeyCode::Esc => {
+                state.page = Page::Overview;
+            }
+            KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                state.format_field = match state.format_field {
+                    FormatField::VolumeSerial => FormatField::VolumeName,
+                    FormatField::VolumeName => FormatField::VolumeSerial,
+                };
+            }
+            KeyCode::Backspace => match state.format_field {
+                FormatField::VolumeSerial => {
+                    state.format_volume_serial.pop();
+                }
+                FormatField::VolumeName => {
+                    state.format_volume_name.pop();
+                }
+            },
+            KeyCode::Char(character) => match state.format_field {
+                FormatField::VolumeSerial
+                    if state.format_volume_serial.len() < 6
+                        && character.is_ascii_alphanumeric() =>
+                {
+                    state
+                        .format_volume_serial
+                        .push(character.to_ascii_uppercase());
+                }
+                FormatField::VolumeName
+                    if state.format_volume_name.chars().count() < 255
+                        && !character.is_control() =>
+                {
+                    state.format_volume_name.push(character);
+                }
+                _ => {}
+            },
+            KeyCode::Enter => {
+                let options = app::FormatOptions::new(
+                    state.format_volume_serial.clone(),
+                    state.format_volume_name.clone(),
+                );
+                match options.validate() {
+                    Ok(()) if state.format_volume_serial.len() == 6 => {
+                        state.format_view = FormatView::Confirm;
+                        state.format_message =
+                            "FINAL CONFIRMATION: formatting destroys all existing tape data".into();
+                    }
+                    Ok(()) => {
+                        state.format_message =
+                            "Volume Serial must contain exactly six ASCII letters/digits".into();
+                    }
+                    Err(error) => state.format_message = error,
+                }
+            }
+            _ => {}
+        },
     }
 }
 
@@ -907,6 +1160,19 @@ fn handle_source_key(
                 }) =>
         {
             state.capacity_acknowledged = !state.capacity_acknowledged;
+        }
+        KeyCode::Char('v') | KeyCode::Char('V')
+            if state.source_view == SourceView::Confirm && !state.start_confirm =>
+        {
+            state.read_back_verify = !state.read_back_verify;
+        }
+        KeyCode::Char('e') | KeyCode::Char('E')
+            if state.source_view == SourceView::Confirm && !state.start_confirm =>
+        {
+            state.completion_action = match state.completion_action {
+                CompletionAction::KeepLoaded => CompletionAction::EjectAfterCommit,
+                CompletionAction::EjectAfterCommit => CompletionAction::KeepLoaded,
+            };
         }
         KeyCode::Enter if state.source_view == SourceView::Confirm => {
             if state
@@ -1055,14 +1321,26 @@ fn start_write_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>)
         filesystem_type: None,
         mount_source: None,
     };
+    let barcode = snapshot.media.as_ref().and_then(|media| {
+        media
+            .full_label_hint()
+            .or_else(|| media.mam.as_ref()?.barcode.clone())
+    });
+    let volume_name = snapshot
+        .volume
+        .as_ref()
+        .and_then(|volume| volume.index.as_ref())
+        .and_then(|index| index.volume_name())
+        .map(str::to_owned);
     let spec = match job::JobSpec::new(
         job::OperationKind::Write,
         snapshot.drive.sg_path.display().to_string(),
         snapshot.drive.serial.clone(),
         source,
         destination,
-        false,
+        state.read_back_verify,
     )
+    .with_completion(state.completion_action, barcode, volume_name)
     .with_write_preflight(plan, capacity, state.capacity_acknowledged)
     {
         Ok(spec) => spec,
@@ -1136,6 +1414,13 @@ fn handle_job_key(state: &mut UiState, code: KeyCode, commands: &Sender<JobComma
         {
             state.cancel_confirm = true;
         }
+        KeyCode::Enter
+            if state.jobs.get(state.job_index).is_some_and(|job| {
+                job.phase.is_terminal() && job.spec.operation == job::OperationKind::Write
+            }) =>
+        {
+            state.page = Page::JobCompletion;
+        }
         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
             state.page = Page::Overview;
         }
@@ -1164,8 +1449,16 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         }
         return;
     }
+    if state.page == Page::JobCompletion {
+        render_job_completion(frame, area, state);
+        return;
+    }
     if state.page == Page::WriteSource {
         render_write_source(frame, area, state);
+        return;
+    }
+    if state.page == Page::Format {
+        render_format(frame, area, state);
         return;
     }
     if !state.selected {
@@ -1184,9 +1477,9 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         Page::Overview => render_overview(frame, layout[1], state),
         Page::Ltfs => render_ltfs(frame, layout[1], state),
         Page::Health => render_health(frame, layout[1], state),
-        Page::Jobs => unreachable!(),
+        Page::Jobs | Page::JobCompletion => unreachable!(),
         Page::ErrorDetails => render_error(frame, layout[1], state),
-        Page::WriteSource => unreachable!(),
+        Page::WriteSource | Page::Format => unreachable!(),
     }
     render_status(frame, layout[2], state);
     if let Some(message) = state.busy {
@@ -1246,6 +1539,129 @@ fn render_drive_selection(frame: &mut ratatui::Frame<'_>, area: Rect, state: &Ui
                 .count()
         )),
         outer[1],
+    );
+}
+
+fn render_format(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
+    let layout = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(12),
+        Constraint::Length(4),
+    ])
+    .split(area);
+    let density = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.media.as_ref())
+        .and_then(|media| media.density_name())
+        .unwrap_or("Unknown LTO media");
+    let media_id = state.format_media_id.as_deref().unwrap_or("??");
+    let barcode = format!("{}{}", state.format_volume_serial, media_id);
+    frame.render_widget(
+        Paragraph::new("LTFS Format │ destructive cartridge initialization")
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL)),
+        layout[0],
+    );
+    let serial_style = if state.format_field == FormatField::VolumeSerial
+        && state.format_view == FormatView::Editing
+    {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+    let name_style = if state.format_field == FormatField::VolumeName
+        && state.format_view == FormatView::Editing
+    {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+    let mut lines = vec![
+        line("Cartridge Type", density),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Volume Serial       ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("[ {:<6} ]", state.format_volume_serial),
+                serial_style,
+            ),
+            Span::raw("   exactly 6 ASCII letters/digits"),
+        ]),
+        line(
+            "Media ID",
+            format!("{media_id} (derived from cartridge density)"),
+        ),
+        line("Full Barcode", &barcode),
+        Line::from(vec![
+            Span::styled("Volume Name         ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("[ {} ]", state.format_volume_name), name_style),
+        ]),
+        Line::from(""),
+        line("Compression", "Enabled"),
+        line("LTFS block size", "512 KiB"),
+        line("Result generation", "1"),
+    ];
+    match state.format_view {
+        FormatView::Confirm => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "FINAL CONFIRMATION: ALL EXISTING DATA AND LTFS METADATA WILL BE DESTROYED",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+        }
+        FormatView::Running => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                &state.format_message,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        FormatView::Complete => {
+            lines.push(Line::from(""));
+            let style = if state.format_result.is_some() {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+            lines.push(Line::from(Span::styled(&state.format_message, style)));
+            if let Some(result) = &state.format_result {
+                lines.push(line("Volume UUID", &result.volume_uuid));
+                lines.push(line("Generation", result.generation));
+            }
+        }
+        FormatView::Editing => {}
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cartridge / LTFS Identity "),
+        ),
+        layout[1],
+    );
+    let help = match state.format_view {
+        FormatView::Editing => {
+            "Type value  Tab/↑↓ Switch field  Backspace Delete  Enter Review  Esc Back"
+        }
+        FormatView::Confirm => "Y DESTROY AND FORMAT  N/Esc Return to editing",
+        FormatView::Running => {
+            "Format in progress — exit and all other device commands are disabled"
+        }
+        FormatView::Complete => "Q/Esc Return to Overview",
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{}\n{}", state.format_message, help))
+            .block(Block::default().borders(Borders::TOP)),
+        layout[2],
     );
 }
 
@@ -1370,9 +1786,11 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
             "Y Start detached Write  N/Esc Return to review"
         }
         SourceView::Confirm if capacity_requires_ack(state) => {
-            "A Toggle capacity acknowledgement  Enter Continue  Esc Change destination  Q Back"
+            "A Capacity ack  V Verify  E Auto eject  Enter Continue  Esc Change destination"
         }
-        SourceView::Confirm => "Enter Continue  Esc Change destination  Q Back",
+        SourceView::Confirm => {
+            "V Toggle verify  E Toggle auto eject  Enter Continue  Esc Change destination"
+        }
     };
     frame.render_widget(
         Paragraph::new(format!("{}\n{}", state.status, help))
@@ -1473,7 +1891,14 @@ fn render_write_confirmation(frame: &mut ratatui::Frame<'_>, area: Rect, state: 
                 "Not required"
             },
         ),
-        line("Read-back verify", "Disabled (first TUI slice)"),
+        line("Read-back verify", yes_no(state.read_back_verify)),
+        line(
+            "Completion action",
+            match state.completion_action {
+                CompletionAction::KeepLoaded => "Keep loaded",
+                CompletionAction::EjectAfterCommit => "Auto Unload / Eject after commit/verify",
+            },
+        ),
         Line::from(""),
         Line::from(if state.start_confirm {
             "Press Y to create the detached runner. SSH/TUI exit will not stop the Write."
@@ -1724,8 +2149,140 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         );
     }
     frame.render_widget(
-        Paragraph::new("↑↓ Select    C Request Cancel    Q/Esc Back    Exiting TUI never cancels"),
+        Paragraph::new(
+            "↑↓ Select    Enter Completion (terminal job)    C Request Cancel    Q/Esc Back",
+        ),
         layout[5],
+    );
+}
+
+fn render_job_completion(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
+    let Some(job) = state.jobs.get(state.job_index) else {
+        frame.render_widget(
+            Paragraph::new("The selected retained job no longer exists")
+                .block(Block::default().borders(Borders::ALL).title(" Completion ")),
+            area,
+        );
+        return;
+    };
+    let verification = match job.completion.verification {
+        VerificationStatus::NotRequested => "Not requested",
+        VerificationStatus::Running => "Running",
+        VerificationStatus::Passed => "Passed (SHA-256 read-back)",
+        VerificationStatus::Failed => "FAILED after index commit",
+    };
+    let eject = match &job.completion.eject {
+        EjectStatus::NotRequested => "Not requested; media remains loaded".into(),
+        EjectStatus::Pending => "Pending".into(),
+        EjectStatus::Succeeded => "Succeeded".into(),
+        EjectStatus::Failed(error) => format!("FAILED: {error}"),
+    };
+    let mut lines = vec![
+        line("Job", job.spec.id.as_str()),
+        line("Result", format!("{:?}", job.phase)),
+        line("Message", &job.message),
+        Line::from(""),
+        line(
+            "Barcode",
+            job.spec.volume_barcode.as_deref().unwrap_or("Unknown"),
+        ),
+        line(
+            "Volume Name",
+            job.spec.volume_name.as_deref().unwrap_or("Unknown"),
+        ),
+        line(
+            "LTFS generation",
+            job.completion
+                .generation
+                .map_or_else(|| "Unknown".into(), |value| value.to_string()),
+        ),
+        line(
+            "Index / VCI committed",
+            yes_no(job.completion.index_committed),
+        ),
+        line("Read-back verify", verification),
+        line("Unload / Eject", eject),
+        line(
+            "Error delta W",
+            format!(
+                "corrected {} / hard {}",
+                job.completion
+                    .corrected_write_errors
+                    .map_or_else(|| "—".into(), |value| value.to_string()),
+                job.completion
+                    .hard_write_errors
+                    .map_or_else(|| "—".into(), |value| value.to_string())
+            ),
+        ),
+        line(
+            "Error delta R",
+            format!(
+                "corrected {} / hard {}",
+                job.completion
+                    .corrected_read_errors
+                    .map_or_else(|| "—".into(), |value| value.to_string()),
+                job.completion
+                    .hard_read_errors
+                    .map_or_else(|| "—".into(), |value| value.to_string())
+            ),
+        ),
+        line(
+            "TapeAlert",
+            if job.completion.tape_alerts.is_empty() {
+                "None".into()
+            } else {
+                format!("{:?}", job.completion.tape_alerts)
+            },
+        ),
+        line(
+            "Session worst",
+            job.progress
+                .session_worst_channel
+                .zip(job.progress.session_worst_channel_rate)
+                .map_or_else(
+                    || "—".into(),
+                    |(channel, rate)| format!("CH{channel:02} {rate:.2}"),
+                ),
+        ),
+        Line::from(""),
+        line(
+            "Payload",
+            format!(
+                "{} bytes; {}/{} items",
+                job.progress.bytes_completed,
+                job.progress.items_completed,
+                job.progress.items_total
+            ),
+        ),
+        line("Source", &job.spec.source.path),
+        line("Destination", &job.spec.destination.path),
+    ];
+    if let Some(error) = &job.error {
+        lines.push(Line::from(Span::styled(
+            format!("Error               {error}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    if job.requires_diagnosis {
+        lines.push(Line::from(Span::styled(
+            "Media               consistency diagnosis required before normal write/eject",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    let layout = Layout::vertical([Constraint::Min(10), Constraint::Length(3)]).split(area);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Write Completion — retain Barcode for physical labeling "),
+        ),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Q/Esc Back to retained jobs").block(Block::default().borders(Borders::TOP)),
+        layout[1],
     );
 }
 
@@ -1950,8 +2507,10 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         Page::Ltfs => 1,
         Page::Health => 2,
         Page::Jobs => 3,
+        Page::JobCompletion => 3,
         Page::ErrorDetails => 4,
         Page::WriteSource => 1,
+        Page::Format => 1,
     };
     frame.render_widget(
         Tabs::new([
@@ -2379,7 +2938,7 @@ fn render_error(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
 fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\nF1 Overview  F2 LTFS  F3 Health  F4 Jobs  I Read LTFS  W Write  R Basic refresh  L Load  U Unload  D Details  Q Back",
+            "{}\nF1 Overview  F2 LTFS  F3 Health  F4 Jobs  I Read LTFS  W Write  F Format  R Refresh  L Load  U Unload  Q Back",
             state.status
         ))
         .block(Block::default().borders(Borders::TOP)),
@@ -2440,7 +2999,12 @@ fn counter(value: Option<u64>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkerOwnershipState, braille_area_graph};
+    use super::{
+        FormatField, FormatView, Page, UiState, WorkerCommand, WorkerOwnershipState,
+        braille_area_graph, handle_format_key,
+    };
+    use crossterm::event::KeyCode;
+    use std::sync::mpsc;
 
     #[test]
     fn suspended_worker_rejects_all_device_access() {
@@ -2462,5 +3026,51 @@ mod tests {
         let graph = braille_area_graph(&[], 3, 2);
         assert_eq!(graph.len(), 2);
         assert!(graph.iter().all(|line| line.width() == 3));
+    }
+
+    #[test]
+    fn format_editor_normalizes_serial_and_accepts_unicode_volume_name() {
+        let (commands, _receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Format,
+            format_view: FormatView::Editing,
+            format_field: FormatField::VolumeSerial,
+            ..UiState::default()
+        };
+        for character in "ab12cd7".chars() {
+            handle_format_key(&mut state, KeyCode::Char(character), &commands);
+        }
+        assert_eq!(state.format_volume_serial, "AB12CD");
+        handle_format_key(&mut state, KeyCode::Tab, &commands);
+        for character in "测试卷".chars() {
+            handle_format_key(&mut state, KeyCode::Char(character), &commands);
+        }
+        assert_eq!(state.format_volume_name, "测试卷");
+        handle_format_key(&mut state, KeyCode::Enter, &commands);
+        assert_eq!(state.format_view, FormatView::Confirm);
+    }
+
+    #[test]
+    fn confirmed_format_sends_validated_options_and_running_blocks_exit() {
+        let (commands, receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Format,
+            format_view: FormatView::Confirm,
+            format_volume_serial: "ABC123".into(),
+            format_volume_name: "Archive Test".into(),
+            ..UiState::default()
+        };
+        handle_format_key(&mut state, KeyCode::Char('y'), &commands);
+        assert_eq!(state.format_view, FormatView::Running);
+        match receiver.try_recv().unwrap() {
+            WorkerCommand::Format(options) => {
+                assert_eq!(options.barcode, "ABC123");
+                assert_eq!(options.volume_name, "Archive Test");
+            }
+            _ => panic!("expected Format command"),
+        }
+        handle_format_key(&mut state, KeyCode::Char('q'), &commands);
+        assert_eq!(state.page, Page::Format);
+        assert_eq!(state.format_view, FormatView::Running);
     }
 }

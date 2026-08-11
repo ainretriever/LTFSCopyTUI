@@ -42,7 +42,7 @@ tapecpy — Linux LTFS 磁带工具
   tapecpy write <本地> <磁带路径> [选择器] [--read-back-verify]
                               写入；该选项在提交后从磁带回读并校验 SHA-256
   tapecpy job start-write <本地> <磁带路径> [选择器] [--read-back-verify]
-                              启动可脱离的 LTFS Write operation
+                              启动可脱离的 LTFS Write；可加 --eject-after-completion
   tapecpy job start-read <磁带路径> <输出文件> [选择器]
                               启动可脱离的 LTFS Read operation（必须指定文件）
   tapecpy job status|attach|cancel <job-id>
@@ -160,6 +160,9 @@ fn endpoint(path: &str) -> job::Endpoint {
 
 fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
     let verify = args.iter().any(|argument| argument == "--read-back-verify");
+    let eject_after_completion = args
+        .iter()
+        .any(|argument| argument == "--eject-after-completion");
     let acknowledge_capacity = args
         .iter()
         .any(|argument| argument == "--ack-capacity-warning");
@@ -168,14 +171,14 @@ fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
         .filter(|argument| {
             !matches!(
                 argument.as_str(),
-                "--read-back-verify" | "--ack-capacity-warning"
+                "--read-back-verify" | "--ack-capacity-warning" | "--eject-after-completion"
             )
         })
         .map(String::as_str)
         .collect();
     if positional.len() < 2 || positional.len() > 3 {
         return Err(
-            "用法: tapecpy job start-write <本地> <磁带路径> [选择器] [--read-back-verify] [--ack-capacity-warning]".into(),
+            "用法: tapecpy job start-write <本地> <磁带路径> [选择器] [--read-back-verify] [--eject-after-completion] [--ack-capacity-warning]".into(),
         );
     }
     let source = std::path::Path::new(positional[0]);
@@ -189,6 +192,7 @@ fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
         tapecpy::device::lease::LeaseOwner::new("cli", "start-write-preflight"),
     )?;
     let media = app::inspect_media(&drive).map_err(|error| error.to_string())?;
+    let volume = app::inspect_volume(&drive).map_err(|error| error.to_string())?;
     let capacity = app::assess_write_capacity(
         plan.payload_bytes,
         media
@@ -197,6 +201,14 @@ fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
             .and_then(|mam| mam.remaining_capacity_mib),
         job::timestamp_now(),
     );
+    let barcode = media
+        .full_label_hint()
+        .or_else(|| media.mam.as_ref().and_then(|mam| mam.barcode.clone()));
+    let volume_name = volume
+        .index
+        .as_ref()
+        .and_then(|index| index.volume_name())
+        .map(str::to_owned);
     let spec = job::JobSpec::new(
         job::OperationKind::Write,
         drive.sg_path.display().to_string(),
@@ -204,6 +216,15 @@ fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
         endpoint(positional[0]),
         endpoint(positional[1]),
         verify,
+    )
+    .with_completion(
+        if eject_after_completion {
+            job::CompletionAction::EjectAfterCommit
+        } else {
+            job::CompletionAction::KeepLoaded
+        },
+        barcode,
+        volume_name,
     )
     .with_write_preflight(&plan, &capacity, acknowledge_capacity)
     .map_err(|error| {
@@ -339,6 +360,20 @@ fn print_job_state(state: &job::JobState) {
     }
     if state.requires_diagnosis {
         println!("requires_diagnosis=true");
+    }
+    if state.phase.is_terminal() {
+        println!(
+            "completion=index_committed:{} generation:{} verification:{:?} eject:{:?} barcode:{} volume:{}",
+            state.completion.index_committed,
+            state
+                .completion
+                .generation
+                .map_or_else(|| "—".into(), |value| value.to_string()),
+            state.completion.verification,
+            state.completion.eject,
+            state.spec.volume_barcode.as_deref().unwrap_or("—"),
+            state.spec.volume_name.as_deref().unwrap_or("—"),
+        );
     }
 }
 
