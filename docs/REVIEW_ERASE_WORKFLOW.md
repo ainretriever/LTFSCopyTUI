@@ -117,3 +117,32 @@ sense key = 02h (NOT READY), ASC/ASCQ = 00h/18h
 - 30 秒固定轮询周期尚未做按预计时长自适应；
 - CLI 目前只显示设备路径和模式，未来 TUI 确认页还应显示 Barcode、Volume
   Name、驱动器序列号和当前分区。
+
+## 7. Milestone 14 TUI 接入
+
+TUI 已接入三种现有 erase 模式。`E` 只打开模式选择页，不会直接发送设备命令；
+选择页分别说明 short、full-tape long 和 minimum-partition long 的保证、预计耗时与
+已知测试边界，再进入独立 `Y` 最终确认页。确认信息包含 drive model/serial、介质类型、
+MAM barcode、派生物理条码和当前已读取的 Volume Name。
+
+Erase 由 TUI device worker 持有统一 lease 同步执行，阶段事件和 REQUEST SENSE 的
+16-bit progress indication 会实时显示。运行期间禁用退出及其他设备操作。操作结束后
+不复用擦除前的 LTFS snapshot，只读取基本介质/MAM 状态；如需确认残留 LTFS 数据，
+必须由用户显式重新读取。
+
+Erase 当前不是 detached job。minimum/full long 期间若 SSH 或 TUI 进程终止，任务
+管理进程不能保证继续存活；这是遵守“仅 Read/Write 创建可脱离任务”约束的明确权衡，
+不是已经解决的可靠性属性。
+
+### TUI 实机验收（2026-08-11）
+
+Quantum LTO-5 测试带先读取现有 LTFS 身份，再从 TUI 执行 short erase：最终确认页显示
+drive/serial、LTO-5、`M13FMT`/`M13FMTL5` 和 `Milestone 13 Format`；操作耗时 6 秒，
+完成页清除旧 Volume Name 和 LTFS cache。随后 TUI Format 恢复出 generation-1 Healthy 卷。
+
+同一测试带随后从 TUI 选择 minimum-partition long erase。worker 全程持有 lease，状态
+依次覆盖临时分区、rethread、30 秒 REQUEST SENSE 轮询、约 97% 进度、恢复未分区介质；
+总流程约 14 分钟并成功结束。完成后的 basic snapshot 为 partition 0、旧 index 不可用。
+测试后重新格式化为健康的 `M14ERS` / `Milestone 14 Ready` generation-1 LTFS 卷。
+
+full-tape long erase 仍未启动，其维护窗口测试要求保持不变。

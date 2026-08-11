@@ -1,7 +1,7 @@
 # tapecpy TUI 规格
 
 版本：0.1
-状态：Milestone 12 / Milestone 13 初始规格
+状态：Milestone 12 / Milestone 13 已实现；Milestone 14 Erase 工作流已接入
 
 ## 1. 文档目的
 

@@ -39,6 +39,7 @@ enum Page {
     ErrorDetails,
     WriteSource,
     Format,
+    Erase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,14 @@ enum FormatView {
 enum FormatField {
     VolumeSerial,
     VolumeName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EraseView {
+    SelectMode,
+    Confirm,
+    Running,
+    Complete,
 }
 
 enum FileCommand {
@@ -86,6 +95,7 @@ enum WorkerCommand {
     Load,
     Unload,
     Format(app::FormatOptions),
+    Erase(app::EraseMode),
     Suspend(Sender<()>),
     Resume,
     Stop,
@@ -114,6 +124,9 @@ enum WorkerEvent {
         ChannelTelemetryFrame,
     ),
     FormatFailed(String),
+    EraseProgress(app::EraseEvent),
+    EraseCompleted(app::EraseResult, Box<DeviceSnapshot>, ChannelTelemetryFrame),
+    EraseFailed(String, Box<DeviceSnapshot>, ChannelTelemetryFrame),
     Status(String),
     Error(String),
 }
@@ -173,6 +186,11 @@ struct UiState {
     format_media_id: Option<String>,
     format_message: String,
     format_result: Option<app::FormatResult>,
+    erase_view: EraseView,
+    erase_mode: app::EraseMode,
+    erase_message: String,
+    erase_progress: Option<u16>,
+    erase_result: Option<app::EraseResult>,
     quit: bool,
 }
 
@@ -214,6 +232,11 @@ impl Default for UiState {
             format_media_id: None,
             format_message: String::new(),
             format_result: None,
+            erase_view: EraseView::SelectMode,
+            erase_mode: app::EraseMode::Short,
+            erase_message: String::new(),
+            erase_progress: None,
+            erase_result: None,
             quit: false,
         }
     }
@@ -533,6 +556,50 @@ fn device_worker(commands: Receiver<WorkerCommand>, events: Sender<WorkerEvent>)
                     reject_suspended_command(&events, "Format");
                 }
             }
+            Ok(WorkerCommand::Erase(mode)) => {
+                if ownership.allows_device_access()
+                    && let Some(drive) = selected.as_ref()
+                {
+                    let acquired = with_worker_lease(drive, "erase", &events, || {
+                        let mut observer = |event: &app::EraseEvent| {
+                            let _ = events.send(WorkerEvent::EraseProgress(event.clone()));
+                        };
+                        let result = app::EraseSession::new(drive).run(mode, &mut observer);
+                        // Erase invalidates any LTFS snapshot. Only refresh basic device/MAM
+                        // state here; a later explicit I command may attempt LTFS discovery.
+                        let snapshot = app::inspect_device_snapshot_basic(drive);
+                        let channels = channel_tracker
+                            .observe(snapshot.health.as_ref(), &snapshot.refreshed_at);
+                        match result {
+                            Ok(result) => {
+                                let _ = events.send(WorkerEvent::EraseCompleted(
+                                    result,
+                                    Box::new(snapshot),
+                                    channels,
+                                ));
+                            }
+                            Err(error) => {
+                                let _ = events.send(WorkerEvent::EraseFailed(
+                                    error,
+                                    Box::new(snapshot),
+                                    channels,
+                                ));
+                            }
+                        }
+                    });
+                    if !acquired {
+                        let snapshot = app::pending_device_snapshot(drive);
+                        let _ = events.send(WorkerEvent::EraseFailed(
+                            "Device lease unavailable; erase was not started".into(),
+                            Box::new(snapshot),
+                            ChannelTelemetryFrame::default(),
+                        ));
+                    }
+                    last_telemetry = Instant::now();
+                } else if !ownership.allows_device_access() {
+                    reject_suspended_command(&events, "Erase");
+                }
+            }
             Ok(WorkerCommand::Suspend(acknowledge)) => {
                 ownership = WorkerOwnershipState::Suspending;
                 debug_assert_eq!(ownership, WorkerOwnershipState::Suspending);
@@ -710,6 +777,37 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.status = state.format_message.clone();
             state.busy = None;
         }
+        WorkerEvent::EraseProgress(event) => {
+            state.erase_view = EraseView::Running;
+            state.erase_progress = event.progress;
+            state.erase_message = format!("{:?}: {}", event.phase, event.message);
+            state.status = state.erase_message.clone();
+            state.busy = None;
+        }
+        WorkerEvent::EraseCompleted(result, snapshot, channels) => {
+            state.erase_result = Some(result);
+            state.snapshot = Some(*snapshot);
+            state.channels = channels;
+            state.ltfs_read = false;
+            state.erase_view = EraseView::Complete;
+            state.erase_progress = None;
+            state.erase_message =
+                "Erase completed; previous LTFS state was discarded and basic media state refreshed"
+                    .into();
+            state.status = state.erase_message.clone();
+            state.busy = None;
+        }
+        WorkerEvent::EraseFailed(error, snapshot, channels) => {
+            state.snapshot = Some(*snapshot);
+            state.channels = channels;
+            state.ltfs_read = false;
+            state.erase_view = EraseView::Complete;
+            state.erase_progress = None;
+            state.erase_message = format!("ERASE FAILED: {error}");
+            state.last_error = Some(error.clone());
+            state.status = state.erase_message.clone();
+            state.busy = None;
+        }
         WorkerEvent::Status(message) => {
             state.status = message;
             state.busy = None;
@@ -793,6 +891,10 @@ fn handle_key(
         handle_format_key(state, code, commands);
         return;
     }
+    if state.page == Page::Erase {
+        handle_erase_key(state, code, commands);
+        return;
+    }
     if matches!(code, KeyCode::F(4) | KeyCode::Char('4')) {
         state.page = Page::Jobs;
         return;
@@ -865,6 +967,9 @@ fn handle_key(
         KeyCode::Char('f') | KeyCode::Char('F') => {
             open_format_workflow(state);
         }
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            open_erase_workflow(state);
+        }
         KeyCode::Char('i') | KeyCode::Char('I') => {
             if selected_device_claimed(state) {
                 state.status = "LTFS read blocked: detached operation owns this drive".into();
@@ -903,6 +1008,98 @@ fn handle_key(
             }
         }
         _ => {}
+    }
+}
+
+fn open_erase_workflow(state: &mut UiState) {
+    if selected_device_claimed(state) {
+        state.status = "Erase blocked: detached operation owns this drive".into();
+        return;
+    }
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        state.status = "Erase requires a device snapshot".into();
+        return;
+    };
+    if snapshot.lifecycle != MediaLifecycle::LoadedThreaded {
+        state.status = "Erase requires loaded / threaded media".into();
+        return;
+    }
+    if snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.tape_status)
+        .is_some_and(|status| status.is_write_protected())
+    {
+        state.status = "Erase blocked: cartridge is write protected".into();
+        return;
+    }
+    state.erase_view = EraseView::SelectMode;
+    state.erase_mode = app::EraseMode::Short;
+    state.erase_message = "Select an erase behavior and review its guarantees".into();
+    state.erase_progress = None;
+    state.erase_result = None;
+    state.page = Page::Erase;
+}
+
+fn handle_erase_key(state: &mut UiState, code: KeyCode, device_commands: &Sender<WorkerCommand>) {
+    match state.erase_view {
+        EraseView::Running => {
+            state.status = "Erase is running; TUI exit and device commands are disabled".into();
+        }
+        EraseView::Complete => {
+            if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+                state.page = Page::Overview;
+            }
+        }
+        EraseView::Confirm => match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                state.erase_view = EraseView::Running;
+                state.erase_progress = None;
+                state.erase_message =
+                    format!("Starting destructive {} erase", state.erase_mode.cli_name());
+                if device_commands
+                    .send(WorkerCommand::Erase(state.erase_mode))
+                    .is_err()
+                {
+                    state.erase_view = EraseView::Complete;
+                    state.erase_message = "ERASE FAILED: device worker is unavailable".into();
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                state.erase_view = EraseView::SelectMode;
+            }
+            _ => {}
+        },
+        EraseView::SelectMode => match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                state.page = Page::Overview;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.erase_mode = match state.erase_mode {
+                    app::EraseMode::Short => app::EraseMode::MinimumPartitionLong,
+                    app::EraseMode::MinimumPartitionLong => app::EraseMode::Long,
+                    app::EraseMode::Long => app::EraseMode::Short,
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.erase_mode = match state.erase_mode {
+                    app::EraseMode::Short => app::EraseMode::Long,
+                    app::EraseMode::Long => app::EraseMode::MinimumPartitionLong,
+                    app::EraseMode::MinimumPartitionLong => app::EraseMode::Short,
+                };
+            }
+            KeyCode::Char('1') => state.erase_mode = app::EraseMode::Short,
+            KeyCode::Char('2') => state.erase_mode = app::EraseMode::Long,
+            KeyCode::Char('3') => state.erase_mode = app::EraseMode::MinimumPartitionLong,
+            KeyCode::Enter => {
+                state.erase_view = EraseView::Confirm;
+                state.erase_message = format!(
+                    "FINAL CONFIRMATION: {} erase destroys access to existing tape data",
+                    state.erase_mode.cli_name()
+                );
+            }
+            _ => {}
+        },
     }
 }
 
@@ -1461,6 +1658,10 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         render_format(frame, area, state);
         return;
     }
+    if state.page == Page::Erase {
+        render_erase(frame, area, state);
+        return;
+    }
     if !state.selected {
         render_drive_selection(frame, area, state);
         return;
@@ -1479,7 +1680,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         Page::Health => render_health(frame, layout[1], state),
         Page::Jobs | Page::JobCompletion => unreachable!(),
         Page::ErrorDetails => render_error(frame, layout[1], state),
-        Page::WriteSource | Page::Format => unreachable!(),
+        Page::WriteSource | Page::Format | Page::Erase => unreachable!(),
     }
     render_status(frame, layout[2], state);
     if let Some(message) = state.busy {
@@ -1660,6 +1861,174 @@ fn render_format(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     };
     frame.render_widget(
         Paragraph::new(format!("{}\n{}", state.format_message, help))
+            .block(Block::default().borders(Borders::TOP)),
+        layout[2],
+    );
+}
+
+fn render_erase(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
+    let layout = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(18),
+        Constraint::Length(4),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new("Tape Erase │ destructive media preparation")
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL)),
+        layout[0],
+    );
+
+    let snapshot = state.snapshot.as_ref();
+    let drive = snapshot.map(|snapshot| &snapshot.drive);
+    let media = snapshot.and_then(|snapshot| snapshot.media.as_ref());
+    let barcode = media
+        .and_then(|media| media.mam.as_ref())
+        .and_then(|mam| mam.barcode.as_deref())
+        .unwrap_or("—");
+    let full_barcode = media
+        .and_then(|media| media.full_label_hint())
+        .unwrap_or_else(|| barcode.to_owned());
+    let volume_name = snapshot
+        .and_then(|snapshot| snapshot.volume.as_ref())
+        .and_then(|volume| volume.index.as_ref())
+        .and_then(|index| index.volume_name())
+        .unwrap_or("—");
+    let mut lines = vec![
+        line(
+            "Drive",
+            format!(
+                "{} {}",
+                drive.map_or("—", |drive| drive.vendor.as_str()),
+                drive.map_or("—", |drive| drive.model.as_str())
+            ),
+        ),
+        line(
+            "Drive Serial",
+            drive.map_or("—", |drive| drive.serial.as_str()),
+        ),
+        line(
+            "Cartridge Type",
+            media
+                .and_then(|media| media.density_name())
+                .unwrap_or("Unknown"),
+        ),
+        line(
+            "Current Partition",
+            media
+                .and_then(|media| media.tape_status)
+                .map_or_else(|| "—".into(), |status| status.partition.to_string()),
+        ),
+        line("MAM Barcode", barcode),
+        line("Physical Barcode", full_barcode),
+        line("Volume Name", volume_name),
+        Line::from(""),
+    ];
+
+    for (mode, title, detail) in [
+        (
+            app::EraseMode::Short,
+            "1  Short erase",
+            "Fast logical end-of-data reset; old data is not securely overwritten",
+        ),
+        (
+            app::EraseMode::Long,
+            "2  Full-tape long erase",
+            "Erases the complete unpartitioned tape; may take many hours; not yet hardware-tested",
+        ),
+        (
+            app::EraseMode::MinimumPartitionLong,
+            "3  Minimum-partition long erase",
+            "Runs a limited mechanical/write check, then restores unpartitioned media (~15 min on tested LTO-5)",
+        ),
+    ] {
+        let selected = mode == state.erase_mode;
+        let marker = if selected { ">" } else { " " };
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(format!("{marker} {title}"), style)));
+        lines.push(Line::from(format!("    {detail}")));
+    }
+
+    match state.erase_view {
+        EraseView::Confirm => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "FINAL CONFIRMATION: {} ERASE WILL DESTROY ACCESS TO EXISTING DATA",
+                    state.erase_mode.cli_name().to_ascii_uppercase()
+                ),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+        }
+        EraseView::Running => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                &state.erase_message,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if let Some(progress) = state.erase_progress {
+                lines.push(line(
+                    "Device progress",
+                    format!("{:.1}%", progress as f64 * 100.0 / u16::MAX as f64),
+                ));
+            }
+        }
+        EraseView::Complete => {
+            lines.push(Line::from(""));
+            let style = if state.erase_result.is_some() {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+            lines.push(Line::from(Span::styled(&state.erase_message, style)));
+            if let Some(result) = &state.erase_result {
+                lines.push(line("Mode", result.mode.cli_name()));
+                lines.push(line(
+                    "Elapsed",
+                    format!("{} seconds", result.elapsed_seconds),
+                ));
+                lines.push(line(
+                    "LTFS cache",
+                    "Cleared; press I only if you want to probe again",
+                ));
+            } else {
+                lines.push(line(
+                    "Recovery",
+                    "Inspect Details and media state before Format",
+                ));
+            }
+        }
+        EraseView::SelectMode => {}
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cartridge / Erase Behavior "),
+        ),
+        layout[1],
+    );
+    let help = match state.erase_view {
+        EraseView::SelectMode => "↑↓/j k or 1/2/3 Select  Enter Review  Q/Esc Back",
+        EraseView::Confirm => "Y DESTROY AND ERASE  N/Esc Return to selection",
+        EraseView::Running => "Erase in progress — exit and all other device commands are disabled",
+        EraseView::Complete => "Q/Esc Return to Overview",
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{}\n{}", state.erase_message, help))
             .block(Block::default().borders(Borders::TOP)),
         layout[2],
     );
@@ -2511,6 +2880,7 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         Page::ErrorDetails => 4,
         Page::WriteSource => 1,
         Page::Format => 1,
+        Page::Erase => 1,
     };
     frame.render_widget(
         Tabs::new([
@@ -2938,7 +3308,7 @@ fn render_error(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
 fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\nF1 Overview  F2 LTFS  F3 Health  F4 Jobs  I Read LTFS  W Write  F Format  R Refresh  L Load  U Unload  Q Back",
+            "{}\nF1 Overview  F2 LTFS  F3 Health  F4 Jobs  I Read LTFS  W Write  F Format  E Erase  R Refresh  L Load  U Unload  Q Back",
             state.status
         ))
         .block(Block::default().borders(Borders::TOP)),
@@ -3000,9 +3370,10 @@ fn counter(value: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FormatField, FormatView, Page, UiState, WorkerCommand, WorkerOwnershipState,
-        braille_area_graph, handle_format_key,
+        EraseView, FormatField, FormatView, Page, UiState, WorkerCommand, WorkerOwnershipState,
+        braille_area_graph, handle_erase_key, handle_format_key,
     };
+    use crate::app::EraseMode;
     use crossterm::event::KeyCode;
     use std::sync::mpsc;
 
@@ -3072,5 +3443,42 @@ mod tests {
         handle_format_key(&mut state, KeyCode::Char('q'), &commands);
         assert_eq!(state.page, Page::Format);
         assert_eq!(state.format_view, FormatView::Running);
+    }
+
+    #[test]
+    fn erase_selector_exposes_all_modes_and_requires_confirmation() {
+        let (commands, _receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Erase,
+            erase_view: EraseView::SelectMode,
+            erase_mode: EraseMode::Short,
+            ..UiState::default()
+        };
+        handle_erase_key(&mut state, KeyCode::Char('2'), &commands);
+        assert_eq!(state.erase_mode, EraseMode::Long);
+        handle_erase_key(&mut state, KeyCode::Char('3'), &commands);
+        assert_eq!(state.erase_mode, EraseMode::MinimumPartitionLong);
+        handle_erase_key(&mut state, KeyCode::Enter, &commands);
+        assert_eq!(state.erase_view, EraseView::Confirm);
+    }
+
+    #[test]
+    fn confirmed_erase_sends_mode_and_running_blocks_exit() {
+        let (commands, receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Erase,
+            erase_view: EraseView::Confirm,
+            erase_mode: EraseMode::Short,
+            ..UiState::default()
+        };
+        handle_erase_key(&mut state, KeyCode::Char('y'), &commands);
+        assert_eq!(state.erase_view, EraseView::Running);
+        match receiver.try_recv().unwrap() {
+            WorkerCommand::Erase(mode) => assert_eq!(mode, EraseMode::Short),
+            _ => panic!("expected Erase command"),
+        }
+        handle_erase_key(&mut state, KeyCode::Char('q'), &commands);
+        assert_eq!(state.page, Page::Erase);
+        assert_eq!(state.erase_view, EraseView::Running);
     }
 }

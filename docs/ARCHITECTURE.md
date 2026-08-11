@@ -1504,6 +1504,33 @@ Media ID `L5` 和物理条码 `M13FMTL5`，卷名为 `Milestone 13 Format`。格
 有界 `diagnose` 确认 p0/p1 index 与两份 VCI 均为 generation 1、UUID 一致，最终状态
 为 `Healthy`。
 
+## 33.6 Milestone 14 TUI Erase 工作流
+
+Erase 复用 Application 层现有 `EraseSession` 和三种明确模式，TUI 只负责介质身份、
+风险、确认、进度和结果呈现，不重新实现 SCSI 命令序列。操作由 device worker 在单一
+device lease 中串行执行；运行时退出键和全部其他设备命令被禁用。
+
+当前仍遵守“只有 Read/Write 开始时创建 detached job”的任务生命周期决定，因此
+Erase 不创建 runner。这个决定对约 7 秒的 short erase 影响有限，但 minimum-long 在
+Quantum LTO-5 上曾耗时 865 秒，full-tape long erase 可能持续数小时：SSH/TUI 进程
+意外终止仍是已知风险。如果未来要求这些模式跨 SSH 生存，应先扩展 job kind 和恢复
+语义，而不能在 TUI 中另起一个不受 lease 管理的后台线程。
+
+入口要求介质已装载并绕带、未写保护且没有 detached job 占用设备。模式选择页同时
+展示 drive model/serial、cartridge type、MAM barcode、派生物理条码和已读取到的
+Volume Name；单个快捷键只能打开工作流，必须经过独立最终破坏性确认才能启动。
+
+完成或失败后，worker 只刷新 basic device/MAM snapshot，并强制清除 TUI 中此前读取的
+LTFS 状态。用户若确实需要探测残留 label/index，必须再次显式按 `I`；失败页要求先查看
+错误和介质状态再决定是否 Format，尤其不能掩盖 minimum-long 的临时分区恢复失败。
+
+Quantum LTO-5 测试带完成了两条真实 TUI 验收。short erase 在 6 秒内完成，完成页清除
+旧 Volume Name/index 状态，随后 TUI Format 成功恢复 generation-1 Healthy 卷。
+minimum-partition long erase 展示了临时分区、rethread、REQUEST SENSE 百分比进度（观察到
+约 97%）和恢复未分区介质阶段，总流程约 14 分钟；完成后的 basic snapshot 为 partition 0
+且不再提供旧 LTFS index。最后用 tapecpy 重新格式化为 `M14ERS` / `Milestone 14 Ready`，
+UUID `cc45750c-2a99-486b-8e20-153e99e814dc`，generation 1。按计划没有启动 full-tape long。
+
 # 34. 暂时不决定的架构问题
 
 以下问题当前明确保持开放。
