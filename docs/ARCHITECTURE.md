@@ -1254,7 +1254,205 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ---
 
-# 33. 暂时不决定的架构问题
+# 33. Milestone 12 TUI 垂直切片决定
+
+第一版 TUI 使用 `ratatui` 与 `crossterm`。无参数启动 `tapecpy` 时进入 TUI，
+已有 CLI 子命令继续保留，并与 TUI 共用 Application API。
+
+设备访问采用单一后台 worker：TUI 只发送命令并接收不可变快照，redraw 和 page
+切换不直接访问 `/dev/nstX` 或 `/dev/sgX`。worker 串行执行介质检查、LTFS 识别、
+装卸载和健康采样，避免不同页面或 telemetry poller 同时改变顺序设备状态。
+
+选择驱动器时 TUI 必须立即进入设备页，只异步取得基础介质与健康状态，不自动读取
+LTFS label/index，也不因磁带定位把用户留在驱动器选择页。LTFS 区域在用户明确执行
+`I Read LTFS` 前保持未读取状态；该命令才由 device worker 串行执行 LTFS 识别、
+index 读取和一致性诊断。`R Basic refresh` 只刷新基础状态，并清除可能已经过期的
+LTFS 快照。
+
+当前稳定介质状态由 Application 层表达为 `NO_MEDIA_DETECTED`、
+`PRESENT_UNTHREADED` 和 `LOADED_THREADED`，另保留 transitioning/unknown 状态。
+Quantum LTO-5 实机证明：未穿带介质会以 TUR `3A/04` 报告，但此时仍可读取
+MAM；因此不能只根据 TUR 的“not ready”结果断言没有介质。
+
+通道错误率每 5 秒采样一次，采用与 LTFSCopyGUI 相同的计算方法。第一版界面
+固定显示 4×4 的 16 通道实时矩阵，不显示历史曲线；采样失败时保留最后一次成功
+值并标记 stale。
+
+当前底层的 SCSI `UNLOAD` 同时完成 unthread/eject，尚不能诚实地提供两个独立
+动作。因此第一版把它显示为 `Unload / Eject`，不伪造尚未实现的状态转换。
+
+## 33.1 可脱离的长时间任务
+
+进程内 device worker 适用于设备浏览、MAM、Health 和其他尚未进入数据传输的
+操作。只有在用户最终确认并真正开始 LTFS Read 或 Write 时，才按 operation 创建
+独立 job runner 进程；它不得依赖 TUI 进程或 SSH session 存活。启动 TUI 本身
+不创建常驻 daemon；如果没有开始 Read/Write，退出 TUI 就直接退出且不遗留进程。
+
+```text
+TUI / CLI client ── Unix socket ──> tapecpy job runner ──> tape drive
+       │                                  │
+       └─ detach / reconnect              ├─ persisted state
+                                          └─ event log
+```
+
+确认的语义如下：
+
+* 用户确认 Read/Write 后才创建 runner；每个 operation 对应一个 runner；
+* runner 创建新 session、脱离控制终端并把输出写入任务日志；
+* TUI 关闭、客户端崩溃或 SSH 断开只表示 detach，不请求取消；
+* 重新连接的客户端从持久化状态取得 job identity，再通过本机 Unix socket attach；
+* runner 是任务期间唯一的设备 owner，并持有按驱动器序列号建立的排他锁；
+* `cancel` 只设置 Application cancellation token；界面必须显示“已请求，等待安全
+  停止点”，不能杀死 runner 或声称已经停止；
+* 每次重要状态变化应先原子更新持久化状态，再通知客户端；
+* 任务完成后 runner 退出，保留最终状态和日志，socket 随之消失；
+* 主机或 runner 意外终止后，不自动从中途续写。残留 running 状态必须解释为
+  interrupted，并要求执行一致性诊断。
+
+TUI 的操作顺序固定为：先选择驱动器和 Read/Write 方向，再在方向专用的浏览界面
+中解析 source 与 destination，完成冲突检查并展示 operation plan。只有确认页的
+`Start` 创建 runner。Read 的 destination 必须是明确的文件或目录，不能是依赖
+SSH/TUI 存活的 stdout；Write 的 source 同样必须解析为 runner 可独立重新打开的
+已挂载文件系统路径。
+
+Write 在选择 source 后先扫描并冻结 plan，以文件数和 payload bytes 作为整个任务
+进度的 denominator。payload 超过当前 LTFS available capacity 的 90% 时必须警告，
+超过 available 时阻止启动；capacity unknown 必须保持 Unknown 并要求显式确认。
+runner 仍逐文件校验实际长度，防止计划后 source 变化。Read 则先读取可信 LTFS
+index，再从 index tree 选择恢复对象并汇总 length，最后选择 Linux destination。
+
+第一版 Write source selector 读取 `/proc/self/mountinfo`，把 `nfs`/`nfs4`、
+`cifs`/`smb3` 等网络文件系统与其 remote source 明确显示，并把网络挂载排在本地
+挂载之前。目录浏览只枚举当前一级；选择 source 后才由独立 filesystem worker
+递归扫描，避免大型目录或慢速 NFS/CIFS 阻塞 TUI redraw。tapecpy 只使用已经挂载
+的 Linux 路径，不负责保存凭据或自行 mount。当前 runner 垂直切片只支持一个
+source root，多选必须在 writer 数据模型扩展后再开放，不能只在 TUI 中伪造。
+新建 job 同时记录 host endpoint 的 filesystem type 和 mount source；runner 在
+访问数据前重新核对挂载身份，防止 NFS/CIFS 消失后把裸露的本地 mount point 当成
+原共享继续操作。旧 job 未记录这些字段时保持向后兼容。
+
+首版按任务创建的 runner 解决 SSH/SIGHUP 和 TUI 生命周期耦合，不承诺主机重启
+后续传。未来可以让 transient systemd unit 托管每个 operation，以获得明确的
+session 独立性、资源限制和审计策略，但不需要常驻 tapecpy 服务。
+
+## 33.2 Detached runner 实机结论
+
+Quantum LTO-5 上的首个垂直测试使用 2 GiB source 完成了以下验证：
+
+* 发起任务的 SSH 命令退出后，runner 的 PPID 变为 1，SID 为 runner 自身 PID，
+  且没有 controlling TTY；
+* 新 SSH session 能通过 Unix socket attach，并持续取得 bytes、partition、block
+  和 write phase；
+* 完成后两个 index 与两个 MAM VCI 都为同一 generation，诊断为 `Healthy`；
+* 写入期间的 IPC cancel 先进入 `CancellationRequested`，然后在
+  `AfterDataIndex` 安全边界收敛为 `Cancelled`，正确报告 `DataIndexOnly` 并要求诊断；
+* 取消测试后的介质已重新格式化为空的健康 LTFS 卷，避免把故障状态留给后续测试。
+* 随后完成 64 MiB detached Read：发起 SSH 退出后由新 session attach，恢复文件与
+  source 的 SHA-256 均为
+  `3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351`；
+* Read 的状态持久化按 250 ms 节流，避免按每个 512 KiB tape record `fsync` 状态
+  文件；终态仍强制记录精确最终字节数。
+
+这些结果证明 SSH/TUI client 生命周期已不再决定 Write workflow 生命周期。TUI
+接入时必须在 runner 启动后停止原有进程内 health poller 对该设备的访问，所有实时
+状态改从 job snapshot 取得。
+
+TUI 创建 runner 前使用带 acknowledgement 的 `Suspend` 完成设备所有权交接；只有
+进程内 device worker 已停止 telemetry 并确认后才允许 spawn。超时则不创建 job，
+避免“暂停命令尚在队列中、runner 已经访问设备”的竞争窗口。
+
+Milestone 12 TUI 已增加 Jobs 页面：启动时发现 retained jobs，展示 active/terminal
+状态、进度、位置、吞吐和 diagnosis 要求，并对 cancel 使用二次确认。检测到 active
+job 的 drive serial 与当前设备相同时，TUI 暂停本地 telemetry，并禁止 refresh、
+load 和 unload；选择被占用设备时直接进入对应 job，而不创建新的设备快照。
+
+## 33.3 TUI 网络源写入实机结论
+
+Quantum LTO-5 上使用 NFS source 完成了第一轮从 TUI 发起的端到端写入。测试数据
+位于 `nfs4` 挂载点，包含媒体文件、可压缩小文件、目录以及中文文件名。TUI 冻结的
+source plan 为 163 个文件、19 个目录、5,040,679,554 bytes；按当时 35.62 GiB 的
+LTFS available capacity 计算为 13.2%，未触发 90% 警告。
+
+测试确认：
+
+* 网络挂载排在选择器前部，并同时显示 mount point、filesystem type 和 remote source；
+* 当前一级目录浏览、后台递归扫描和 LTFS 目标目录选择没有阻塞 TUI redraw；
+* 最终确认后，device worker 先完成 acknowledged `Suspend`，runner 再取得设备所有权；
+* runner 启动后关闭 TUI 并结束原 SSH session，新 SSH session 查询时任务仍为
+  `Running`，证明 TUI/SSH 生命周期没有控制写入生命周期；
+* runner 重新核对 NFS mount identity 后写入全部 163 个文件，并分别报告
+  `WritingData`、`FinalizingDataIndex` 和 `SyncingIndexPartition`；
+* payload 完成时任务仍保持 `Finalizing`，直到两个 index 和 MAM VCI 提交完成才进入
+  `Completed`；
+* 最终两份 LTFS index 和两份 MAM VCI 均为 generation 3，数据 index 位于
+  `p1b9851`，索引分区副本位于 `p0b5`，有界诊断结果为 `Healthy`；
+* 新建 `/nfs-test` 目录可以从最终 index 列出，至少包括四个大媒体文件和包含小文件的
+  子目录。
+
+这轮测试验证的是当前 Write 垂直切片，不等同于整个 Milestone 13 完成。后续已经
+接入 source I/O throughput、buffer occupancy 和 throughput graph；Milestone 13
+仍需补齐独立完成页、可选 read-back verify 以及 safe unthread/eject 流程。
+
+runner 的持久化快照保留最近 600 个 1 秒 tape-throughput 样本（10 分钟）、当前
+16 通道 BER、BER 采样时间和不会随滚动窗口丢失的 session worst。Jobs 页默认绘制
+最近 300 个性能样本（5 分钟）的全宽 Braille tape-throughput 图和 4×4 BER 矩阵；
+重新 attach 不需要从零积累历史。
+
+Write 数据路径使用一个 source reader 和一个唯一 tape writer，中间是默认 512 MiB
+的 bounded buffer。source reader 按冻结计划顺序发送显式 `FileStart`、`Data` 和
+`FileEnd`，只访问本地/NFS/CIFS 文件系统；tape writer 是唯一设备 owner，只有它能
+写 record、维护 extent/block position，并对实际成功提交给磁带路径的数据计算
+SHA-256。buffer 按 LTFS block 懒分配并循环复用，满时对 source reader 施加背压，
+不会把完整文件载入内存或建立临时磁盘缓存。
+
+性能采样和设备诊断分离：source/tape 区间吞吐及 buffer occupancy 每 1 秒采样，
+BER 仍每 5 秒读取一次。任务快照分别保存 source bytes/s、成功 tape payload bytes/s、
+buffer used/capacity 以及 reader/writer waiting 状态，因此 TUI 可以区分 source
+starvation 和 tape 端消费较慢；不显示平均速度。
+
+Quantum LTO-5/NFS 实机写入验证了 bounded pipeline：710 MiB 和 1.28 GiB 文件均由
+512 MiB buffer 完整写入，任务快照取得独立 source/tape 速率、真实 buffer 占用、
+1 秒历史和 16 通道 BER；文件结束时强制发布 buffer=0，避免 finalization 页面保留
+最后一个周期的过期占用值。干净验收卷从 generation 1 提交到 generation 2，两份
+index 和两份 VCI 一致，诊断为 `Healthy`。
+
+实机测试还证明设备锁必须覆盖所有设备入口：一次在 runner
+`SyncingIndexPartition` 尚未结束时启动的旧版 `diagnose` 与 MAM 更新发生设备竞争，
+使任务正确降级为 `IndexesWritten / requires_diagnosis`，但测试卷需要重新格式化
+恢复。现在 `device::lease` 为直接 CLI、TUI device worker 和 detached runner 提供
+同一个按 drive serial 建立的非阻塞 `flock`。锁文件位于 XDG runtime/state 目录，
+并记录 PID、owner kind、operation 和可选 job ID，冲突在发送介质、定位或数据命令
+前即返回可诊断的占用信息。为取得稳定 serial 而执行的设备发现/只读 INQUIRY 位于
+lease 之前；它不改变介质状态，后续若改用设备节点身份作为锁键可以进一步消除这个
+例外。
+
+直接 CLI 和 runner 分别在整条命令、整个 operation 生命周期持锁。TUI worker 在
+每条设备命令的完整执行期持锁；telemetry 不能取得锁时不等待、不访问设备，而是保留
+上一份 health snapshot、把通道采样标记为 stale 并报告当前 owner。`Suspend` 是
+worker FIFO 队列中的 ownership barrier：acknowledgement 表示先前命令已经结束且
+lease 已释放，进入 `Suspended` 后所有新设备命令和 telemetry 都被拒绝，直到
+`Resume`。runner 终态不会触发一次可能早于进程退出的立即 refresh，worker 恢复后
+由后续 telemetry 重试取得设备。
+
+统一 lease 的 Quantum LTO-5 实机矩阵已经通过：CLI 长命令持锁时，TUI 的基本刷新和
+telemetry 均在设备访问前被拒绝；TUI 执行 `Read LTFS` 时，另一个 CLI `health` 被
+拒绝并显示 `kind=tui-worker operation=read-ltfs`；TUI acknowledged `Suspend` 后创建
+Write runner，另一个 CLI `diagnose` 被拒绝并显示 `kind=job-runner operation=Write`
+及 job ID。随后关闭 TUI 和原 SSH session，NFS source 仍写完 956,758,053 bytes，
+任务进入 `Completed`；最终两份 index 和两份 VCI 均为 generation 3，有界诊断为
+`Healthy`。
+
+`Suspend` 释放 lease 与新 runner 取得 lease 之间并非跨进程原子交接；第三个进程若
+恰好抢占该窗口，runner 会安全地因 lease 冲突失败，不会与它并发访问设备。未来若要
+保证这种竞争下任务也必然启动，需要增加 runner-ready 握手或由常驻设备 broker
+完成原子所有权转移。
+
+当前 lock root 属于运行 tapecpy 的 Unix 用户，因此只保证同一用户启动的 CLI、TUI
+和 runner 互斥；当前 tapeserver 部署均由 `ain` 运行。若未来允许多个 Unix 用户直接
+访问同一磁带机，需要改为具备明确 group/ACL 策略的主机级 `/run/lock`，或由设备
+broker 统一持有设备，不能为每个用户各自建立互不相见的 lease。
+
+# 34. 暂时不决定的架构问题
 
 以下问题当前明确保持开放。
 
@@ -1262,11 +1460,9 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ### 设备控制
 
-* 是否正式建立 `TapeSession` class；
-* `/dev/nstX` 和 `/dev/sgX` 如何统一管理；
-* 是否由单独线程拥有设备；
-* 是否使用 command queue；
-* 需要什么 locking 模型。
+* `/dev/nstX` 数据传输与 `/dev/sgX` 控制如何在长时间写入中统一协调；
+* 写入 workflow 如何接入现有 command queue；
+* 是否需要比单 worker 更细的、但仍保持单一设备所有权的执行模型。
 
 ### 并发
 
@@ -1277,10 +1473,9 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ### Buffering
 
-* buffer size；
-* buffer 数量；
-* preload 策略；
-* write pipeline。
+* 512 MiB 默认 buffer 是否应按主机内存或磁带代际调整；
+* 是否需要多级 preload 或多 source reader；
+* 不同 NFS/CIFS latency 下的 block 和 buffer 调优策略。
 
 ### Hash
 
@@ -1296,14 +1491,13 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ### TUI
 
-* TUI framework；
-* 页面结构；
-* graph implementation；
-* keyboard interaction。
+* Milestone 13 独立完成页的具体布局；
+* throughput graph 的 scale/zoom 交互是否需要开放给用户；
+* 长时间操作的取消确认与无法立即取消时的状态表达。
 
 ---
 
-# 34. 修改本架构文档的原则
+# 35. 修改本架构文档的原则
 
 `ARCHITECTURE.md` 不是永久不变的规范。
 
@@ -1323,7 +1517,7 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 
 ---
 
-# 35. 当前最重要的原则
+# 36. 当前最重要的原则
 
 在当前阶段，优先级依次为：
 

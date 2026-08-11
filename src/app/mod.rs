@@ -4,7 +4,7 @@
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -180,6 +180,332 @@ fn read_drive_health_session(session: &mut TapeSession) -> DriveHealth {
 /// 检查一台磁带机的介质状态与基本信息（Milestone 1）。
 pub fn inspect_media(drive: &TapeDrive) -> Result<device::MediaInfo, device::Error> {
     device::inspect_media(drive)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountedFilesystem {
+    pub mount_point: PathBuf,
+    pub filesystem_type: String,
+    pub source: String,
+    pub network: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserEntryKind {
+    Directory,
+    File,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub kind: BrowserEntryKind,
+    pub size: Option<u64>,
+}
+
+/// Enumerate the host's already-mounted filesystems. tapecpy deliberately does
+/// not mount NFS/CIFS shares itself; detached jobs reopen these Linux paths.
+pub fn mounted_filesystems() -> Result<Vec<MountedFilesystem>, String> {
+    let text = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|error| format!("读取 /proc/self/mountinfo 失败: {error}"))?;
+    parse_mountinfo(&text)
+}
+
+pub fn selectable_filesystems() -> Result<Vec<MountedFilesystem>, String> {
+    Ok(mounted_filesystems()?
+        .into_iter()
+        .filter(|mount| {
+            mount.network
+                || matches!(
+                    mount.filesystem_type.as_str(),
+                    "ext2"
+                        | "ext3"
+                        | "ext4"
+                        | "xfs"
+                        | "btrfs"
+                        | "zfs"
+                        | "vfat"
+                        | "exfat"
+                        | "ntfs"
+                        | "ntfs3"
+                        | "f2fs"
+                )
+                || mount.mount_point == Path::new("/tmp")
+                || mount.mount_point.starts_with("/run/media")
+                || mount.mount_point.starts_with("/mnt")
+                || mount.mount_point.starts_with("/media")
+        })
+        .collect())
+}
+
+pub fn mounted_filesystem_for_path(path: &Path) -> Result<Option<MountedFilesystem>, String> {
+    let resolved = if path.exists() {
+        std::fs::canonicalize(path)
+            .map_err(|error| format!("解析路径 {} 失败: {error}", path.display()))?
+    } else {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let parent = std::fs::canonicalize(parent)
+            .map_err(|error| format!("解析父目录 {} 失败: {error}", parent.display()))?;
+        path.file_name()
+            .map_or(parent.clone(), |name| parent.join(name))
+    };
+    Ok(mounted_filesystems()?
+        .into_iter()
+        .filter(|mount| resolved.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.components().count()))
+}
+
+fn parse_mountinfo(text: &str) -> Result<Vec<MountedFilesystem>, String> {
+    let mut mounts = Vec::new();
+    for (line_number, line) in text.lines().enumerate() {
+        let (before, after) = line
+            .split_once(" - ")
+            .ok_or_else(|| format!("mountinfo 第 {} 行缺少分隔符", line_number + 1))?;
+        let fields: Vec<&str> = before.split_whitespace().collect();
+        let trailing: Vec<&str> = after.split_whitespace().collect();
+        if fields.len() < 5 || trailing.len() < 2 {
+            return Err(format!("mountinfo 第 {} 行字段不足", line_number + 1));
+        }
+        let filesystem_type = trailing[0].to_string();
+        let source = unescape_mountinfo(trailing[1]);
+        mounts.push(MountedFilesystem {
+            mount_point: PathBuf::from(unescape_mountinfo(fields[4])),
+            network: is_network_filesystem(&filesystem_type),
+            filesystem_type,
+            source,
+        });
+    }
+    mounts.sort_by(|left, right| {
+        right
+            .network
+            .cmp(&left.network)
+            .then_with(|| left.mount_point.cmp(&right.mount_point))
+    });
+    mounts.dedup_by(|left, right| left.mount_point == right.mount_point);
+    Ok(mounts)
+}
+
+fn unescape_mountinfo(value: &str) -> String {
+    value
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+}
+
+fn is_network_filesystem(filesystem_type: &str) -> bool {
+    matches!(
+        filesystem_type,
+        "nfs" | "nfs4" | "cifs" | "smb3" | "9p" | "ceph" | "glusterfs" | "sshfs"
+    ) || filesystem_type.starts_with("fuse.sshfs")
+}
+
+pub fn browse_directory(path: &Path) -> Result<Vec<BrowserEntry>, String> {
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|error| format!("读取目录 {} 失败: {error}", path.display()))?
+        .map(|entry| {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|error| format!("读取 {} 元数据失败: {error}", entry.path().display()))?;
+            let kind = if metadata.file_type().is_symlink() {
+                BrowserEntryKind::Symlink
+            } else if metadata.is_dir() {
+                BrowserEntryKind::Directory
+            } else if metadata.is_file() {
+                BrowserEntryKind::File
+            } else {
+                BrowserEntryKind::Other
+            };
+            Ok(BrowserEntry {
+                path: entry.path(),
+                name: entry.file_name().to_string_lossy().into_owned(),
+                kind,
+                size: metadata.is_file().then_some(metadata.len()),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    entries.sort_by(|left, right| {
+        matches!(right.kind, BrowserEntryKind::Directory)
+            .cmp(&matches!(left.kind, BrowserEntryKind::Directory))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(entries)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaLifecycle {
+    NoMediaDetected,
+    PresentUnthreaded,
+    LoadedThreaded,
+    Transitioning,
+    Unknown,
+}
+
+fn media_lifecycle(media: Option<&device::MediaInfo>) -> MediaLifecycle {
+    match media {
+        Some(media) => match media.presence {
+            device::MediaPresence::Loaded => MediaLifecycle::LoadedThreaded,
+            device::MediaPresence::NotLoaded if media.mam.is_some() => {
+                MediaLifecycle::PresentUnthreaded
+            }
+            device::MediaPresence::NotLoaded => MediaLifecycle::NoMediaDetected,
+            device::MediaPresence::NotReady => MediaLifecycle::Transitioning,
+            device::MediaPresence::Unknown => MediaLifecycle::Unknown,
+        },
+        None => MediaLifecycle::Unknown,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceSnapshot {
+    pub drive: TapeDrive,
+    pub lifecycle: MediaLifecycle,
+    pub media: Option<device::MediaInfo>,
+    pub volume: Option<VolumeInfo>,
+    pub diagnosis: Option<VolumeDiagnosis>,
+    pub health: Option<DriveHealth>,
+    pub refreshed_at: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChannelTelemetryFrame {
+    pub rates: Vec<device::channel_error::ChannelRate>,
+    pub worst_now: Option<f64>,
+    pub session_worst: Option<(usize, f64)>,
+    pub last_success: Option<String>,
+    pub stale: bool,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ChannelTelemetryTracker {
+    previous: Option<Vec<device::channel_error::ChannelCounters>>,
+    frame: ChannelTelemetryFrame,
+}
+
+impl ChannelTelemetryTracker {
+    pub fn observe(
+        &mut self,
+        health: Option<&DriveHealth>,
+        timestamp: &str,
+    ) -> ChannelTelemetryFrame {
+        let Some(counters) = health.and_then(|health| health.write_channels.as_ref()) else {
+            self.frame.stale = !self.frame.rates.is_empty();
+            self.frame.last_error = Some("write channel diagnostic unavailable".into());
+            return self.frame.clone();
+        };
+        if let Some(previous) = self.previous.replace(counters.clone()) {
+            self.frame.rates = device::channel_error::rates(&previous, counters);
+            self.frame.worst_now = device::channel_error::worst_rate(&self.frame.rates);
+            if let Some(rate) = self.frame.worst_now.filter(|rate| *rate < 0.0)
+                && let Some(channel) = self.frame.rates.iter().find_map(|channel| {
+                    channel
+                        .log10_bit_error_rate
+                        .filter(|value| value.total_cmp(&rate).is_eq())
+                        .map(|_| channel.channel)
+                })
+                && self
+                    .frame
+                    .session_worst
+                    .is_none_or(|(_, current)| rate > current)
+            {
+                self.frame.session_worst = Some((channel, rate));
+            }
+            self.frame.last_success = Some(timestamp.into());
+        }
+        self.frame.stale = false;
+        self.frame.last_error = None;
+        self.frame.clone()
+    }
+
+    pub fn mark_error(&mut self, error: impl Into<String>) -> ChannelTelemetryFrame {
+        self.frame.stale = true;
+        self.frame.last_error = Some(error.into());
+        self.frame.clone()
+    }
+}
+
+/// 为 Presentation 层建立一次一致的只读设备快照。
+///
+/// 调用方必须在统一设备 worker 中串行调用；TUI redraw 不得直接调用本函数。
+pub fn pending_device_snapshot(drive: &TapeDrive) -> DeviceSnapshot {
+    DeviceSnapshot {
+        drive: drive.clone(),
+        lifecycle: MediaLifecycle::Unknown,
+        media: None,
+        volume: None,
+        diagnosis: None,
+        health: None,
+        refreshed_at: ltfs_time_now(),
+        warnings: Vec::new(),
+    }
+}
+
+/// 快速设备页快照；明确不定位磁带、不读取 LTFS label/index。
+pub fn inspect_device_snapshot_basic(drive: &TapeDrive) -> DeviceSnapshot {
+    let mut warnings = Vec::new();
+    let media = match inspect_media(drive) {
+        Ok(media) => Some(media),
+        Err(error) => {
+            warnings.push(format!("介质状态查询失败: {error}"));
+            None
+        }
+    };
+    let lifecycle = media_lifecycle(media.as_ref());
+    let health = match read_drive_health(drive) {
+        Ok(health) => Some(health),
+        Err(error) => {
+            warnings.push(format!("健康状态查询失败: {error}"));
+            None
+        }
+    };
+
+    DeviceSnapshot {
+        drive: drive.clone(),
+        lifecycle,
+        media,
+        volume: None,
+        diagnosis: None,
+        health,
+        refreshed_at: ltfs_time_now(),
+        warnings,
+    }
+}
+
+/// 完整快照只应在用户明确请求读取 LTFS 后使用。
+pub fn inspect_device_snapshot(drive: &TapeDrive) -> DeviceSnapshot {
+    let mut snapshot = inspect_device_snapshot_basic(drive);
+    if snapshot.lifecycle != MediaLifecycle::LoadedThreaded {
+        return snapshot;
+    }
+    match inspect_volume(drive) {
+        Ok(result) => {
+            snapshot.warnings.extend(result.warnings.iter().cloned());
+            snapshot.volume = Some(result);
+        }
+        Err(error) => snapshot.warnings.push(format!("LTFS 查询失败: {error}")),
+    }
+    if snapshot
+        .volume
+        .as_ref()
+        .is_some_and(|volume| volume.recognized)
+    {
+        match diagnose_volume(drive) {
+            Ok(result) => {
+                snapshot
+                    .warnings
+                    .extend(result.partition_errors.iter().cloned());
+                snapshot.diagnosis = Some(result);
+            }
+            Err(error) => snapshot.warnings.push(format!("一致性诊断失败: {error}")),
+        }
+    }
+    snapshot.refreshed_at = ltfs_time_now();
+    snapshot
 }
 
 /// LTFS 卷检查结果（Milestone 2）。
@@ -1370,6 +1696,29 @@ pub fn read_file(
     path: &str,
     out: &mut dyn std::io::Write,
 ) -> Result<u64, String> {
+    let mut ignore = |_: &ReadEvent| {};
+    read_file_with_observer(drive, path, out, &CancellationToken::default(), &mut ignore)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadEvent {
+    pub tape_path: String,
+    pub bytes_read: u64,
+    pub bytes_total: u64,
+    pub partition: Option<u8>,
+    pub logical_block: Option<u64>,
+}
+
+/// 可由 detached runner 观察和安全取消的单文件读取入口。
+///
+/// cancellation 在磁带 record 边界检查，不会通过终止线程打断 SG_IO。
+pub fn read_file_with_observer(
+    drive: &TapeDrive,
+    path: &str,
+    out: &mut dyn std::io::Write,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&ReadEvent),
+) -> Result<u64, String> {
     let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
     let volume = inspect_volume_session(&mut session).map_err(|e| e.to_string())?;
     if !volume.recognized {
@@ -1379,6 +1728,7 @@ pub fn read_file(
     let file = index
         .find_file(path)
         .ok_or_else(|| format!("文件不存在: {path}"))?;
+    let bytes_total = file.length;
 
     let mut written = 0u64;
     for extent in &file.extents {
@@ -1386,7 +1736,11 @@ pub fn read_file(
             .locate(extent.partition, extent.start_block)
             .map_err(|e| e.to_string())?;
         let mut remaining = extent.byte_count;
+        let mut logical_block = extent.start_block;
         while remaining > 0 {
+            if cancellation.is_cancelled() {
+                return Err("[cancelled]用户请求在磁带 record 边界停止读取".into());
+            }
             match session.read_record().map_err(|e| e.to_string())? {
                 ReadRecord::Data(buf) => {
                     let n = buf.len().min(remaining as usize);
@@ -1394,6 +1748,14 @@ pub fn read_file(
                         .map_err(|e| format!("写入输出失败: {e}"))?;
                     written += n as u64;
                     remaining -= n as u64;
+                    logical_block += 1;
+                    observer(&ReadEvent {
+                        tape_path: path.into(),
+                        bytes_read: written,
+                        bytes_total,
+                        partition: Some(extent.partition),
+                        logical_block: Some(logical_block),
+                    });
                 }
                 _ => return Err(format!("读取 {path} 时磁带记录意外结束")),
             }
@@ -1439,11 +1801,20 @@ pub enum WriteVerification {
 #[derive(Debug, Clone, Default)]
 pub struct WriteOptions {
     pub verification: WriteVerification,
+    /// TUI 最终确认时冻结的 source plan；runner 必须在首条 WRITE 前复核。
+    pub expected_source: Option<WritePlanExpectation>,
     /// 仅用于可破坏集成测试；在已完成的语义步骤边界停止工作流。
     pub failpoint: Option<WriteFailpoint>,
     pub cancellation: Option<CancellationToken>,
     /// 仅供集成测试在确定的安全边界触发 cancellation token。
     pub cancelpoint: Option<WriteFailpoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WritePlanExpectation {
+    pub files: usize,
+    pub directories: usize,
+    pub payload_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1552,6 +1923,8 @@ impl std::error::Error for WriteFailure {}
 pub const CHANNEL_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 pub const CHANNEL_HISTORY_CAPACITY: usize = 120;
 pub const CHANNEL_DEFAULT_VISIBLE_SAMPLES: usize = 60;
+pub const PERFORMANCE_HISTORY_CAPACITY: usize = 600;
+pub const PERFORMANCE_DEFAULT_VISIBLE_SAMPLES: usize = 300;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelTelemetrySample {
@@ -1563,6 +1936,17 @@ pub struct ChannelTelemetrySample {
     pub throughput_bytes_per_second: f64,
     pub channel_rates: Vec<device::channel_error::ChannelRate>,
     pub worst_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WritePerformanceSample {
+    pub timestamp: String,
+    pub source_bytes_per_second: f64,
+    pub tape_bytes_per_second: f64,
+    pub buffer_used_bytes: u64,
+    pub buffer_capacity_bytes: u64,
+    pub reader_waiting: bool,
+    pub writer_waiting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1598,6 +1982,7 @@ pub struct WriteEvent {
     pub partition: Option<u8>,
     pub logical_block: Option<u64>,
     pub telemetry: Option<ChannelTelemetrySample>,
+    pub performance: Option<WritePerformanceSample>,
     pub failure: Option<WriteFailure>,
 }
 
@@ -1722,8 +2107,86 @@ impl WriteProgress<'_> {
             partition: self.partition,
             logical_block: self.logical_block,
             telemetry,
+            performance: None,
             failure: None,
         });
+    }
+
+    fn emit_with_performance(
+        &mut self,
+        phase: WritePhase,
+        current_file: Option<&str>,
+        performance: WritePerformanceSample,
+    ) {
+        (self.observer)(&WriteEvent {
+            phase,
+            current_file: current_file.map(str::to_owned),
+            files_completed: self.files_completed,
+            files_total: self.files_total,
+            bytes_written: self.bytes_written,
+            bytes_total: self.bytes_total,
+            partition: self.partition,
+            logical_block: self.logical_block,
+            telemetry: None,
+            performance: Some(performance),
+            failure: None,
+        });
+    }
+}
+
+struct WritePerformanceState {
+    last_sample: std::time::Instant,
+    last_source_bytes: u64,
+    last_tape_bytes: u64,
+}
+
+impl WritePerformanceState {
+    fn new() -> Self {
+        Self {
+            last_sample: std::time::Instant::now(),
+            last_source_bytes: 0,
+            last_tape_bytes: 0,
+        }
+    }
+
+    fn sample_if_due(
+        &mut self,
+        pipeline: SourcePipelineSnapshot,
+        tape_bytes: u64,
+    ) -> Option<WritePerformanceSample> {
+        self.sample(pipeline, tape_bytes, false)
+    }
+
+    fn sample(
+        &mut self,
+        pipeline: SourcePipelineSnapshot,
+        tape_bytes: u64,
+        force: bool,
+    ) -> Option<WritePerformanceSample> {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_sample);
+        if !force && elapsed < std::time::Duration::from_secs(1) {
+            return None;
+        }
+        let sample = WritePerformanceSample {
+            timestamp: ltfs_time_now(),
+            source_bytes_per_second: payload_throughput(
+                pipeline.bytes_read.saturating_sub(self.last_source_bytes),
+                elapsed,
+            ),
+            tape_bytes_per_second: payload_throughput(
+                tape_bytes.saturating_sub(self.last_tape_bytes),
+                elapsed,
+            ),
+            buffer_used_bytes: pipeline.queued_bytes,
+            buffer_capacity_bytes: pipeline.capacity_bytes,
+            reader_waiting: pipeline.reader_waiting,
+            writer_waiting: pipeline.writer_waiting,
+        };
+        self.last_sample = now;
+        self.last_source_bytes = pipeline.bytes_read;
+        self.last_tape_bytes = tape_bytes;
+        Some(sample)
     }
 }
 
@@ -1856,17 +2319,475 @@ fn read_channel_counters(
     device::channel_error::parse_page(&raw, kind)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFileSnapshot {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePlan {
+    pub roots: Vec<std::path::PathBuf>,
+    pub files: Vec<SourceFileSnapshot>,
+    pub directories_total: usize,
+    pub payload_bytes: u64,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceScanProgress {
+    pub current_path: std::path::PathBuf,
+    pub files_seen: usize,
+    pub directories_seen: usize,
+    pub payload_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacitySource {
+    MamRemainingCapacity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityStatus {
+    Normal,
+    WarningAboveNinetyPercent,
+    BlockedInsufficient,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapacityAssessment {
+    pub payload_bytes: u64,
+    pub available_bytes: Option<u64>,
+    pub planned_fraction: Option<f64>,
+    pub status: CapacityStatus,
+    pub source: Option<CapacitySource>,
+    pub sampled_at: String,
+}
+
+pub fn assess_write_capacity(
+    payload_bytes: u64,
+    remaining_capacity_mib: Option<u64>,
+    sampled_at: impl Into<String>,
+) -> CapacityAssessment {
+    let available_bytes = remaining_capacity_mib.and_then(|mib| mib.checked_mul(1024 * 1024));
+    let status = match available_bytes {
+        None => CapacityStatus::Unknown,
+        Some(available) if payload_bytes > available => CapacityStatus::BlockedInsufficient,
+        Some(available) if (payload_bytes as u128) * 10 > (available as u128) * 9 => {
+            CapacityStatus::WarningAboveNinetyPercent
+        }
+        Some(_) => CapacityStatus::Normal,
+    };
+    CapacityAssessment {
+        payload_bytes,
+        available_bytes,
+        planned_fraction: available_bytes.and_then(|available| {
+            (available > 0).then_some(payload_bytes as f64 / available as f64)
+        }),
+        status,
+        source: available_bytes.map(|_| CapacitySource::MamRemainingCapacity),
+        sampled_at: sampled_at.into(),
+    }
+}
+
+pub fn scan_source_roots(roots: &[std::path::PathBuf]) -> Result<SourcePlan, String> {
+    let mut ignore = |_: &SourceScanProgress| {};
+    scan_source_roots_with_observer(roots, &CancellationToken::default(), &mut ignore)
+}
+
+pub fn scan_source_roots_with_observer(
+    roots: &[std::path::PathBuf],
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&SourceScanProgress),
+) -> Result<SourcePlan, String> {
+    if roots.is_empty() {
+        return Err("至少选择一个 source root".into());
+    }
+    let mut canonical_roots = Vec::with_capacity(roots.len());
+    for root in roots {
+        let root_metadata = std::fs::symlink_metadata(root)
+            .map_err(|error| format!("读取 source {} 元数据失败: {error}", root.display()))?;
+        if root_metadata.file_type().is_symlink() {
+            return Err(format!("第一阶段暂不写入符号链接: {}", root.display()));
+        }
+        let canonical = std::fs::canonicalize(root)
+            .map_err(|error| format!("解析 source {} 失败: {error}", root.display()))?;
+        if canonical_roots.iter().any(|existing: &std::path::PathBuf| {
+            canonical.starts_with(existing) || existing.starts_with(&canonical)
+        }) {
+            return Err(format!("source roots 重复或互相包含: {}", root.display()));
+        }
+        canonical_roots.push(canonical);
+    }
+
+    let mut plan = SourcePlan {
+        roots: canonical_roots.clone(),
+        files: Vec::new(),
+        directories_total: 0,
+        payload_bytes: 0,
+        scanned_at: ltfs_time_now(),
+    };
+    for root in canonical_roots {
+        scan_source_entry(&root, cancellation, observer, &mut plan)?;
+    }
+    Ok(plan)
+}
+
+pub fn plan_write_destination(
+    index: &Index,
+    source_root: &Path,
+    destination_directory: &str,
+) -> Result<String, String> {
+    let name = source_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .ok_or_else(|| {
+            format!(
+                "source root 没有可用的 LTFS 名称: {}",
+                source_root.display()
+            )
+        })?;
+    if name.contains('/') {
+        return Err(format!("source 名称包含路径分隔符: {name}"));
+    }
+    let directory = index
+        .find_directory(destination_directory)
+        .ok_or_else(|| format!("LTFS destination 不存在: {destination_directory}"))?;
+    if directory.readonly {
+        return Err(format!(
+            "LTFS destination 为 readonly: {destination_directory}"
+        ));
+    }
+    if directory.entries.iter().any(|entry| entry.name() == name) {
+        return Err(format!(
+            "LTFS target 已存在: {destination_directory}/{name}"
+        ));
+    }
+    Ok(if destination_directory == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{name}", destination_directory.trim_end_matches('/'))
+    })
+}
+
+fn scan_source_entry(
+    path: &Path,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&SourceScanProgress),
+    plan: &mut SourcePlan,
+) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        return Err("[cancelled]source scan 已取消".into());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("读取 {} 元数据失败: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("第一阶段暂不写入符号链接: {}", path.display()));
+    }
+    if metadata.is_file() {
+        std::fs::File::open(path)
+            .map_err(|error| format!("打开 {} 失败: {error}", path.display()))?;
+        plan.payload_bytes = plan
+            .payload_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| "source payload bytes 溢出".to_string())?;
+        plan.files.push(SourceFileSnapshot {
+            path: path.to_path_buf(),
+            size: metadata.len(),
+        });
+        observer(&SourceScanProgress {
+            current_path: path.to_path_buf(),
+            files_seen: plan.files.len(),
+            directories_seen: plan.directories_total,
+            payload_bytes: plan.payload_bytes,
+        });
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(format!("source 不是普通文件或目录: {}", path.display()));
+    }
+    plan.directories_total += 1;
+    observer(&SourceScanProgress {
+        current_path: path.to_path_buf(),
+        files_seen: plan.files.len(),
+        directories_seen: plan.directories_total,
+        payload_bytes: plan.payload_bytes,
+    });
+    let mut children = std::fs::read_dir(path)
+        .map_err(|error| format!("读取目录 {} 失败: {error}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("读取目录 {} 失败: {error}", path.display()))?;
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        if child.file_name().into_string().is_err() {
+            return Err(format!("文件名不是 UTF-8: {}", child.path().display()));
+        }
+        scan_source_entry(&child.path(), cancellation, observer, plan)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
 struct PlannedFile {
     source: PlannedSource,
     target: String,
     size: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PlannedSource {
     Local(std::path::PathBuf),
     Pseudorandom { seed: u64 },
+}
+
+const DEFAULT_WRITE_BUFFER_BYTES: usize = 512 * 1024 * 1024;
+
+enum SourcePipelineMessage {
+    FileStart {
+        target: String,
+        description: String,
+        expected_size: u64,
+    },
+    Data(Vec<u8>),
+    FileEnd {
+        actual_size: u64,
+    },
+    Error(String),
+}
+
+#[derive(Default)]
+struct SourcePipelineMetrics {
+    bytes_read: std::sync::atomic::AtomicU64,
+    queued_bytes: std::sync::atomic::AtomicU64,
+    reader_waiting: std::sync::atomic::AtomicBool,
+    writer_waiting: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourcePipelineSnapshot {
+    bytes_read: u64,
+    queued_bytes: u64,
+    capacity_bytes: u64,
+    reader_waiting: bool,
+    writer_waiting: bool,
+}
+
+struct SourcePipeline {
+    messages: std::sync::mpsc::Receiver<SourcePipelineMessage>,
+    recycle: std::sync::mpsc::SyncSender<Vec<u8>>,
+    metrics: std::sync::Arc<SourcePipelineMetrics>,
+    capacity_bytes: u64,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SourcePipeline {
+    fn spawn(
+        files: Vec<PlannedFile>,
+        block_size: usize,
+        capacity_bytes: usize,
+        cancellation: CancellationToken,
+    ) -> Result<Self, String> {
+        if block_size == 0 {
+            return Err("write pipeline block size 不能为 0".into());
+        }
+        let block_capacity = capacity_bytes.div_ceil(block_size).max(1);
+        let actual_capacity = block_capacity
+            .checked_mul(block_size)
+            .ok_or_else(|| "write pipeline capacity 溢出".to_string())?;
+        let (message_tx, messages) = std::sync::mpsc::sync_channel(block_capacity + 2);
+        let (recycle, recycle_rx) = std::sync::mpsc::sync_channel(block_capacity);
+        let metrics = std::sync::Arc::new(SourcePipelineMetrics::default());
+        let worker_metrics = metrics.clone();
+        let worker = std::thread::Builder::new()
+            .name("tapecpy-source-reader".into())
+            .spawn(move || {
+                let result = produce_source_blocks(
+                    files,
+                    block_size,
+                    block_capacity,
+                    cancellation,
+                    &message_tx,
+                    &recycle_rx,
+                    &worker_metrics,
+                );
+                if let Err(error) = result {
+                    let _ = message_tx.send(SourcePipelineMessage::Error(error));
+                }
+            })
+            .map_err(|error| format!("启动 source reader 失败: {error}"))?;
+        Ok(Self {
+            messages,
+            recycle,
+            metrics,
+            capacity_bytes: actual_capacity as u64,
+            worker: Some(worker),
+        })
+    }
+
+    #[cfg(test)]
+    fn recv(&self) -> Result<SourcePipelineMessage, String> {
+        self.metrics
+            .writer_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let received = self.messages.recv();
+        self.metrics
+            .writer_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        let message = received.map_err(|_| "source pipeline 在文件结束前关闭".to_string())?;
+        if let SourcePipelineMessage::Data(data) = &message {
+            self.metrics
+                .queued_bytes
+                .fetch_sub(data.len() as u64, std::sync::atomic::Ordering::AcqRel);
+        }
+        Ok(message)
+    }
+
+    fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<SourcePipelineMessage>, String> {
+        self.metrics
+            .writer_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let received = self.messages.recv_timeout(timeout);
+        let message = match received {
+            Ok(message) => {
+                self.metrics
+                    .writer_waiting
+                    .store(false, std::sync::atomic::Ordering::Release);
+                message
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.metrics
+                    .writer_waiting
+                    .store(false, std::sync::atomic::Ordering::Release);
+                return Err("source pipeline 在文件结束前关闭".into());
+            }
+        };
+        if let SourcePipelineMessage::Data(data) = &message {
+            self.metrics
+                .queued_bytes
+                .fetch_sub(data.len() as u64, std::sync::atomic::Ordering::AcqRel);
+        }
+        Ok(Some(message))
+    }
+
+    fn recycle(&self, mut data: Vec<u8>) {
+        data.clear();
+        let _ = self.recycle.send(data);
+    }
+
+    fn snapshot(&self) -> SourcePipelineSnapshot {
+        SourcePipelineSnapshot {
+            bytes_read: self
+                .metrics
+                .bytes_read
+                .load(std::sync::atomic::Ordering::Acquire),
+            queued_bytes: self
+                .metrics
+                .queued_bytes
+                .load(std::sync::atomic::Ordering::Acquire),
+            capacity_bytes: self.capacity_bytes,
+            reader_waiting: self
+                .metrics
+                .reader_waiting
+                .load(std::sync::atomic::Ordering::Acquire),
+            writer_waiting: self
+                .metrics
+                .writer_waiting
+                .load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
+    fn join(mut self) -> Result<(), String> {
+        self.worker
+            .take()
+            .expect("source pipeline worker exists")
+            .join()
+            .map_err(|_| "source reader thread panic".to_string())
+    }
+}
+
+fn produce_source_blocks(
+    files: Vec<PlannedFile>,
+    block_size: usize,
+    block_capacity: usize,
+    cancellation: CancellationToken,
+    messages: &std::sync::mpsc::SyncSender<SourcePipelineMessage>,
+    recycle: &std::sync::mpsc::Receiver<Vec<u8>>,
+    metrics: &SourcePipelineMetrics,
+) -> Result<(), String> {
+    let mut allocated = 0usize;
+    for planned in files {
+        if cancellation.is_cancelled() {
+            return Err("[cancelled]source reader 在打开下一个文件前停止".into());
+        }
+        let description = planned.source.description();
+        messages
+            .send(SourcePipelineMessage::FileStart {
+                target: planned.target,
+                description: description.clone(),
+                expected_size: planned.size,
+            })
+            .map_err(|_| "tape writer 已关闭 source pipeline".to_string())?;
+        let mut source = planned.source.open(planned.size)?;
+        let mut actual_size = 0u64;
+        loop {
+            if cancellation.is_cancelled() {
+                return Err("[cancelled]source reader 在数据块边界停止".into());
+            }
+            let mut buffer = match recycle.try_recv() {
+                Ok(buffer) => buffer,
+                Err(std::sync::mpsc::TryRecvError::Empty) if allocated < block_capacity => {
+                    allocated += 1;
+                    Vec::with_capacity(block_size)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    metrics
+                        .reader_waiting
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    let result = recycle.recv();
+                    metrics
+                        .reader_waiting
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    result.map_err(|_| "tape writer 已关闭 buffer recycle channel".to_string())?
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err("tape writer 已关闭 buffer recycle channel".into());
+                }
+            };
+            buffer.resize(block_size, 0);
+            use std::io::Read;
+            let read = source
+                .read(&mut buffer)
+                .map_err(|error| format!("读取 {description} 失败: {error}"))?;
+            if read == 0 {
+                allocated = allocated.saturating_sub(1);
+                break;
+            }
+            buffer.truncate(read);
+            actual_size += read as u64;
+            metrics
+                .bytes_read
+                .fetch_add(read as u64, std::sync::atomic::Ordering::AcqRel);
+            metrics
+                .queued_bytes
+                .fetch_add(read as u64, std::sync::atomic::Ordering::AcqRel);
+            if messages.send(SourcePipelineMessage::Data(buffer)).is_err() {
+                metrics
+                    .queued_bytes
+                    .fetch_sub(read as u64, std::sync::atomic::Ordering::AcqRel);
+                return Err("tape writer 已关闭 source pipeline".into());
+            }
+        }
+        messages
+            .send(SourcePipelineMessage::FileEnd { actual_size })
+            .map_err(|_| "tape writer 已关闭 source pipeline".to_string())?;
+    }
+    Ok(())
 }
 
 impl PlannedSource {
@@ -2178,6 +3099,7 @@ fn write_with_observer_detailed(
             partition: failure.partition,
             logical_block: failure.logical_block,
             telemetry: None,
+            performance: None,
             failure: Some(failure.clone()),
         });
         failure
@@ -2271,6 +3193,14 @@ fn write_with_observer_inner(
             plan_pseudorandom_file(&mut index, tape_path, size, seed, &now)?
         }
     };
+    if let Some(expected) = options.expected_source {
+        validate_write_plan_expectation(
+            plan.files.len(),
+            plan.directories,
+            plan.total_bytes,
+            expected,
+        )?;
+    }
     let mut progress = WriteProgress {
         observer,
         files_total: plan.files.len(),
@@ -2317,99 +3247,158 @@ fn write_with_observer_inner(
     // 分块写入本地文件内容。普通文件之间不写 filemark；最终由下面写入
     // data index 前的 filemark 结束数据文件区。
     let mut total = 0u64;
-    let mut buf = vec![0u8; blocksize];
     let mut first_write = true;
     let mut hashes = Vec::with_capacity(plan.files.len());
     channel_telemetry.begin_data();
-    for planned in &plan.files {
-        progress.emit(WritePhase::WritingData, Some(&planned.target));
-        let mut file = planned.source.open(planned.size)?;
-        let source_description = planned.source.description();
-        let file_start = data_pos;
-        let mut file_total = 0u64;
-        let mut hasher = Sha256::new();
-        loop {
-            use std::io::Read;
-            let n = file
-                .read(&mut buf)
-                .map_err(|e| format!("读取 {source_description} 失败: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            if let Err(e) = session.write_record(&buf[..n]) {
-                if first_write && is_end_of_data_error(&e) {
-                    return Err(format!(
-                        "写入被拒绝：驱动器报告的 EOD 与磁带实际内容不一致（刚用 mkltfs 格式化的磁带常见）。\
-                         这可能是因为格式化后驱动器 EOD 标记未与内容同步。详情: {e}"
-                    ));
-                }
-                return Err(format!("写入 {source_description} 失败: {e}"));
-            }
-            first_write = false;
-            hasher.update(&buf[..n]);
-            file_total += n as u64;
-            total += n as u64;
-            progress.bytes_written = total;
-            data_pos += 1;
-            progress.logical_block = Some(data_pos);
-            if options.failpoint == Some(WriteFailpoint::AfterFirstDataRecord)
-                || options.cancelpoint == Some(WriteFailpoint::AfterFirstDataRecord)
-                || options
-                    .cancellation
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
+    let pipeline = SourcePipeline::spawn(
+        plan.files.clone(),
+        blocksize,
+        DEFAULT_WRITE_BUFFER_BYTES,
+        options.cancellation.clone().unwrap_or_default(),
+    )?;
+    let mut performance = WritePerformanceState::new();
+    struct ActiveWriteFile {
+        target: String,
+        description: String,
+        expected_size: u64,
+        start_block: u64,
+        bytes_written: u64,
+        hasher: Sha256,
+    }
+    let mut active_file: Option<ActiveWriteFile> = None;
+    while progress.files_completed < plan.files.len() {
+        let Some(message) = pipeline.recv_timeout(std::time::Duration::from_millis(250))? else {
+            if let Some(sample) =
+                performance.sample_if_due(pipeline.snapshot(), progress.bytes_written)
             {
-                progress.emit(WritePhase::WritingData, Some(&planned.target));
-                check_write_stop(&options, WriteFailpoint::AfterFirstDataRecord)?;
-            }
-            if let Some(sample) = channel_telemetry.sample_if_due(
-                &mut session,
-                label.data_partition,
-                data_pos,
-                progress.bytes_written,
-            ) {
-                progress.emit_with_telemetry(
+                progress.emit_with_performance(
                     WritePhase::WritingData,
-                    Some(&planned.target),
-                    Some(sample),
+                    active_file.as_ref().map(|file| file.target.as_str()),
+                    sample,
                 );
             }
-        }
-        if file_total != planned.size {
-            return Err(format!(
-                "源文件大小在规划后发生变化：{}（计划 {} 字节，实际读取 {} 字节）",
-                source_description, planned.size, file_total
-            ));
-        }
-        let entry = index
-            .find_file_mut(&planned.target)
-            .expect("文件条目已在写入前规划");
-        entry.length = file_total;
-        entry.extents = if file_total > 0 {
-            vec![Extent {
-                file_offset: 0,
-                partition: label.data_partition,
-                start_block: file_start,
-                byte_count: file_total,
-            }]
-        } else {
-            Vec::new()
+            continue;
         };
-        let sha256 = format!("{:x}", hasher.finalize());
-        entry
-            .extended_attributes
-            .retain(|attr| !attr.key.eq_ignore_ascii_case("ltfs.hash.sha256sum"));
-        entry.extended_attributes.push(ExtendedAttribute {
-            key: "ltfs.hash.sha256sum".into(),
-            value: sha256.clone(),
-            value_type: None,
-        });
-        hashes.push(FileHash {
-            path: planned.target.clone(),
-            sha256,
-        });
-        progress.files_completed += 1;
-        progress.emit(WritePhase::WritingData, Some(&planned.target));
+        match message {
+            SourcePipelineMessage::FileStart {
+                target,
+                description,
+                expected_size,
+            } => {
+                if active_file.is_some() {
+                    return Err("source pipeline 在上一文件结束前发送了新文件".into());
+                }
+                progress.emit(WritePhase::WritingData, Some(&target));
+                active_file = Some(ActiveWriteFile {
+                    target,
+                    description,
+                    expected_size,
+                    start_block: data_pos,
+                    bytes_written: 0,
+                    hasher: Sha256::new(),
+                });
+            }
+            SourcePipelineMessage::Data(data) => {
+                let Some(file) = active_file.as_mut() else {
+                    return Err("source pipeline 在 FileStart 前发送了数据".into());
+                };
+                if let Err(e) = session.write_record(&data) {
+                    if first_write && is_end_of_data_error(&e) {
+                        return Err(format!(
+                            "写入被拒绝：驱动器报告的 EOD 与磁带实际内容不一致（刚用 mkltfs 格式化的磁带常见）。\
+                         这可能是因为格式化后驱动器 EOD 标记未与内容同步。详情: {e}"
+                        ));
+                    }
+                    return Err(format!("写入 {} 失败: {e}", file.description));
+                }
+                first_write = false;
+                file.hasher.update(&data);
+                file.bytes_written += data.len() as u64;
+                total += data.len() as u64;
+                progress.bytes_written = total;
+                data_pos += 1;
+                progress.logical_block = Some(data_pos);
+                pipeline.recycle(data);
+                if let Some(sample) =
+                    performance.sample_if_due(pipeline.snapshot(), progress.bytes_written)
+                {
+                    progress.emit_with_performance(
+                        WritePhase::WritingData,
+                        Some(&file.target),
+                        sample,
+                    );
+                }
+                if options.failpoint == Some(WriteFailpoint::AfterFirstDataRecord)
+                    || options.cancelpoint == Some(WriteFailpoint::AfterFirstDataRecord)
+                    || options
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                {
+                    progress.emit(WritePhase::WritingData, Some(&file.target));
+                    check_write_stop(&options, WriteFailpoint::AfterFirstDataRecord)?;
+                }
+                if let Some(sample) = channel_telemetry.sample_if_due(
+                    &mut session,
+                    label.data_partition,
+                    data_pos,
+                    progress.bytes_written,
+                ) {
+                    progress.emit_with_telemetry(
+                        WritePhase::WritingData,
+                        Some(&file.target),
+                        Some(sample),
+                    );
+                }
+            }
+            SourcePipelineMessage::FileEnd { actual_size } => {
+                let Some(file) = active_file.take() else {
+                    return Err("source pipeline 在 FileStart 前发送了 FileEnd".into());
+                };
+                if actual_size != file.expected_size || file.bytes_written != file.expected_size {
+                    return Err(format!(
+                        "源文件大小在规划后发生变化：{}（计划 {} 字节，实际读取 {} 字节，实际写入 {} 字节）",
+                        file.description, file.expected_size, actual_size, file.bytes_written
+                    ));
+                }
+                let entry = index
+                    .find_file_mut(&file.target)
+                    .expect("文件条目已在写入前规划");
+                entry.length = file.bytes_written;
+                entry.extents = if file.bytes_written > 0 {
+                    vec![Extent {
+                        file_offset: 0,
+                        partition: label.data_partition,
+                        start_block: file.start_block,
+                        byte_count: file.bytes_written,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let sha256 = format!("{:x}", file.hasher.finalize());
+                entry
+                    .extended_attributes
+                    .retain(|attr| !attr.key.eq_ignore_ascii_case("ltfs.hash.sha256sum"));
+                entry.extended_attributes.push(ExtendedAttribute {
+                    key: "ltfs.hash.sha256sum".into(),
+                    value: sha256.clone(),
+                    value_type: None,
+                });
+                hashes.push(FileHash {
+                    path: file.target.clone(),
+                    sha256,
+                });
+                progress.files_completed += 1;
+                progress.emit(WritePhase::WritingData, Some(&file.target));
+            }
+            SourcePipelineMessage::Error(error) => return Err(error),
+        }
+    }
+    let final_pipeline_snapshot = pipeline.snapshot();
+    pipeline.join()?;
+    if let Some(sample) = performance.sample(final_pipeline_snapshot, progress.bytes_written, true)
+    {
+        progress.emit_with_performance(WritePhase::WritingData, None, sample);
     }
 
     // 更新 index 元数据：generation、时间、UID（位置在下面按分区分别设置）
@@ -2509,6 +3498,29 @@ fn write_with_observer_inner(
         session_worst_channel_rate: channel_telemetry.session_worst,
         telemetry_warnings: channel_telemetry.warnings,
     })
+}
+
+fn validate_write_plan_expectation(
+    files: usize,
+    directories: usize,
+    payload_bytes: u64,
+    expected: WritePlanExpectation,
+) -> Result<(), String> {
+    if files == expected.files
+        && directories == expected.directories
+        && payload_bytes == expected.payload_bytes
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "source 在最终确认后发生变化：计划 {} files / {} directories / {} bytes，当前 {} files / {} directories / {} bytes",
+        expected.files,
+        expected.directories,
+        expected.payload_bytes,
+        files,
+        directories,
+        payload_bytes
+    ))
 }
 
 fn verify_file_hash(
@@ -2718,7 +3730,7 @@ fn is_end_of_data_error(e: &device::Error) -> bool {
 }
 
 /// 当前 UTC 时间，LTFS ISO 8601 格式（`YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ`）。
-fn ltfs_time_now() -> String {
+pub(crate) fn ltfs_time_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -2758,6 +3770,70 @@ pub fn unload_tape(drive: &TapeDrive) -> Result<(), device::Error> {
 mod tests {
     use super::*;
     use crate::ltfs::index::{Directory, TapePos};
+
+    #[test]
+    fn tui_media_lifecycle_distinguishes_unthreaded_cartridge() {
+        let no_media = device::MediaInfo {
+            presence: device::MediaPresence::NotLoaded,
+            ..Default::default()
+        };
+        assert_eq!(
+            media_lifecycle(Some(&no_media)),
+            MediaLifecycle::NoMediaDetected
+        );
+
+        let present = device::MediaInfo {
+            presence: device::MediaPresence::NotLoaded,
+            mam: Some(device::MamInfo::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            media_lifecycle(Some(&present)),
+            MediaLifecycle::PresentUnthreaded
+        );
+
+        let loaded = device::MediaInfo {
+            presence: device::MediaPresence::Loaded,
+            ..Default::default()
+        };
+        assert_eq!(
+            media_lifecycle(Some(&loaded)),
+            MediaLifecycle::LoadedThreaded
+        );
+        assert_eq!(media_lifecycle(None), MediaLifecycle::Unknown);
+    }
+
+    #[test]
+    fn tui_channel_tracker_keeps_last_sample_when_refresh_fails() {
+        let mut tracker = ChannelTelemetryTracker::default();
+        let baseline = DriveHealth {
+            write_channels: Some(vec![device::channel_error::ChannelCounters {
+                c1_errors: 10,
+                ccps: 100,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(tracker.observe(Some(&baseline), "t0").rates.is_empty());
+
+        let sample = DriveHealth {
+            write_channels: Some(vec![device::channel_error::ChannelCounters {
+                c1_errors: 20,
+                ccps: 200,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let current = tracker.observe(Some(&sample), "t1");
+        assert_eq!(current.rates.len(), 1);
+        assert_eq!(current.last_success.as_deref(), Some("t1"));
+        assert!(!current.stale);
+
+        let stale = tracker.mark_error("temporary failure");
+        assert_eq!(stale.rates, current.rates);
+        assert_eq!(stale.last_success.as_deref(), Some("t1"));
+        assert!(stale.stale);
+    }
 
     fn empty_index() -> Index {
         Index {
@@ -2830,6 +3906,92 @@ mod tests {
     }
 
     #[test]
+    fn write_destination_uses_source_basename_and_rejects_conflicts() {
+        let mut index = empty_index();
+        index
+            .root
+            .entries
+            .push(DirectoryEntry::Directory(Directory {
+                name: "archive".into(),
+                ..Directory::default()
+            }));
+        assert_eq!(
+            plan_write_destination(&index, Path::new("/mnt/nfs/session01"), "/archive").unwrap(),
+            "/archive/session01"
+        );
+        index
+            .find_directory_mut("/archive")
+            .unwrap()
+            .entries
+            .push(DirectoryEntry::File(FileEntry {
+                name: "session01".into(),
+                ..FileEntry::default()
+            }));
+        assert!(
+            plan_write_destination(&index, Path::new("/mnt/nfs/session01"), "/archive")
+                .unwrap_err()
+                .contains("已存在")
+        );
+    }
+
+    #[test]
+    fn source_scan_builds_stable_progress_denominator() {
+        let root = std::env::temp_dir().join(format!(
+            "tapecpy-source-scan-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("b.bin"), b"bb").unwrap();
+        std::fs::write(root.join("a.bin"), b"a").unwrap();
+        std::fs::write(root.join("sub/c.bin"), b"ccc").unwrap();
+
+        let plan = scan_source_roots(std::slice::from_ref(&root)).unwrap();
+        assert_eq!(plan.files.len(), 3);
+        assert_eq!(plan.directories_total, 2);
+        assert_eq!(plan.payload_bytes, 6);
+        assert!(plan.files[0].path.ends_with("a.bin"));
+        assert!(plan.files[1].path.ends_with("b.bin"));
+        assert!(plan.files[2].path.ends_with("sub/c.bin"));
+        assert_eq!(plan.files[2].size, 3);
+
+        let overlap = scan_source_roots(&[root.clone(), root.join("sub")]).unwrap_err();
+        assert!(overlap.contains("互相包含"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_obeys_cancellation_before_io_walk() {
+        let token = CancellationToken::default();
+        token.request_cancel();
+        let mut observer = |_: &SourceScanProgress| {};
+        let error = scan_source_roots_with_observer(&[std::env::temp_dir()], &token, &mut observer)
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn capacity_assessment_has_warning_blocked_and_unknown_states() {
+        // Capacity input is MiB, so use matching byte units for threshold tests.
+        let mib = 1024 * 1024;
+        let normal = assess_write_capacity(90 * mib, Some(100), "t0");
+        assert_eq!(normal.status, CapacityStatus::Normal);
+        assert_eq!(normal.source, Some(CapacitySource::MamRemainingCapacity));
+
+        let warning = assess_write_capacity(91 * mib, Some(100), "t1");
+        assert_eq!(warning.status, CapacityStatus::WarningAboveNinetyPercent);
+        assert!(warning.planned_fraction.unwrap() > 0.9);
+
+        let blocked = assess_write_capacity(101 * mib, Some(100), "t2");
+        assert_eq!(blocked.status, CapacityStatus::BlockedInsufficient);
+
+        let unknown = assess_write_capacity(1, None, "t3");
+        assert_eq!(unknown.status, CapacityStatus::Unknown);
+        assert_eq!(unknown.planned_fraction, None);
+    }
+
+    #[test]
     fn write_progress_events_carry_stable_totals_and_progress() {
         let mut events = Vec::new();
         {
@@ -2875,6 +4037,7 @@ mod tests {
             partition: Some(1),
             logical_block: Some(7),
             telemetry: None,
+            performance: None,
             failure: None,
         };
         let cases = [
@@ -2927,6 +4090,7 @@ mod tests {
             partition: Some(0),
             logical_block: Some(5),
             telemetry: None,
+            performance: None,
             failure: None,
         };
         let failure = classify_write_failure(Some(&event), "[state:C4]second VCI failed".into());
@@ -2942,12 +4106,62 @@ mod tests {
         token.request_cancel();
         assert!(token.is_cancelled());
         let options = WriteOptions {
+            expected_source: None,
             cancellation: Some(token),
             ..WriteOptions::default()
         };
         let error = check_write_stop(&options, WriteFailpoint::AfterDataIndex).unwrap_err();
         let failure = classify_write_failure(None, error);
         assert!(failure.cancelled);
+    }
+
+    #[test]
+    fn write_plan_expectation_detects_source_changes() {
+        let expected = WritePlanExpectation {
+            files: 2,
+            directories: 1,
+            payload_bytes: 1024,
+        };
+        validate_write_plan_expectation(2, 1, 1024, expected).unwrap();
+        let error = validate_write_plan_expectation(2, 1, 1025, expected).unwrap_err();
+        assert!(error.contains("最终确认后发生变化"));
+    }
+
+    #[test]
+    fn mountinfo_marks_nfs_and_cifs_and_decodes_paths() {
+        let mounts = parse_mountinfo(
+            "36 25 0:32 / /mnt/local\\040disk rw - ext4 /dev/sda1 rw\n\
+             37 25 0:33 / /mnt/archive rw - nfs4 nas:/archive rw\n\
+             38 25 0:34 / /mnt/media rw - cifs //server/media rw\n",
+        )
+        .unwrap();
+        assert_eq!(mounts[0].filesystem_type, "nfs4");
+        assert!(mounts[0].network);
+        assert_eq!(mounts[1].filesystem_type, "cifs");
+        assert!(mounts[1].network);
+        assert_eq!(mounts[2].mount_point, Path::new("/mnt/local disk"));
+        assert!(!mounts[2].network);
+    }
+
+    #[test]
+    fn directory_browser_is_shallow_and_directories_sort_first() {
+        let root = std::env::temp_dir().join(format!(
+            "tapecpy-browser-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("a.bin"), [1_u8; 4]).unwrap();
+        std::fs::create_dir(root.join("z-dir")).unwrap();
+        std::fs::write(root.join("z-dir/hidden.bin"), [2_u8; 8]).unwrap();
+        let entries = browse_directory(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, BrowserEntryKind::Directory);
+        assert_eq!(entries[1].size, Some(4));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn index_candidate(partition: u8, block: u64, generation: u64) -> IndexCandidateDiagnostic {
@@ -3116,6 +4330,142 @@ mod tests {
             pieces.extend_from_slice(&three[..n]);
         }
         assert_eq!(first, pieces);
+    }
+
+    #[test]
+    fn source_pipeline_preserves_file_boundaries_and_recycles_bounded_buffers() {
+        let files = vec![
+            PlannedFile {
+                source: PlannedSource::Pseudorandom { seed: 1 },
+                target: "/one".into(),
+                size: 10,
+            },
+            PlannedFile {
+                source: PlannedSource::Pseudorandom { seed: 2 },
+                target: "/two".into(),
+                size: 7,
+            },
+        ];
+        let pipeline = SourcePipeline::spawn(files, 4, 8, CancellationToken::default()).unwrap();
+        let mut events = Vec::new();
+        loop {
+            match pipeline.recv() {
+                Ok(SourcePipelineMessage::FileStart { target, .. }) => {
+                    events.push(format!("start:{target}"));
+                }
+                Ok(SourcePipelineMessage::Data(data)) => {
+                    events.push(format!("data:{}", data.len()));
+                    pipeline.recycle(data);
+                }
+                Ok(SourcePipelineMessage::FileEnd { actual_size }) => {
+                    events.push(format!("end:{actual_size}"));
+                    if actual_size == 7 {
+                        break;
+                    }
+                }
+                Ok(SourcePipelineMessage::Error(error)) => panic!("{error}"),
+                Err(error) => panic!("{error}"),
+            }
+        }
+        assert_eq!(
+            events,
+            [
+                "start:/one",
+                "data:4",
+                "data:4",
+                "data:2",
+                "end:10",
+                "start:/two",
+                "data:4",
+                "data:3",
+                "end:7",
+            ]
+        );
+        let snapshot = pipeline.snapshot();
+        assert_eq!(snapshot.bytes_read, 17);
+        assert_eq!(snapshot.queued_bytes, 0);
+        pipeline.join().unwrap();
+    }
+
+    #[test]
+    fn source_pipeline_reports_cancellation_before_opening_a_file() {
+        let cancellation = CancellationToken::default();
+        cancellation.request_cancel();
+        let pipeline = SourcePipeline::spawn(
+            vec![PlannedFile {
+                source: PlannedSource::Pseudorandom { seed: 1 },
+                target: "/cancelled".into(),
+                size: 8,
+            }],
+            4,
+            8,
+            cancellation,
+        )
+        .unwrap();
+        let SourcePipelineMessage::Error(error) = pipeline.recv().unwrap() else {
+            panic!("expected cancellation error")
+        };
+        assert!(error.contains("[cancelled]"));
+        pipeline.join().unwrap();
+    }
+
+    #[test]
+    fn source_pipeline_preserves_source_error_identity() {
+        let missing = std::env::temp_dir().join(format!(
+            "tapecpy-pipeline-missing-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let pipeline = SourcePipeline::spawn(
+            vec![PlannedFile {
+                source: PlannedSource::Local(missing.clone()),
+                target: "/missing".into(),
+                size: 8,
+            }],
+            4,
+            8,
+            CancellationToken::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            pipeline.recv().unwrap(),
+            SourcePipelineMessage::FileStart { .. }
+        ));
+        let SourcePipelineMessage::Error(error) = pipeline.recv().unwrap() else {
+            panic!("expected source error")
+        };
+        assert!(error.contains("打开"));
+        assert!(error.contains(&missing.display().to_string()));
+        pipeline.join().unwrap();
+    }
+
+    #[test]
+    fn source_pipeline_applies_bounded_backpressure() {
+        let pipeline = SourcePipeline::spawn(
+            vec![PlannedFile {
+                source: PlannedSource::Pseudorandom { seed: 9 },
+                target: "/large".into(),
+                size: 1_024,
+            }],
+            4,
+            8,
+            CancellationToken::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            pipeline.recv().unwrap(),
+            SourcePipelineMessage::FileStart { .. }
+        ));
+        for _ in 0..100 {
+            if pipeline.snapshot().reader_waiting {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let snapshot = pipeline.snapshot();
+        assert!(snapshot.queued_bytes <= snapshot.capacity_bytes);
+        assert!(snapshot.reader_waiting);
+        drop(pipeline);
     }
 
     #[test]

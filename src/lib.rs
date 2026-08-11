@@ -16,4 +16,6 @@
 
 pub mod app;
 pub mod device;
+pub mod job;
 pub mod ltfs;
+pub mod tui;

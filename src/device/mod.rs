@@ -7,6 +7,7 @@
 
 pub mod channel_error;
 pub mod density;
+pub mod lease;
 pub mod log;
 pub mod mtio;
 pub mod scsi;
@@ -196,8 +197,18 @@ pub fn inspect_media(drive: &TapeDrive) -> Result<MediaInfo, Error> {
         info.density_code = mode_sense_density(&sg, &drive.sg_path)?;
     }
 
-    if info.presence == MediaPresence::Loaded {
-        info.mam = Some(read_mam(&sg, &drive.sg_path)?);
+    if matches!(
+        info.presence,
+        MediaPresence::Loaded | MediaPresence::NotLoaded
+    ) {
+        // 部分 LTO 驱动器在 cartridge 已进入但尚未 thread 时仍允许访问 MAM。
+        // 无介质时 READ ATTRIBUTE 会失败；此时保留 None，由 Application 层区分
+        // NO_MEDIA_DETECTED 与 PRESENT_UNTHREADED。
+        match read_mam(&sg, &drive.sg_path) {
+            Ok(mam) => info.mam = Some(mam),
+            Err(_) if info.presence == MediaPresence::NotLoaded => {}
+            Err(error) => return Err(error),
+        }
     }
 
     Ok(info)
@@ -225,7 +236,7 @@ fn classify_unit_ready(sg: &std::fs::File, path: &std::path::Path) -> Result<Med
         context: format!("向 {} 发送 TEST UNIT READY 失败", path.display()),
         source: e,
     })?;
-    if result.host_status != 0 || result.driver_status != 0 {
+    if result.host_status != 0 {
         return Err(Error::Scsi {
             device: path.display().to_string(),
             status: result.status,

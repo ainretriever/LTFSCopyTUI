@@ -79,7 +79,7 @@ pub fn parse_page(data: &[u8], kind: PageKind) -> Result<Vec<ChannelCounters>, S
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelRate {
     pub channel: usize,
     pub log10_bit_error_rate: Option<f64>,

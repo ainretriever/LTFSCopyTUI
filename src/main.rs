@@ -19,11 +19,14 @@ use std::env;
 use std::process::ExitCode;
 
 use tapecpy::app;
+use tapecpy::job;
 
 const USAGE: &str = "\
-tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS 识别 + 浏览）
+tapecpy — Linux LTFS 磁带工具
 
 用法:
+  tapecpy                     启动交互式 TUI
+  tapecpy tui                 启动交互式 TUI
   tapecpy list                发现并列出系统上的磁带机
   tapecpy info [选择器]        显示一台磁带机的身份信息
   tapecpy media [选择器]       检查介质装载状态并显示基本信息
@@ -38,6 +41,12 @@ tapecpy — Linux 磁带工具（Milestone 3: 设备发现 + 介质检查 + LTFS
   tapecpy read [选择器] <路径> 读取 LTFS 文件内容到 stdout；-o 指定输出文件
   tapecpy write <本地> <磁带路径> [选择器] [--read-back-verify]
                               写入；该选项在提交后从磁带回读并校验 SHA-256
+  tapecpy job start-write <本地> <磁带路径> [选择器] [--read-back-verify]
+                              启动可脱离的 LTFS Write operation
+  tapecpy job start-read <磁带路径> <输出文件> [选择器]
+                              启动可脱离的 LTFS Read operation（必须指定文件）
+  tapecpy job status|attach|cancel <job-id>
+                              查询、重新连接或请求安全取消 operation
   tapecpy write-random <大小> <磁带路径> [选择器] [--seed=N]
                               流式写入可重现的伪随机测试数据（如 80GiB）
                               测试可加 --failpoint/--cancelpoint=<语义步骤>（破坏性）
@@ -67,7 +76,8 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        None | Some("list") | Some("devices") => cmd_list(),
+        None | Some("tui") => tapecpy::tui::run(),
+        Some("list") | Some("devices") => cmd_list(),
         Some("info") => cmd_info(args.get(1).map(String::as_str)),
         Some("media") => cmd_media(args.get(1).map(String::as_str)),
         Some("volume") => cmd_volume(args.get(1).map(String::as_str)),
@@ -83,6 +93,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("read") => cmd_read(&args[1..]),
         Some("write") => cmd_write(&args[1..]),
         Some("write-random") => cmd_write_random(&args[1..]),
+        Some("job") => cmd_job(&args[1..]),
+        Some("_job-runner") => cmd_internal_job_runner(&args[1..]),
         Some("format") => cmd_format(&args[1..]),
         Some("erase") => cmd_erase(&args[1..]),
         Some("--help") | Some("-h") => {
@@ -93,24 +105,260 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn cmd_internal_job_runner(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err("internal job runner 参数错误".into());
+    }
+    let id = job::JobId::parse(&args[1])?;
+    job::run_detached(std::path::Path::new(&args[0]), &id)
+}
+
+fn cmd_job(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("start-write") => cmd_job_start_write(&args[1..]),
+        Some("start-read") => cmd_job_start_read(&args[1..]),
+        Some("status") => cmd_job_status(&args[1..], false),
+        Some("attach") => cmd_job_status(&args[1..], true),
+        Some("cancel") => cmd_job_cancel(&args[1..]),
+        _ => Err("用法: tapecpy job <start-write|start-read|status|attach|cancel> ...".into()),
+    }
+}
+
+fn selected_job_drive(selector: Option<&str>) -> Result<tapecpy::device::TapeDrive, String> {
+    let drives = app::discover_drives().map_err(|error| error.to_string())?;
+    Ok(app::select_drive(&drives, selector)?.clone())
+}
+
+fn selected_locked_drive(
+    selector: Option<&str>,
+    operation: &'static str,
+) -> Result<
+    (
+        tapecpy::device::TapeDrive,
+        tapecpy::device::lease::DeviceLease,
+    ),
+    String,
+> {
+    let drive = selected_job_drive(selector)?;
+    let lease = tapecpy::device::lease::DeviceLease::try_acquire(
+        &drive.serial,
+        tapecpy::device::lease::LeaseOwner::new("cli", operation),
+    )?;
+    Ok((drive, lease))
+}
+
+fn endpoint(path: &str) -> job::Endpoint {
+    let mount = app::mounted_filesystem_for_path(std::path::Path::new(path))
+        .ok()
+        .flatten();
+    job::Endpoint {
+        path: path.into(),
+        filesystem_type: mount.as_ref().map(|mount| mount.filesystem_type.clone()),
+        mount_source: mount.map(|mount| mount.source),
+    }
+}
+
+fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
+    let verify = args.iter().any(|argument| argument == "--read-back-verify");
+    let acknowledge_capacity = args
+        .iter()
+        .any(|argument| argument == "--ack-capacity-warning");
+    let positional: Vec<&str> = args
+        .iter()
+        .filter(|argument| {
+            !matches!(
+                argument.as_str(),
+                "--read-back-verify" | "--ack-capacity-warning"
+            )
+        })
+        .map(String::as_str)
+        .collect();
+    if positional.len() < 2 || positional.len() > 3 {
+        return Err(
+            "用法: tapecpy job start-write <本地> <磁带路径> [选择器] [--read-back-verify] [--ack-capacity-warning]".into(),
+        );
+    }
+    let source = std::path::Path::new(positional[0]);
+    if !source.exists() {
+        return Err(format!("source 不存在: {}", source.display()));
+    }
+    let drive = selected_job_drive(positional.get(2).copied())?;
+    let plan = app::scan_source_roots(&[source.to_path_buf()])?;
+    let preflight_lock = tapecpy::device::lease::DeviceLease::try_acquire(
+        &drive.serial,
+        tapecpy::device::lease::LeaseOwner::new("cli", "start-write-preflight"),
+    )?;
+    let media = app::inspect_media(&drive).map_err(|error| error.to_string())?;
+    let capacity = app::assess_write_capacity(
+        plan.payload_bytes,
+        media
+            .mam
+            .as_ref()
+            .and_then(|mam| mam.remaining_capacity_mib),
+        job::timestamp_now(),
+    );
+    let spec = job::JobSpec::new(
+        job::OperationKind::Write,
+        drive.sg_path.display().to_string(),
+        drive.serial,
+        endpoint(positional[0]),
+        endpoint(positional[1]),
+        verify,
+    )
+    .with_write_preflight(&plan, &capacity, acknowledge_capacity)
+    .map_err(|error| {
+        if error.contains("capacity warning") {
+            format!("{error}；检查容量后使用 --ack-capacity-warning 明确确认")
+        } else {
+            error
+        }
+    })?;
+    drop(preflight_lock);
+    start_job(spec)
+}
+
+fn cmd_job_start_read(args: &[String]) -> Result<(), String> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err("用法: tapecpy job start-read <磁带路径> <输出文件> [选择器]".into());
+    }
+    let destination = std::path::Path::new(&args[1]);
+    if destination.exists() {
+        return Err(format!(
+            "Read destination 已存在，首版拒绝覆盖: {}",
+            destination.display()
+        ));
+    }
+    let drive = selected_job_drive(args.get(2).map(String::as_str))?;
+    let spec = job::JobSpec::new(
+        job::OperationKind::Read,
+        drive.sg_path.display().to_string(),
+        drive.serial,
+        endpoint(&args[0]),
+        endpoint(&args[1]),
+        false,
+    );
+    start_job(spec)
+}
+
+fn start_job(spec: job::JobSpec) -> Result<(), String> {
+    let root = job::default_job_root()?;
+    let state = job::spawn_detached(spec, &root)?;
+    println!(
+        "job {} 已启动；退出当前 SSH 不会停止 operation。",
+        state.spec.id
+    );
+    println!("状态: tapecpy job attach {}", state.spec.id);
+    println!("取消: tapecpy job cancel {}", state.spec.id);
+    Ok(())
+}
+
+fn cmd_job_status(args: &[String], attach: bool) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("用法: tapecpy job status|attach <job-id>".into());
+    }
+    let id = job::JobId::parse(&args[0])?;
+    let root = job::default_job_root()?;
+    let mut state = job::query_state(&root, &id)?;
+    print_job_state(&state);
+    if !attach {
+        return Ok(());
+    }
+    loop {
+        if state.phase.is_terminal() {
+            return Ok(());
+        }
+        let paths = job::JobPaths::new(&root, &id);
+        match job::request(
+            &paths.socket,
+            &job::Request::Watch {
+                protocol_version: job::PROTOCOL_VERSION,
+                after_revision: state.revision,
+                timeout_ms: 30_000,
+            },
+        ) {
+            Ok(job::Response::State { state: next }) => {
+                if next.revision > state.revision {
+                    print_job_state(&next);
+                }
+                state = *next;
+            }
+            Ok(job::Response::Error { message }) => return Err(message),
+            Ok(_) => return Err("job runner 返回了意外响应".into()),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let next = job::query_state(&root, &id)?;
+                if next.revision > state.revision {
+                    print_job_state(&next);
+                }
+                state = next;
+            }
+        }
+    }
+}
+
+fn cmd_job_cancel(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("用法: tapecpy job cancel <job-id>".into());
+    }
+    let id = job::JobId::parse(&args[0])?;
+    let state = job::cancel(&job::default_job_root()?, &id)?;
+    print_job_state(&state);
+    Ok(())
+}
+
+fn print_job_state(state: &job::JobState) {
+    println!(
+        "job={} rev={} operation={:?} phase={:?} pid={} updated={}",
+        state.spec.id,
+        state.revision,
+        state.spec.operation,
+        state.phase,
+        state
+            .runner_pid
+            .map_or_else(|| "—".into(), |pid| pid.to_string()),
+        state.updated_at
+    );
+    println!(
+        "progress={}/{} bytes items={}/{} position={} message={}",
+        state.progress.bytes_completed,
+        state.progress.bytes_total,
+        state.progress.items_completed,
+        state.progress.items_total,
+        state
+            .progress
+            .partition
+            .zip(state.progress.logical_block)
+            .map_or_else(
+                || "—".into(),
+                |(partition, block)| format!("p{partition}b{block}")
+            ),
+        state.message
+    );
+    if let Some(error) = &state.error {
+        println!("error={error}");
+    }
+    if state.requires_diagnosis {
+        println!("requires_diagnosis=true");
+    }
+}
+
 fn cmd_diagnose(args: &[String]) -> Result<(), String> {
     let full = args.iter().any(|argument| argument == "--full");
     let selector = args
         .iter()
         .find(|argument| argument.as_str() != "--full")
         .map(String::as_str);
-    let drives = app::discover_drives().map_err(|error| error.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    print_drive_header(drive);
+    let (drive, _device_lock) = selected_locked_drive(selector, "diagnose")?;
+    print_drive_header(&drive);
     if full {
         eprintln!("只读完整扫描两个 partition；大卷可能需要数小时。");
     } else {
         eprintln!("只读有界诊断：完整扫描 index partition，定点读取 data index。");
     }
     let diagnosis = if full {
-        app::diagnose_volume_full(drive)?
+        app::diagnose_volume_full(&drive)?
     } else {
-        app::diagnose_volume(drive)?
+        app::diagnose_volume(&drive)?
     };
     println!("一致性: {:?}", diagnosis.consistency);
     println!("普通写入安全: {}", diagnosis.safe_for_normal_write);
@@ -154,9 +402,8 @@ fn cmd_diagnose(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_health(selector: Option<&str>) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    let health = app::read_drive_health(drive)?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "health")?;
+    let health = app::read_drive_health(&drive)?;
     println!("磁带机: {} ({})", drive.sg_path.display(), drive.model);
     print_error_counters("写入", health.write_errors.as_ref());
     print_error_counters("读取", health.read_errors.as_ref());
@@ -228,18 +475,16 @@ fn cmd_list() -> Result<(), String> {
 }
 
 fn cmd_info(selector: Option<&str>) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    print_drive_header(drive);
+    let (drive, _device_lock) = selected_locked_drive(selector, "info")?;
+    print_drive_header(&drive);
     Ok(())
 }
 
 fn cmd_media(selector: Option<&str>) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    let media = app::inspect_media(drive).map_err(|e| e.to_string())?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "media")?;
+    let media = app::inspect_media(&drive).map_err(|e| e.to_string())?;
 
-    print_drive_header(drive);
+    print_drive_header(&drive);
     println!();
     println!("介质状态: {}", presence_label(media.presence));
 
@@ -321,11 +566,10 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
 }
 
 fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    let volume = app::inspect_volume(drive).map_err(|e| e.to_string())?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "volume")?;
+    let volume = app::inspect_volume(&drive).map_err(|e| e.to_string())?;
 
-    print_drive_header(drive);
+    print_drive_header(&drive);
     println!();
 
     if !volume.recognized {
@@ -385,10 +629,9 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
 }
 
 fn cmd_mam(selector: Option<&str>) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    print_drive_header(drive);
-    let report = app::inspect_mam(drive)?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "mam")?;
+    print_drive_header(&drive);
+    let report = app::inspect_mam(&drive)?;
     for partition in report.partitions {
         println!("\nMAM partition {}:", partition.partition);
         for attribute in partition.attributes {
@@ -430,9 +673,8 @@ fn hex_compact(bytes: &[u8]) -> String {
 fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
     use tapecpy::ltfs::index::DirectoryEntry;
 
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
-    let volume = app::inspect_volume(drive).map_err(|e| e.to_string())?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "ls")?;
+    let volume = app::inspect_volume(&drive).map_err(|e| e.to_string())?;
 
     if !volume.recognized {
         println!("LTFS: 否（无法浏览）");
@@ -474,13 +716,13 @@ fn cmd_ls(selector: Option<&str>, path: Option<&str>) -> Result<(), String> {
 }
 
 fn cmd_load_unload(selector: Option<&str>, load: bool) -> Result<(), String> {
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
+    let operation = if load { "load" } else { "unload" };
+    let (drive, _device_lock) = selected_locked_drive(selector, operation)?;
     if load {
-        app::load_tape(drive).map_err(|e| e.to_string())?;
+        app::load_tape(&drive).map_err(|e| e.to_string())?;
         println!("已请求装载 {}", drive.nst_path.display());
     } else {
-        app::unload_tape(drive).map_err(|e| e.to_string())?;
+        app::unload_tape(&drive).map_err(|e| e.to_string())?;
         println!("已请求弹出 {}", drive.nst_path.display());
     }
     Ok(())
@@ -509,20 +751,19 @@ fn cmd_read(args: &[String]) -> Result<(), String> {
         }
     }
 
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "read")?;
 
     match out_path {
         Some(out) => {
             let mut file =
                 std::fs::File::create(out).map_err(|e| format!("创建 {} 失败: {e}", out))?;
-            let n = app::read_file(drive, path, &mut file)?;
+            let n = app::read_file(&drive, path, &mut file)?;
             eprintln!("已读取 {n} 字节 -> {out}");
         }
         None => {
             let stdout = std::io::stdout();
             let mut lock = stdout.lock();
-            let n = app::read_file(drive, path, &mut lock)?;
+            let n = app::read_file(&drive, path, &mut lock)?;
             let _ = lock.flush();
             eprintln!("已读取 {n} 字节 -> stdout");
         }
@@ -546,10 +787,9 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
     let tape_path = positional[1];
     let selector = positional.get(2).copied();
 
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, selector)?;
+    let (drive, _device_lock) = selected_locked_drive(selector, "write")?;
     let mut observer = write_cli_observer();
-    let result = app::WriteSession::new(drive).run_with_options(
+    let result = app::WriteSession::new(&drive).run_with_options(
         std::path::Path::new(local),
         tape_path,
         app::WriteOptions {
@@ -558,6 +798,7 @@ fn cmd_write(args: &[String]) -> Result<(), String> {
             } else {
                 app::WriteVerification::None
             },
+            expected_source: None,
             failpoint: None,
             cancellation: None,
             cancelpoint: None,
@@ -602,8 +843,7 @@ fn cmd_write_random(args: &[String]) -> Result<(), String> {
             .as_nanos() as u64
     });
     let tape_path = positional[1];
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, positional.get(2).copied())?;
+    let (drive, _device_lock) = selected_locked_drive(positional.get(2).copied(), "write-random")?;
     eprintln!("流式随机测试源: {size} 字节，seed={seed}");
     let mut observer = write_cli_observer();
     if let Some(point) = failpoint {
@@ -613,7 +853,7 @@ fn cmd_write_random(args: &[String]) -> Result<(), String> {
         eprintln!("测试：将在安全边界 {point:?} 请求取消");
     }
     let cancellation = cancelpoint.map(|_| app::CancellationToken::default());
-    let result = app::WriteSession::new(drive)
+    let result = app::WriteSession::new(&drive)
         .run_pseudorandom_detailed(
             size,
             seed,
@@ -624,6 +864,7 @@ fn cmd_write_random(args: &[String]) -> Result<(), String> {
                 } else {
                     app::WriteVerification::None
                 },
+                expected_source: None,
                 failpoint,
                 cancellation,
                 cancelpoint,
@@ -825,8 +1066,7 @@ fn cmd_format(args: &[String]) -> Result<(), String> {
     }
     let options = app::FormatOptions::new(positional[0], positional[1]);
     options.validate()?;
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, positional.get(2).copied())?;
+    let (drive, _device_lock) = selected_locked_drive(positional.get(2).copied(), "format")?;
     eprintln!(
         "警告：正在销毁并重新格式化 {} 中的磁带；Barcode={}，Volume Name={}",
         drive.sg_path.display(),
@@ -836,7 +1076,7 @@ fn cmd_format(args: &[String]) -> Result<(), String> {
     let mut observer = |event: &app::FormatEvent| {
         eprintln!("[{:?}] {}", event.phase, event.message);
     };
-    let result = app::FormatSession::new(drive).run(&options, &mut observer)?;
+    let result = app::FormatSession::new(&drive).run(&options, &mut observer)?;
     println!(
         "LTFS format 完成: Barcode={} Volume Name={} UUID={} generation={}",
         result.barcode, result.volume_name, result.volume_uuid, result.generation
@@ -867,8 +1107,7 @@ fn cmd_erase(args: &[String]) -> Result<(), String> {
         }
     };
 
-    let drives = app::discover_drives().map_err(|e| e.to_string())?;
-    let drive = app::select_drive(&drives, positional.get(1).copied())?;
+    let (drive, _device_lock) = selected_locked_drive(positional.get(1).copied(), "erase")?;
     eprintln!(
         "警告：正在对 {} 中的磁带执行 {} erase，现有数据将被销毁",
         drive.sg_path.display(),
@@ -886,7 +1125,7 @@ fn cmd_erase(args: &[String]) -> Result<(), String> {
             eprintln!("[{:?}] {}", event.phase, event.message);
         }
     };
-    let result = app::EraseSession::new(drive).run(mode, &mut observer)?;
+    let result = app::EraseSession::new(&drive).run(mode, &mut observer)?;
     println!(
         "{} erase 完成，耗时 {} 秒",
         result.mode.cli_name(),
