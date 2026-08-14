@@ -4,6 +4,7 @@
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
 use std::collections::{BTreeSet, VecDeque};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -1711,6 +1712,16 @@ pub struct ReadEvent {
     pub logical_block: Option<u64>,
     pub tape_bytes_per_second: Option<f64>,
     pub telemetry: Option<ChannelTelemetrySample>,
+    pub buffer: Option<ReadBufferSample>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadBufferSample {
+    pub written_bytes: u64,
+    pub used_bytes: u64,
+    pub capacity_bytes: u64,
+    pub tape_waiting: bool,
+    pub destination_waiting: bool,
 }
 
 /// 从一个已解析的 LTFS index 冻结出的恢复计划。
@@ -1981,6 +1992,7 @@ pub fn read_file_with_observer(
                         logical_block: Some(logical_block),
                         tape_bytes_per_second: speed,
                         telemetry: sample,
+                        buffer: None,
                     });
                 }
                 _ => return Err(format!("读取 {path} 时磁带记录意外结束")),
@@ -1988,6 +2000,430 @@ pub fn read_file_with_observer(
         }
     }
     Ok(written)
+}
+
+// Keep this comfortably below common per-process descriptor limits. The first files encountered
+// in physical tape order benefit most because their create-new handle can be reused immediately.
+const READ_OUTPUT_HANDLE_CAPACITY: usize = 256;
+const DEFAULT_READ_BUFFER_BYTES: usize = 512 * 1024 * 1024;
+
+struct ReadOutputFiles {
+    destination: PathBuf,
+    sync_anchor: std::fs::File,
+    handles: Vec<Option<std::fs::File>>,
+    extents_remaining: Vec<usize>,
+    cached_handles: usize,
+}
+
+impl ReadOutputFiles {
+    fn prepare(plan: &ReadPlan, destination: &Path) -> Result<Self, String> {
+        let sync_anchor = std::fs::File::open(destination).map_err(|error| {
+            format!(
+                "打开 Read destination {} 失败: {error}",
+                destination.display()
+            )
+        })?;
+        let mut directories = plan.directories.iter().cloned().collect::<BTreeSet<_>>();
+        for file in &plan.files {
+            if let Some(parent) = file.relative_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                directories.insert(parent.to_path_buf());
+            }
+        }
+        for directory in directories {
+            std::fs::create_dir_all(destination.join(&directory)).map_err(|error| {
+                format!(
+                    "创建 Read destination 目录 {} 失败: {error}",
+                    directory.display()
+                )
+            })?;
+        }
+
+        let mut extents_remaining = vec![0usize; plan.files.len()];
+        let mut retain = BTreeSet::new();
+        for extent in &plan.extents {
+            extents_remaining[extent.file_index] += 1;
+            if retain.len() < READ_OUTPUT_HANDLE_CAPACITY {
+                retain.insert(extent.file_index);
+            }
+        }
+        let requires_preallocation = preallocation_requirements(plan);
+
+        let mut handles = (0..plan.files.len()).map(|_| None).collect::<Vec<_>>();
+        let mut cached_handles = 0;
+        for (index, file) in plan.files.iter().enumerate() {
+            let target = destination.join(&file.relative_path);
+            let output = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&target)
+                .map_err(|error| {
+                    format!("创建 Read destination {} 失败: {error}", target.display())
+                })?;
+            if requires_preallocation[index] {
+                output.set_len(file.length).map_err(|error| {
+                    format!("设置恢复文件长度 {} 失败: {error}", target.display())
+                })?;
+            }
+            if extents_remaining[index] == 0 {
+                drop(output);
+            } else if retain.contains(&index) {
+                handles[index] = Some(output);
+                cached_handles += 1;
+            }
+        }
+        Ok(Self {
+            destination: destination.to_path_buf(),
+            sync_anchor,
+            handles,
+            extents_remaining,
+            cached_handles,
+        })
+    }
+
+    fn open_extent(&mut self, plan: &ReadPlan, file_index: usize) -> Result<std::fs::File, String> {
+        if let Some(output) = self.handles[file_index].take() {
+            self.cached_handles -= 1;
+            return Ok(output);
+        }
+        let target = self.destination.join(&plan.files[file_index].relative_path);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .map_err(|error| format!("重新打开恢复文件 {} 失败: {error}", target.display()))
+    }
+
+    fn finish_extent(&mut self, file_index: usize, output: std::fs::File) -> bool {
+        self.extents_remaining[file_index] -= 1;
+        if self.extents_remaining[file_index] == 0 {
+            drop(output);
+            return true;
+        }
+        if self.cached_handles < READ_OUTPUT_HANDLE_CAPACITY {
+            self.handles[file_index] = Some(output);
+            self.cached_handles += 1;
+        }
+        false
+    }
+
+    fn sync_filesystem(&self) -> Result<(), String> {
+        // One filesystem-wide completion barrier avoids a serialized SMB FLUSH/NFS COMMIT
+        // round-trip for every restored small file.
+        // SAFETY: sync_anchor remains open for the duration of this call.
+        if unsafe { libc::syncfs(self.sync_anchor.as_raw_fd()) } == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "同步 Read destination filesystem {} 失败: {}",
+                self.destination.display(),
+                std::io::Error::last_os_error()
+            ))
+        }
+    }
+}
+
+fn preallocation_requirements(plan: &ReadPlan) -> Vec<bool> {
+    let mut file_extents = vec![Vec::new(); plan.files.len()];
+    for extent in &plan.extents {
+        file_extents[extent.file_index].push((extent.file_offset, extent.byte_count));
+    }
+    file_extents
+        .into_iter()
+        .zip(&plan.files)
+        .map(|(mut extents, file)| {
+            extents.sort_unstable_by_key(|(offset, _)| *offset);
+            let mut expected_offset = 0u64;
+            for (offset, byte_count) in extents {
+                if offset != expected_offset {
+                    return true;
+                }
+                expected_offset = match expected_offset.checked_add(byte_count) {
+                    Some(offset) => offset,
+                    None => return true,
+                };
+            }
+            expected_offset != file.length
+        })
+        .collect()
+}
+
+enum ReadPipelineMessage {
+    ExtentStart { file_index: usize, file_offset: u64 },
+    Data(Vec<u8>),
+    ExtentEnd,
+    Finish,
+}
+
+#[derive(Default)]
+struct ReadPipelineMetrics {
+    written_bytes: std::sync::atomic::AtomicU64,
+    queued_bytes: std::sync::atomic::AtomicU64,
+    queued_records: std::sync::atomic::AtomicU64,
+    tape_waiting: std::sync::atomic::AtomicBool,
+    destination_waiting: std::sync::atomic::AtomicBool,
+    files_completed: std::sync::atomic::AtomicU64,
+}
+
+struct ReadDestinationPipeline {
+    sender: Option<std::sync::mpsc::SyncSender<ReadPipelineMessage>>,
+    recycle: std::sync::mpsc::Receiver<Vec<u8>>,
+    metrics: std::sync::Arc<ReadPipelineMetrics>,
+    capacity_bytes: u64,
+    capacity_records: u64,
+    worker: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl ReadDestinationPipeline {
+    fn spawn(
+        plan: ReadPlan,
+        outputs: ReadOutputFiles,
+        cancellation: CancellationToken,
+        capacity_bytes: usize,
+    ) -> Result<Self, String> {
+        let record_capacity = capacity_bytes
+            .div_ceil(crate::device::tape::READ_BUF_LEN)
+            .max(1);
+        let actual_capacity = record_capacity
+            .checked_mul(crate::device::tape::READ_BUF_LEN)
+            .ok_or_else(|| "read pipeline capacity 溢出".to_string())?;
+        let (sender, messages) = std::sync::mpsc::sync_channel(record_capacity + 2);
+        let (recycle_tx, recycle) = std::sync::mpsc::channel();
+        let metrics = std::sync::Arc::new(ReadPipelineMetrics::default());
+        metrics.files_completed.store(
+            outputs
+                .extents_remaining
+                .iter()
+                .filter(|count| **count == 0)
+                .count() as u64,
+            std::sync::atomic::Ordering::Release,
+        );
+        let worker_metrics = metrics.clone();
+        let worker = std::thread::Builder::new()
+            .name("tapecpy-destination-writer".into())
+            .spawn(move || {
+                write_read_pipeline(
+                    &plan,
+                    outputs,
+                    cancellation,
+                    &messages,
+                    &recycle_tx,
+                    &worker_metrics,
+                )
+            })
+            .map_err(|error| format!("启动 Read destination writer 失败: {error}"))?;
+        Ok(Self {
+            sender: Some(sender),
+            recycle,
+            metrics,
+            capacity_bytes: actual_capacity as u64,
+            capacity_records: record_capacity as u64,
+            worker: Some(worker),
+        })
+    }
+
+    fn send(&self, message: ReadPipelineMessage) -> Result<(), String> {
+        self.metrics
+            .tape_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self
+            .sender
+            .as_ref()
+            .expect("read pipeline sender exists")
+            .send(message);
+        self.metrics
+            .tape_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result.map_err(|_| "Read destination writer 已停止".to_string())
+    }
+
+    fn send_data(&self, data: Vec<u8>) -> Result<(), String> {
+        let length = data.len() as u64;
+        self.metrics
+            .queued_bytes
+            .fetch_add(length, std::sync::atomic::Ordering::AcqRel);
+        self.metrics
+            .queued_records
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Err(error) = self.send(ReadPipelineMessage::Data(data)) {
+            self.metrics
+                .queued_bytes
+                .fetch_sub(length, std::sync::atomic::Ordering::AcqRel);
+            self.metrics
+                .queued_records
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn acquire_buffer(&self, allocated: &mut usize) -> Result<Vec<u8>, String> {
+        match self.recycle.try_recv() {
+            Ok(buffer) => Ok(buffer),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+                if *allocated
+                    < self.capacity_bytes as usize / crate::device::tape::READ_BUF_LEN =>
+            {
+                *allocated += 1;
+                Ok(Vec::with_capacity(crate::device::tape::READ_BUF_LEN))
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.metrics
+                    .tape_waiting
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let result = self.recycle.recv();
+                self.metrics
+                    .tape_waiting
+                    .store(false, std::sync::atomic::Ordering::Release);
+                result.map_err(|_| "Read destination writer 已关闭 buffer recycle channel".into())
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Read destination writer 已关闭 buffer recycle channel".into())
+            }
+        }
+    }
+
+    fn snapshot(&self) -> ReadBufferSample {
+        let queued_records = self
+            .metrics
+            .queued_records
+            .load(std::sync::atomic::Ordering::Acquire);
+        ReadBufferSample {
+            written_bytes: self
+                .metrics
+                .written_bytes
+                .load(std::sync::atomic::Ordering::Acquire),
+            used_bytes: self
+                .metrics
+                .queued_bytes
+                .load(std::sync::atomic::Ordering::Acquire),
+            capacity_bytes: self.capacity_bytes,
+            tape_waiting: queued_records >= self.capacity_records
+                || self
+                    .metrics
+                    .tape_waiting
+                    .load(std::sync::atomic::Ordering::Acquire),
+            destination_waiting: self
+                .metrics
+                .destination_waiting
+                .load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
+    fn files_completed(&self) -> usize {
+        self.metrics
+            .files_completed
+            .load(std::sync::atomic::Ordering::Acquire) as usize
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        let send_result = self.send(ReadPipelineMessage::Finish);
+        self.sender.take();
+        let worker_result = self
+            .worker
+            .take()
+            .expect("read pipeline worker exists")
+            .join()
+            .map_err(|_| "Read destination writer thread panic".to_string())?;
+        send_result.and(worker_result)
+    }
+
+    fn abort(mut self) -> Result<(), String> {
+        self.sender.take();
+        self.worker
+            .take()
+            .expect("read pipeline worker exists")
+            .join()
+            .map_err(|_| "Read destination writer thread panic".to_string())?
+    }
+}
+
+fn write_read_pipeline(
+    plan: &ReadPlan,
+    mut outputs: ReadOutputFiles,
+    cancellation: CancellationToken,
+    messages: &std::sync::mpsc::Receiver<ReadPipelineMessage>,
+    recycle: &std::sync::mpsc::Sender<Vec<u8>>,
+    metrics: &ReadPipelineMetrics,
+) -> Result<(), String> {
+    let mut active: Option<(usize, std::fs::File)> = None;
+    loop {
+        metrics
+            .destination_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let received = messages.recv();
+        metrics
+            .destination_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        let message =
+            received.map_err(|_| "tape reader 在 Read pipeline 完成前停止".to_string())?;
+        if cancellation.is_cancelled() {
+            return Err("[cancelled]destination writer 在 record 边界停止".into());
+        }
+        match message {
+            ReadPipelineMessage::ExtentStart {
+                file_index,
+                file_offset,
+            } => {
+                if active.is_some() {
+                    return Err("Read pipeline 在前一个 extent 结束前开始了新 extent".into());
+                }
+                let mut output = outputs.open_extent(plan, file_index)?;
+                std::io::Seek::seek(&mut output, std::io::SeekFrom::Start(file_offset)).map_err(
+                    |error| {
+                        format!(
+                            "定位恢复文件 {} 失败: {error}",
+                            outputs
+                                .destination
+                                .join(&plan.files[file_index].relative_path)
+                                .display()
+                        )
+                    },
+                )?;
+                active = Some((file_index, output));
+            }
+            ReadPipelineMessage::Data(mut data) => {
+                let length = data.len() as u64;
+                let (_, output) = active
+                    .as_mut()
+                    .ok_or_else(|| "Read pipeline 收到 extent 外的数据".to_string())?;
+                std::io::Write::write_all(output, &data)
+                    .map_err(|error| format!("写入 Read destination 失败: {error}"))?;
+                metrics
+                    .written_bytes
+                    .fetch_add(length, std::sync::atomic::Ordering::AcqRel);
+                metrics
+                    .queued_bytes
+                    .fetch_sub(length, std::sync::atomic::Ordering::AcqRel);
+                metrics
+                    .queued_records
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                data.clear();
+                let _ = recycle.send(data);
+            }
+            ReadPipelineMessage::ExtentEnd => {
+                let (file_index, output) = active
+                    .take()
+                    .ok_or_else(|| "Read pipeline 收到重复的 extent end".to_string())?;
+                if outputs.finish_extent(file_index, output) {
+                    metrics
+                        .files_completed
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            ReadPipelineMessage::Finish => {
+                if active.is_some() {
+                    return Err("Read pipeline 在 extent 未结束时请求完成".into());
+                }
+                outputs.sync_filesystem()?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn read_extent_requires_locate(position: Option<(u8, u64)>, extent: &PlannedReadExtent) -> bool {
+    position != Some((extent.partition, extent.start_block))
 }
 
 /// 在一个 TapeSession 中按全局物理 extent 顺序执行恢复计划。
@@ -2018,103 +2454,81 @@ pub fn execute_read_plan(
     telemetry.begin_data();
     let mut performance = ReadPerformanceState::new();
 
-    for directory in &plan.directories {
-        std::fs::create_dir_all(destination.join(directory)).map_err(|error| {
-            format!(
-                "创建 Read destination 目录 {} 失败: {error}",
-                directory.display()
-            )
-        })?;
-    }
-    for file in &plan.files {
-        let target = destination.join(&file.relative_path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "创建 Read destination 目录 {} 失败: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        let output = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&target)
-            .map_err(|error| format!("创建 Read destination {} 失败: {error}", target.display()))?;
-        output
-            .set_len(file.length)
-            .map_err(|error| format!("设置恢复文件长度 {} 失败: {error}", target.display()))?;
-    }
-
-    let mut extents_remaining = vec![0usize; plan.files.len()];
-    for extent in &plan.extents {
-        extents_remaining[extent.file_index] += 1;
-    }
-    let mut files_completed = extents_remaining
-        .iter()
-        .filter(|count| **count == 0)
-        .count();
+    let outputs = ReadOutputFiles::prepare(plan, destination)?;
+    let mut pipeline = Some(ReadDestinationPipeline::spawn(
+        plan.clone(),
+        outputs,
+        cancellation.clone(),
+        DEFAULT_READ_BUFFER_BYTES,
+    )?);
     let mut bytes_read = 0u64;
-    for extent in &plan.extents {
-        if cancellation.is_cancelled() {
-            return Err("[cancelled]用户请求在磁带 extent 边界停止读取".into());
-        }
-        let file = plan
-            .files
-            .get(extent.file_index)
-            .ok_or_else(|| "Read plan extent 引用了不存在的文件".to_string())?;
-        let target = destination.join(&file.relative_path);
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&target)
-            .map_err(|error| format!("重新打开恢复文件 {} 失败: {error}", target.display()))?;
-        std::io::Seek::seek(&mut output, std::io::SeekFrom::Start(extent.file_offset))
-            .map_err(|error| format!("定位恢复文件 {} 失败: {error}", target.display()))?;
-        session
-            .locate(extent.partition, extent.start_block)
-            .map_err(|error| error.to_string())?;
-        let mut remaining = extent.byte_count;
-        let mut logical_block = extent.start_block;
-        while remaining > 0 {
+    let mut allocated_buffers = 0usize;
+    let mut tape_position: Option<(u8, u64)> = None;
+    let operation = (|| -> Result<u64, String> {
+        let pipeline = pipeline.as_ref().expect("read pipeline exists");
+        for extent in &plan.extents {
             if cancellation.is_cancelled() {
-                return Err("[cancelled]用户请求在磁带 record 边界停止读取".into());
+                return Err("[cancelled]用户请求在磁带 extent 边界停止读取".into());
             }
-            match session.read_record().map_err(|error| error.to_string())? {
-                ReadRecord::Data(buffer) => {
-                    let count = buffer.len().min(remaining as usize);
-                    std::io::Write::write_all(&mut output, &buffer[..count])
-                        .map_err(|error| format!("写入 {} 失败: {error}", target.display()))?;
-                    remaining -= count as u64;
-                    bytes_read += count as u64;
-                    logical_block += 1;
-                    let sample = telemetry.sample_if_due(
-                        &mut session,
-                        extent.partition,
-                        logical_block,
-                        bytes_read,
-                    );
-                    let speed = performance.sample_if_due(bytes_read);
-                    observer(&ReadEvent {
-                        tape_path: file.tape_path.clone(),
-                        files_completed,
-                        files_total: plan.files.len(),
-                        bytes_read,
-                        bytes_total: plan.payload_bytes,
-                        partition: Some(extent.partition),
-                        logical_block: Some(logical_block),
-                        tape_bytes_per_second: speed,
-                        telemetry: sample,
-                    });
+            let file = plan
+                .files
+                .get(extent.file_index)
+                .ok_or_else(|| "Read plan extent 引用了不存在的文件".to_string())?;
+            pipeline.send(ReadPipelineMessage::ExtentStart {
+                file_index: extent.file_index,
+                file_offset: extent.file_offset,
+            })?;
+            if read_extent_requires_locate(tape_position, extent) {
+                session
+                    .locate(extent.partition, extent.start_block)
+                    .map_err(|error| error.to_string())?;
+            }
+            let mut remaining = extent.byte_count;
+            let mut logical_block = extent.start_block;
+            while remaining > 0 {
+                if cancellation.is_cancelled() {
+                    return Err("[cancelled]用户请求在磁带 record 边界停止读取".into());
                 }
-                _ => return Err(format!("读取 {} 时磁带记录意外结束", file.tape_path)),
+                let buffer = pipeline.acquire_buffer(&mut allocated_buffers)?;
+                match session
+                    .read_record_into(buffer)
+                    .map_err(|error| error.to_string())?
+                {
+                    ReadRecord::Data(mut buffer) => {
+                        let count = buffer.len().min(remaining as usize);
+                        buffer.truncate(count);
+                        remaining -= count as u64;
+                        bytes_read += count as u64;
+                        logical_block += 1;
+                        tape_position = Some((extent.partition, logical_block));
+                        pipeline.send_data(buffer)?;
+                        let sample = telemetry.sample_if_due(
+                            &mut session,
+                            extent.partition,
+                            logical_block,
+                            bytes_read,
+                        );
+                        let speed = performance.sample_if_due(bytes_read);
+                        observer(&ReadEvent {
+                            tape_path: file.tape_path.clone(),
+                            files_completed: pipeline.files_completed(),
+                            files_total: plan.files.len(),
+                            bytes_read,
+                            bytes_total: plan.payload_bytes,
+                            partition: Some(extent.partition),
+                            logical_block: Some(logical_block),
+                            tape_bytes_per_second: speed,
+                            telemetry: sample,
+                            buffer: Some(pipeline.snapshot()),
+                        });
+                    }
+                    _ => return Err(format!("读取 {} 时磁带记录意外结束", file.tape_path)),
+                }
             }
-        }
-        extents_remaining[extent.file_index] -= 1;
-        if extents_remaining[extent.file_index] == 0 {
-            files_completed += 1;
+            pipeline.send(ReadPipelineMessage::ExtentEnd)?;
             observer(&ReadEvent {
                 tape_path: file.tape_path.clone(),
-                files_completed,
+                files_completed: pipeline.files_completed(),
                 files_total: plan.files.len(),
                 bytes_read,
                 bytes_total: plan.payload_bytes,
@@ -2122,18 +2536,24 @@ pub fn execute_read_plan(
                 logical_block: Some(logical_block),
                 tape_bytes_per_second: None,
                 telemetry: None,
+                buffer: Some(pipeline.snapshot()),
             });
         }
+        Ok(bytes_read)
+    })();
+    match operation {
+        Ok(bytes) => {
+            pipeline.take().expect("read pipeline exists").finish()?;
+            Ok(bytes)
+        }
+        Err(error) => {
+            let writer_result = pipeline.take().expect("read pipeline exists").abort();
+            match writer_result {
+                Err(writer_error) if !writer_error.contains("tape reader") => Err(writer_error),
+                _ => Err(error),
+            }
+        }
     }
-    for file in &plan.files {
-        let target = destination.join(&file.relative_path);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&target)
-            .and_then(|output| output.sync_all())
-            .map_err(|error| format!("同步恢复文件 {} 失败: {error}", target.display()))?;
-    }
-    Ok(bytes_read)
 }
 
 /// 在 detached runner 接管设备前检查目标目录和覆盖冲突。
@@ -4390,6 +4810,16 @@ mod tests {
     fn read_plan_keeps_volume_relative_parent_for_individual_files() {
         let plan = plan_ltfs_read(&read_plan_index(), &["/dir/split.bin".into()]).unwrap();
         assert_eq!(plan.files[0].relative_path, Path::new("dir/split.bin"));
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-output-single-deep-file-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        assert!(destination.join("dir/split.bin").is_file());
+        drop(outputs);
+        std::fs::remove_dir_all(destination).unwrap();
     }
 
     #[test]
@@ -4404,6 +4834,196 @@ mod tests {
         let error = validate_read_plan_destination(&plan, &destination).unwrap_err();
         assert!(error.contains("拒绝覆盖"));
         std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn read_output_handles_are_reused_and_synced_at_final_extent() {
+        let plan =
+            plan_ltfs_read(&read_plan_index(), &["/late.bin".into(), "/dir".into()]).unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-output-handles-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let mut outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        assert_eq!(outputs.cached_handles, 2);
+        assert_eq!(
+            std::fs::metadata(destination.join("late.bin"))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(destination.join("dir/split.bin"))
+                .unwrap()
+                .len(),
+            0
+        );
+
+        for extent in &plan.extents {
+            let mut output = outputs.open_extent(&plan, extent.file_index).unwrap();
+            std::io::Seek::seek(&mut output, std::io::SeekFrom::Start(extent.file_offset)).unwrap();
+            std::io::Write::write_all(&mut output, &vec![b'x'; extent.byte_count as usize])
+                .unwrap();
+            outputs.finish_extent(extent.file_index, output);
+        }
+        assert_eq!(outputs.cached_handles, 0);
+        outputs.sync_filesystem().unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("late.bin")).unwrap(),
+            b"xxxxxxxx"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("dir/split.bin")).unwrap(),
+            b"xxxxxxxx"
+        );
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn sparse_read_output_is_preallocated_to_logical_length() {
+        let mut plan = plan_ltfs_read(&read_plan_index(), &["/late.bin".into()]).unwrap();
+        plan.files[0].length = 10;
+        plan.extents[0].file_offset = 5;
+        plan.extents[0].byte_count = 2;
+        let destination =
+            std::env::temp_dir().join(format!("tapecpy-read-output-sparse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        assert_eq!(
+            std::fs::metadata(destination.join("late.bin"))
+                .unwrap()
+                .len(),
+            10
+        );
+        drop(outputs);
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn read_output_handle_cache_is_bounded() {
+        let file_count = READ_OUTPUT_HANDLE_CAPACITY + 17;
+        let plan = ReadPlan {
+            volume_uuid: "uuid".into(),
+            index_generation: 1,
+            selections: vec!["/".into()],
+            directories: Vec::new(),
+            files: (0..file_count)
+                .map(|index| PlannedReadFile {
+                    tape_path: format!("/f{index}"),
+                    relative_path: format!("f{index}").into(),
+                    length: 0,
+                })
+                .collect(),
+            extents: (0..file_count)
+                .map(|index| PlannedReadExtent {
+                    file_index: index,
+                    file_offset: 0,
+                    partition: 1,
+                    start_block: index as u64,
+                    byte_count: 0,
+                })
+                .collect(),
+            payload_bytes: 0,
+        };
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-output-cache-bound-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let mut outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        assert_eq!(outputs.cached_handles, READ_OUTPUT_HANDLE_CAPACITY);
+        for index in 0..file_count {
+            let output = outputs.open_extent(&plan, index).unwrap();
+            assert!(outputs.finish_extent(index, output));
+        }
+        assert_eq!(outputs.cached_handles, 0);
+        outputs.sync_filesystem().unwrap();
+        drop(outputs);
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn read_destination_pipeline_preserves_extent_offsets() {
+        let plan =
+            plan_ltfs_read(&read_plan_index(), &["/late.bin".into(), "/dir".into()]).unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-pipeline-offsets-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        let pipeline = ReadDestinationPipeline::spawn(
+            plan.clone(),
+            outputs,
+            CancellationToken::default(),
+            crate::device::tape::READ_BUF_LEN * 2,
+        )
+        .unwrap();
+        for extent in &plan.extents {
+            pipeline
+                .send(ReadPipelineMessage::ExtentStart {
+                    file_index: extent.file_index,
+                    file_offset: extent.file_offset,
+                })
+                .unwrap();
+            pipeline
+                .send_data(vec![b'p'; extent.byte_count as usize])
+                .unwrap();
+            pipeline.send(ReadPipelineMessage::ExtentEnd).unwrap();
+        }
+        pipeline.finish().unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("late.bin")).unwrap(),
+            b"pppppppp"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("dir/split.bin")).unwrap(),
+            b"pppppppp"
+        );
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn read_destination_pipeline_reports_protocol_errors() {
+        let plan = plan_ltfs_read(&read_plan_index(), &["/late.bin".into()]).unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-pipeline-error-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(&destination).unwrap();
+        let outputs = ReadOutputFiles::prepare(&plan, &destination).unwrap();
+        let pipeline = ReadDestinationPipeline::spawn(
+            plan,
+            outputs,
+            CancellationToken::default(),
+            crate::device::tape::READ_BUF_LEN,
+        )
+        .unwrap();
+        pipeline.send_data(vec![1, 2, 3]).unwrap();
+        let error = pipeline.finish().unwrap_err();
+        assert!(error.contains("extent 外的数据") || error.contains("writer 已停止"));
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn contiguous_read_extents_do_not_require_another_locate() {
+        let extent = PlannedReadExtent {
+            file_index: 1,
+            file_offset: 0,
+            partition: 1,
+            start_block: 42,
+            byte_count: 512,
+        };
+        assert!(!read_extent_requires_locate(Some((1, 42)), &extent));
+        assert!(read_extent_requires_locate(Some((1, 41)), &extent));
+        assert!(read_extent_requires_locate(Some((0, 42)), &extent));
+        assert!(read_extent_requires_locate(None, &extent));
     }
 
     #[test]

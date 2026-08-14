@@ -578,7 +578,13 @@ impl TapeSession {
     /// 记录大于缓冲区时返回错误；遇到 FileMark 返回 `Filemark`；
     /// 读到 EOD（blank check）返回 `Eod`。
     pub fn read_record(&mut self) -> Result<ReadRecord, Error> {
-        let mut buf = vec![0u8; READ_BUF_LEN];
+        self.read_record_into(Vec::new())
+    }
+
+    /// 与 `read_record` 相同，但复用调用方归还的 allocation，供有界读取管线避免为每条
+    /// 磁带记录重新分配最大缓冲区。
+    pub fn read_record_into(&mut self, mut buf: Vec<u8>) -> Result<ReadRecord, Error> {
+        buf.resize(READ_BUF_LEN, 0);
         let result = scsi::read6(&self.fd, &mut buf).map_err(|e| Error::Io {
             context: format!("向 {} 发送 READ 失败", self.path.display()),
             source: e,

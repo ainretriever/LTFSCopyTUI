@@ -582,6 +582,11 @@ Throughput 和 page `0x87` 的 Channel Read Error Rate；Write 显示 Tape Write
 Throughput 和 page `0x88` 的 Channel Write Error Rate。Read 页面不得残留或复用上一个
 Write job 的速度、通道值、source buffer 状态。
 
+Read Throughput panel 同时显示 destination buffer used/capacity。缓存满且 tape reader
+等待空槽时显示 `destination slow / buffer full`；destination writer 等待磁带数据时显示
+`tape side limiting / buffer empty`；其他时间显示 `flowing`。这些状态来自 Read 自己的 pipeline snapshot，
+不能沿用 Write source reader 的 waiting 含义。
+
 LTFS Operations 以下的页面采用层级导航。`Q` 只返回当前页面的上一级：Read/Write
 的 Confirm、destination、plan、mount/browser 逐级后退，最外层 selector 才返回
 LTFS Operations；Format 返回 LTFS Operations。不能从这些页面直接跳回 Preview，

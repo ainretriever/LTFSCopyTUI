@@ -699,6 +699,14 @@ impl JobState {
                 self.progress.throughput_history.drain(..excess);
             }
         }
+        if let Some(buffer) = event.buffer {
+            self.progress.bytes_completed = buffer.written_bytes;
+            self.progress.buffer_used_bytes = Some(buffer.used_bytes);
+            self.progress.buffer_capacity_bytes = Some(buffer.capacity_bytes);
+            self.progress.reader_waiting = buffer.tape_waiting;
+            self.progress.writer_waiting = buffer.destination_waiting;
+            self.progress.performance_updated_at = Some(self.updated_at.clone());
+        }
         if let Some(sample) = &event.telemetry {
             self.progress.worst_channel_rate = sample.worst_rate;
             self.progress.channel_rates = sample.channel_rates.clone();
@@ -1846,6 +1854,37 @@ mod tests {
             state.error.as_deref(),
             Some("detached operation runner did not start")
         );
+    }
+
+    #[test]
+    fn read_buffer_snapshot_updates_job_pressure_metrics() {
+        let mut state = JobState::queued(spec(OperationKind::Read)).unwrap();
+        state.apply_read_event(
+            &crate::app::ReadEvent {
+                tape_path: "/small.bin".into(),
+                files_completed: 0,
+                files_total: 1,
+                bytes_read: 512,
+                bytes_total: 1024,
+                partition: Some(1),
+                logical_block: Some(6),
+                tape_bytes_per_second: Some(100.0),
+                telemetry: None,
+                buffer: Some(crate::app::ReadBufferSample {
+                    written_bytes: 384,
+                    used_bytes: 400,
+                    capacity_bytes: 512,
+                    tape_waiting: true,
+                    destination_waiting: false,
+                }),
+            },
+            "sample".into(),
+        );
+        assert_eq!(state.progress.buffer_used_bytes, Some(400));
+        assert_eq!(state.progress.bytes_completed, 384);
+        assert_eq!(state.progress.buffer_capacity_bytes, Some(512));
+        assert!(state.progress.reader_waiting);
+        assert!(!state.progress.writer_waiting);
     }
 
     #[test]

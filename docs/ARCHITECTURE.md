@@ -1356,6 +1356,39 @@ Read 和 Write 的运行时 telemetry 必须按方向分离。Write 从 diagnost
 `log10(ΔC1 / ΔCCP / 2 / 1920)` 算法，但不得复用另一方向的计数基线。Read throughput
 按恢复过程中实际从磁带取得的 payload byte 区间增量计算，并独立写入 job snapshot。
 
+Read 的 host output 路径针对 NFS/CIFS 小文件延迟采用有界句柄策略。runner 在读取第一条
+磁带数据前仍以 `create_new` 建立全部目标文件，保留“不覆盖”和提前发现冲突的语义；
+目录从显式目录项和文件父路径汇总、去重后创建。按物理 extent 首次出现顺序最多保留
+256 个已创建文件句柄，后续 extent 尽量复用，但不能通过无限打开文件突破进程 descriptor
+限制。没有 hole 的稠密文件依靠顺序写自然增长，不额外发送 `set_len`；稀疏或不完整
+extent 仍预设 LTFS 逻辑长度。最后一个 extent 完成时关闭文件，整个 Read 成功结束前对
+destination 所在 filesystem 执行一次 Linux `syncfs` completion barrier，而不是为每个
+文件重新 open + `sync_all`。这会同步同一挂载上的其他 pending writes，是用一次挂载级
+barrier 换取避免逐小文件 SMB FLUSH/NFS COMMIT 的明确取舍。
+
+2026-08-15 在 tapeserver 的已挂载共享上用 163 个 4 KiB 文件做了仅 host-output 的等价
+生命周期基准（不包含磁带走带）：CIFS 从 2147 ms 降至 171 ms，NFSv4 从 216 ms 降至
+125 ms。该结果证明元数据/同步往返已减少，但不是完整 LTFS Read 吞吐结论；完整实机
+验收仍应同时观察磁带是否持续 streaming、最终文件内容和任务终态。
+
+Read 数据传输进一步采用默认 512 MiB 的有界管线。runner 主线程是唯一 tape reader，
+严格按全局物理 extent 顺序执行 LOCATE/READ、Read BER 和位置采样；独立的
+`tapecpy-destination-writer` 线程只持有 host 文件句柄，按 message 中的 file index、
+file offset 和 extent 边界写 NFS/CIFS，不能访问磁带设备。每个槽复用 1 MiB 最大 tape
+record allocation，避免持续分配；槽耗尽对 tape reader 施加背压，writer 出错或退出则
+通过断开的 data/recycle channel 反向停止 reader。只有发送 Finish、缓存完全排空、所有
+extent 关闭且 `syncfs` 成功后，Read job 才能进入 Completed。
+
+Read job snapshot 复用通用的 buffer used/capacity、reader waiting 和 writer waiting
+字段，但界面按 Read 方向解释：tape reader 等待空槽表示 `destination slow / buffer
+full`，destination writer 等待消息表示 `tape side limiting / buffer empty`。缓存只能吸收短时网络抖动；
+若 destination 的持续吞吐低于磁带，缓存最终仍会填满并正确反压，不能伪造持续速度。
+
+物理调度表相邻 extent 若与 reader 已知位置的 `(partition, next block)` 完全连续，必须
+直接继续 READ，不能为每个小文件重复发送 LOCATE。只有 partition 改变或 start block
+不连续时才 LOCATE；否则 LOCATE 自带的 READ POSITION 和驱动器重新定位会主动破坏
+streaming，任何 host buffer 都无法弥补这种 tape-side stop/start。
+
 第一版 Write source selector 读取 `/proc/self/mountinfo`，把 `nfs`/`nfs4`、
 `cifs`/`smb3` 等网络文件系统与其 remote source 明确显示，并把网络挂载排在本地
 挂载之前。目录浏览只枚举当前一级；选择 source 后才由独立 filesystem worker

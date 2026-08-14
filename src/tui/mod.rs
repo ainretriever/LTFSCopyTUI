@@ -3610,6 +3610,21 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
         .collect();
     let mut lines = braille_area_graph(&samples, inner_width, inner_height);
     let direction = if job.spec.operation == job::OperationKind::Read {
+        let buffer = job
+            .progress
+            .buffer_used_bytes
+            .zip(job.progress.buffer_capacity_bytes)
+            .map_or_else(
+                || "—".into(),
+                |(used, capacity)| format!("{} / {}", human_bytes(used), human_bytes(capacity)),
+            );
+        let pressure = if job.progress.reader_waiting {
+            "destination slow / buffer full"
+        } else if job.progress.writer_waiting {
+            "tape side limiting / buffer empty"
+        } else {
+            "flowing"
+        };
         let filesystem = job
             .spec
             .destination
@@ -3617,8 +3632,8 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
             .as_deref()
             .unwrap_or("unknown");
         lines.push(Line::from(format!(
-            " Restore destination {} │ filesystem {filesystem}",
-            job.spec.destination.path
+            " Buffer {buffer} │ {pressure} │ Destination {filesystem} {}",
+            job.spec.destination.path,
         )));
         "Read"
     } else {
