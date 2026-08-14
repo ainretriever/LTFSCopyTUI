@@ -36,6 +36,7 @@ enum Page {
     JobCompletion,
     ErrorDetails,
     WriteSource,
+    ReadRestore,
     Format,
     Erase,
 }
@@ -83,6 +84,23 @@ enum SourceView {
     Plan,
     LtfsDestination,
     Confirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadView {
+    TapeBrowser,
+    Plan,
+    Mounts,
+    Destination,
+    Confirm,
+}
+
+#[derive(Debug, Clone)]
+struct TapeBrowserEntry {
+    name: String,
+    path: String,
+    directory: bool,
+    size: u64,
 }
 
 enum WorkerCommand {
@@ -166,6 +184,12 @@ struct UiState {
     job_index: usize,
     cancel_confirm: bool,
     source_view: SourceView,
+    read_view: ReadView,
+    read_tape_directory: String,
+    read_tape_entries: Vec<TapeBrowserEntry>,
+    selected_tape_paths: Vec<String>,
+    read_plan: Option<app::ReadPlan>,
+    read_destination: Option<PathBuf>,
     mounts: Vec<app::MountedFilesystem>,
     browser_path: Option<PathBuf>,
     browser_entries: Vec<app::BrowserEntry>,
@@ -214,6 +238,12 @@ impl Default for UiState {
             job_index: 0,
             cancel_confirm: false,
             source_view: SourceView::Mounts,
+            read_view: ReadView::TapeBrowser,
+            read_tape_directory: "/".into(),
+            read_tape_entries: Vec::new(),
+            selected_tape_paths: Vec::new(),
+            read_plan: None,
+            read_destination: None,
             mounts: Vec::new(),
             browser_path: None,
             browser_entries: Vec::new(),
@@ -364,6 +394,35 @@ fn file_worker(commands: Receiver<FileCommand>, events: Sender<FileEvent>) {
 
 fn apply_file_event(state: &mut UiState, event: FileEvent) {
     state.file_busy = false;
+    if state.page == Page::ReadRestore {
+        match event {
+            FileEvent::Mounts(mounts) => {
+                state.mounts = mounts;
+                state.browser_index = 0;
+                state.read_view = ReadView::Mounts;
+                state.status = "Select the filesystem containing the restore destination".into();
+            }
+            FileEvent::Directory(path, entries) => {
+                state.browser_path = Some(path);
+                state.browser_entries = entries
+                    .into_iter()
+                    .filter(|entry| entry.kind == app::BrowserEntryKind::Directory)
+                    .collect();
+                state.browser_index = 0;
+                state.read_view = ReadView::Destination;
+                state.status =
+                    "Browse with Enter; press S to select this destination directory".into();
+            }
+            FileEvent::Error(error) => {
+                state.last_error = Some(error.clone());
+                state.status = error;
+            }
+            FileEvent::Plan(_, _) => {
+                state.status = "Unexpected Write scan result during Read workflow".into();
+            }
+        }
+        return;
+    }
     match event {
         FileEvent::Mounts(mounts) => {
             state.mounts = mounts;
@@ -996,6 +1055,10 @@ fn handle_key(
         handle_source_key(state, code, file_commands, commands);
         return;
     }
+    if state.page == Page::ReadRestore {
+        handle_read_key(state, code, file_commands, commands);
+        return;
+    }
     if state.page == Page::Jobs {
         handle_job_key(state, code, job_commands);
         return;
@@ -1139,11 +1202,18 @@ fn handle_key(
                 .and_then(|snapshot| snapshot.volume.as_ref())
                 .and_then(|volume| volume.index.as_ref())
                 .is_some();
-            state.status = if readable {
-                "LTFS Read selected; file selection workflow is the next implementation step".into()
+            if readable {
+                open_read_browser(state, "/");
+                state.page = Page::ReadRestore;
+                state.selected_tape_paths.clear();
+                state.read_plan = None;
+                state.read_destination = None;
+                state.status =
+                    "Select LTFS files/directories with Space; press S to build the Read Plan"
+                        .into();
             } else {
-                "LTFS Read unavailable: no readable LTFS index".into()
-            };
+                state.status = "LTFS Read unavailable: no readable LTFS index".into();
+            }
         }
         KeyCode::Char('2') | KeyCode::Char('w') | KeyCode::Char('W')
             if state.page == Page::Ltfs =>
@@ -1383,7 +1453,7 @@ fn handle_format_key(state: &mut UiState, code: KeyCode, device_commands: &Sende
         }
         FormatView::Complete => {
             if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
-                state.page = Page::Overview;
+                state.page = Page::Ltfs;
             }
         }
         FormatView::Confirm => match code {
@@ -1405,11 +1475,14 @@ fn handle_format_key(state: &mut UiState, code: KeyCode, device_commands: &Sende
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 state.format_view = FormatView::Editing;
             }
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                state.format_view = FormatView::Editing;
+            }
             _ => {}
         },
         FormatView::Editing => match code {
-            KeyCode::Esc => {
-                state.page = Page::Overview;
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                state.page = Page::Ltfs;
             }
             KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
                 state.format_field = match state.format_field {
@@ -1478,7 +1551,7 @@ fn handle_source_key(
         return;
     }
     match code {
-        KeyCode::Char('q') | KeyCode::Char('Q') => state.page = Page::Overview,
+        KeyCode::Char('q') | KeyCode::Char('Q') => back_write_level(state),
         KeyCode::Up | KeyCode::Char('k') => {
             state.browser_index = state.browser_index.saturating_sub(1)
         }
@@ -1632,6 +1705,27 @@ fn handle_source_key(
             state.tape_target = None;
         }
         _ => {}
+    }
+}
+
+fn back_write_level(state: &mut UiState) {
+    state.start_confirm = false;
+    match state.source_view {
+        SourceView::Mounts => state.page = Page::Ltfs,
+        SourceView::Directory => {
+            state.source_view = SourceView::Mounts;
+            state.browser_index = 0;
+        }
+        SourceView::Plan => {
+            state.source_view = SourceView::Directory;
+            state.source_plan = None;
+            state.capacity = None;
+        }
+        SourceView::LtfsDestination => state.source_view = SourceView::Plan,
+        SourceView::Confirm => {
+            state.source_view = SourceView::LtfsDestination;
+            state.tape_target = None;
+        }
     }
 }
 
@@ -1851,6 +1945,321 @@ fn start_write_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>)
     }
 }
 
+fn open_read_browser(state: &mut UiState, path: &str) {
+    let Some(directory) = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.volume.as_ref())
+        .and_then(|volume| volume.index.as_ref())
+        .and_then(|index| index.find_directory(path))
+    else {
+        state.status = format!("LTFS directory no longer exists: {path}");
+        return;
+    };
+    let mut entries = directory
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            crate::ltfs::index::DirectoryEntry::Directory(directory) => TapeBrowserEntry {
+                name: directory.name.clone(),
+                path: join_ltfs_path(path, &directory.name),
+                directory: true,
+                size: 0,
+            },
+            crate::ltfs::index::DirectoryEntry::File(file) => TapeBrowserEntry {
+                name: file.name.clone(),
+                path: join_ltfs_path(path, &file.name),
+                directory: false,
+                size: file.length,
+            },
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .directory
+            .cmp(&left.directory)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    state.read_tape_directory = path.into();
+    state.read_tape_entries = entries;
+    state.browser_index = 0;
+    state.read_view = ReadView::TapeBrowser;
+}
+
+fn join_ltfs_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn toggle_tape_selection(state: &mut UiState, path: String) {
+    if let Some(position) = state
+        .selected_tape_paths
+        .iter()
+        .position(|selected| selected == &path)
+    {
+        state.selected_tape_paths.remove(position);
+        state.status = format!("Removed LTFS selection {path}");
+    } else {
+        state.selected_tape_paths.push(path.clone());
+        state.status = format!(
+            "Selected {path} ({} roots total)",
+            state.selected_tape_paths.len()
+        );
+    }
+}
+
+fn handle_read_key(
+    state: &mut UiState,
+    code: KeyCode,
+    file_commands: &Sender<FileCommand>,
+    device_commands: &Sender<WorkerCommand>,
+) {
+    if state.file_busy {
+        return;
+    }
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            state.browser_index = state.browser_index.saturating_sub(1)
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let length = match state.read_view {
+                ReadView::TapeBrowser => state.read_tape_entries.len(),
+                ReadView::Mounts => state.mounts.len(),
+                ReadView::Destination => state.browser_entries.len(),
+                ReadView::Plan | ReadView::Confirm => 0,
+            };
+            state.browser_index = (state.browser_index + 1).min(length.saturating_sub(1));
+        }
+        KeyCode::Enter if state.read_view == ReadView::TapeBrowser => {
+            if let Some(entry) = state.read_tape_entries.get(state.browser_index)
+                && entry.directory
+            {
+                let path = entry.path.clone();
+                open_read_browser(state, &path);
+            }
+        }
+        KeyCode::Char(' ') if state.read_view == ReadView::TapeBrowser => {
+            if let Some(entry) = state.read_tape_entries.get(state.browser_index) {
+                toggle_tape_selection(state, entry.path.clone());
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') if state.read_view == ReadView::TapeBrowser => {
+            toggle_tape_selection(state, state.read_tape_directory.clone());
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') if state.read_view == ReadView::TapeBrowser => {
+            let Some(index) = state
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.volume.as_ref())
+                .and_then(|volume| volume.index.as_ref())
+            else {
+                state.status = "Trusted LTFS index is unavailable".into();
+                return;
+            };
+            match app::plan_ltfs_read(index, &state.selected_tape_paths) {
+                Ok(plan) => {
+                    state.status = format!(
+                        "Read Plan frozen: {} files, {}",
+                        plan.files.len(),
+                        human_bytes(plan.payload_bytes)
+                    );
+                    state.read_plan = Some(plan);
+                    state.read_view = ReadView::Plan;
+                }
+                Err(error) => state.status = error,
+            }
+        }
+        KeyCode::Backspace | KeyCode::Esc if state.read_view == ReadView::TapeBrowser => {
+            if state.read_tape_directory == "/" {
+                state.page = Page::Ltfs;
+            } else {
+                let parent = state
+                    .read_tape_directory
+                    .rsplit_once('/')
+                    .map_or(
+                        "/",
+                        |(parent, _)| if parent.is_empty() { "/" } else { parent },
+                    )
+                    .to_string();
+                open_read_browser(state, &parent);
+            }
+        }
+        KeyCode::Enter if state.read_view == ReadView::Plan => {
+            state.file_busy = true;
+            let _ = file_commands.send(FileCommand::ListMounts);
+        }
+        KeyCode::Esc if state.read_view == ReadView::Plan => {
+            state.read_view = ReadView::TapeBrowser;
+            state.read_plan = None;
+        }
+        KeyCode::Enter if state.read_view == ReadView::Mounts => {
+            if let Some(mount) = state.mounts.get(state.browser_index) {
+                state.file_busy = true;
+                let _ = file_commands.send(FileCommand::Browse(mount.mount_point.clone()));
+            }
+        }
+        KeyCode::Enter if state.read_view == ReadView::Destination => {
+            if let Some(entry) = state.browser_entries.get(state.browser_index)
+                && entry.kind == app::BrowserEntryKind::Directory
+            {
+                state.file_busy = true;
+                let _ = file_commands.send(FileCommand::Browse(entry.path.clone()));
+            }
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') if state.read_view == ReadView::Destination => {
+            let Some(path) = state.browser_path.clone() else {
+                return;
+            };
+            state.read_destination = Some(path);
+            state.start_confirm = false;
+            state.read_view = ReadView::Confirm;
+            state.status = "Review the complete Read Plan before starting".into();
+        }
+        KeyCode::Backspace | KeyCode::Esc if state.read_view == ReadView::Destination => {
+            let Some(current) = state.browser_path.as_ref() else {
+                return;
+            };
+            if state
+                .mounts
+                .iter()
+                .any(|mount| mount.mount_point == *current)
+            {
+                state.read_view = ReadView::Mounts;
+                state.browser_index = 0;
+            } else if let Some(parent) = current.parent() {
+                state.file_busy = true;
+                let _ = file_commands.send(FileCommand::Browse(parent.to_path_buf()));
+            }
+        }
+        KeyCode::Esc if state.read_view == ReadView::Mounts => state.read_view = ReadView::Plan,
+        KeyCode::Enter if state.read_view == ReadView::Confirm => state.start_confirm = true,
+        KeyCode::Char('y') | KeyCode::Char('Y')
+            if state.read_view == ReadView::Confirm && state.start_confirm =>
+        {
+            start_read_job(state, device_commands);
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
+            if state.read_view == ReadView::Confirm && state.start_confirm =>
+        {
+            state.start_confirm = false;
+        }
+        KeyCode::Esc if state.read_view == ReadView::Confirm => {
+            state.read_view = ReadView::Destination;
+            state.read_destination = None;
+        }
+        KeyCode::Char('q') | KeyCode::Char('Q') => back_read_level(state),
+        _ => {}
+    }
+}
+
+fn back_read_level(state: &mut UiState) {
+    state.start_confirm = false;
+    match state.read_view {
+        ReadView::TapeBrowser => state.page = Page::Ltfs,
+        ReadView::Plan => {
+            state.read_view = ReadView::TapeBrowser;
+            state.read_plan = None;
+        }
+        ReadView::Mounts => state.read_view = ReadView::Plan,
+        ReadView::Destination => {
+            state.read_view = ReadView::Mounts;
+            state.browser_index = 0;
+        }
+        ReadView::Confirm => {
+            state.read_view = ReadView::Destination;
+            state.read_destination = None;
+        }
+    }
+}
+
+fn start_read_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>) {
+    let (Some(snapshot), Some(plan), Some(destination_path)) = (
+        state.snapshot.as_ref(),
+        state.read_plan.as_ref(),
+        state.read_destination.as_ref(),
+    ) else {
+        state.status = "Read Plan or destination is unavailable".into();
+        return;
+    };
+    if let Err(error) = app::validate_read_plan_destination(plan, destination_path) {
+        state.status = error;
+        state.start_confirm = false;
+        return;
+    }
+    let mount = state
+        .mounts
+        .iter()
+        .filter(|mount| destination_path.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.components().count());
+    let source = job::Endpoint {
+        path: plan
+            .selections
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "/".into()),
+        filesystem_type: None,
+        mount_source: None,
+    };
+    let destination = job::Endpoint {
+        path: destination_path.display().to_string(),
+        filesystem_type: mount.map(|mount| mount.filesystem_type.clone()),
+        mount_source: mount.map(|mount| mount.source.clone()),
+    };
+    let spec = match job::JobSpec::new(
+        job::OperationKind::Read,
+        snapshot.drive.sg_path.display().to_string(),
+        snapshot.drive.serial.clone(),
+        source,
+        destination,
+        false,
+    )
+    .with_read_preflight(plan)
+    {
+        Ok(spec) => spec,
+        Err(error) => {
+            state.status = error;
+            state.start_confirm = false;
+            return;
+        }
+    };
+    let root = match job::default_job_root() {
+        Ok(root) => root,
+        Err(error) => {
+            state.status = error;
+            return;
+        }
+    };
+    let (acknowledge, acknowledged) = mpsc::channel();
+    if device_commands
+        .send(WorkerCommand::Suspend(acknowledge))
+        .is_err()
+        || acknowledged.recv_timeout(Duration::from_secs(10)).is_err()
+    {
+        let _ = device_commands.send(WorkerCommand::Resume);
+        state.status =
+            "Device worker did not confirm ownership handoff; Read was not started".into();
+        state.start_confirm = false;
+        return;
+    }
+    match job::spawn_detached(spec, &root) {
+        Ok(job_state) => {
+            state.jobs.insert(0, job_state);
+            state.job_index = 0;
+            state.page = Page::Jobs;
+            state.start_confirm = false;
+            state.status = "Detached Read started; closing TUI will not stop it".into();
+        }
+        Err(error) => {
+            let _ = device_commands.send(WorkerCommand::Resume);
+            state.status = format!("Failed to start detached Read: {error}");
+            state.start_confirm = false;
+        }
+    }
+}
+
 fn handle_job_key(state: &mut UiState, code: KeyCode, commands: &Sender<JobCommand>) {
     if state.cancel_confirm {
         match code {
@@ -1922,6 +2331,10 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         render_write_source(frame, area, state);
         return;
     }
+    if state.page == Page::ReadRestore {
+        render_read_restore(frame, area, state);
+        return;
+    }
     if state.page == Page::Format {
         render_format(frame, area, state);
         return;
@@ -1943,7 +2356,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         Page::Health => render_health(frame, layout[1], state),
         Page::Jobs | Page::JobCompletion => unreachable!(),
         Page::ErrorDetails => render_error(frame, layout[1], state),
-        Page::WriteSource | Page::Format | Page::Erase => unreachable!(),
+        Page::WriteSource | Page::ReadRestore | Page::Format | Page::Erase => unreachable!(),
     }
     if let Some(message) = state.busy {
         render_busy(frame, area, message);
@@ -2113,13 +2526,13 @@ fn render_format(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     );
     let help = match state.format_view {
         FormatView::Editing => {
-            "Type value  Tab/↑↓ Switch field  Backspace Delete  Enter Review  Esc Back"
+            "Type value  Tab/↑↓ Switch field  Backspace Delete  Enter Review  Q/Esc Back"
         }
-        FormatView::Confirm => "Y DESTROY AND FORMAT  N/Esc Return to editing",
+        FormatView::Confirm => "Y DESTROY AND FORMAT  N/Esc/Q Return to editing",
         FormatView::Running => {
             "Format in progress — exit and all other device commands are disabled"
         }
-        FormatView::Complete => "Q/Esc Return to Overview",
+        FormatView::Complete => "Q/Esc Return to LTFS Operations",
     };
     frame.render_widget(
         Paragraph::new(format!("{}\n{}", state.format_message, help))
@@ -2426,7 +2839,7 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
             "↑↓ Select  Enter Open / select current directory  Esc/Backspace Parent  Q Back"
         }
         SourceView::Confirm if state.start_confirm => {
-            "Y Start detached Write  N/Esc Return to review"
+            "Y Start detached Write  N/Esc Return to review  Q Back"
         }
         SourceView::Confirm if capacity_requires_ack(state) => {
             "A Capacity ack  V Verify  E Auto eject  Enter Continue  Esc Change destination"
@@ -2434,6 +2847,243 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
         SourceView::Confirm => {
             "V Toggle verify  E Toggle auto eject  Enter Continue  Esc Change destination"
         }
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{}\n{}", state.status, help))
+            .block(Block::default().borders(Borders::TOP)),
+        layout[2],
+    );
+    if state.file_busy {
+        render_busy(frame, area, "Waiting for filesystem / network mount");
+    }
+}
+
+fn render_read_restore(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
+    let layout = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(10),
+        Constraint::Length(3),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new("Read workflow │ LTFS selection → physical-order plan → host destination")
+            .style(Style::default().add_modifier(Modifier::BOLD))
+            .block(Block::default().borders(Borders::ALL)),
+        layout[0],
+    );
+    match state.read_view {
+        ReadView::TapeBrowser => {
+            let (start, end) = visible_range(
+                state.read_tape_entries.len(),
+                state.browser_index,
+                layout[1].height.saturating_sub(3) as usize,
+            );
+            let rows =
+                state.read_tape_entries[start..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, entry)| {
+                        let index = start + offset;
+                        Row::new([
+                            if state.selected_tape_paths.contains(&entry.path) {
+                                "[x]".into()
+                            } else {
+                                "[ ]".into()
+                            },
+                            if entry.directory { "DIR" } else { "FILE" }.into(),
+                            entry.name.clone(),
+                            if entry.directory {
+                                "—".into()
+                            } else {
+                                human_bytes(entry.size)
+                            },
+                        ])
+                        .style(selection_style(index, state.browser_index))
+                    });
+            frame.render_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(4),
+                        Constraint::Length(8),
+                        Constraint::Percentage(70),
+                        Constraint::Percentage(30),
+                    ],
+                )
+                .header(
+                    Row::new(["Sel", "Kind", "LTFS name", "Logical size"])
+                        .style(Style::default().add_modifier(Modifier::BOLD)),
+                )
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" LTFS source: {} ", state.read_tape_directory)),
+                ),
+                layout[1],
+            );
+        }
+        ReadView::Plan => {
+            let plan = state.read_plan.as_ref();
+            frame.render_widget(
+                Paragraph::new(vec![
+                    line("Selected roots", state.selected_tape_paths.len()),
+                    line("Directories", plan.map_or(0, |plan| plan.directories.len())),
+                    line("Files", plan.map_or(0, |plan| plan.files.len())),
+                    line(
+                        "Logical payload",
+                        plan.map_or_else(|| "—".into(), |plan| human_bytes(plan.payload_bytes)),
+                    ),
+                    line(
+                        "Scheduled extents",
+                        plan.map_or(0, |plan| plan.extents.len()),
+                    ),
+                    line(
+                        "Tape order",
+                        "partition/start block ascending; output uses file offsets",
+                    ),
+                    line(
+                        "Volume UUID",
+                        plan.map_or("—", |plan| plan.volume_uuid.as_str()),
+                    ),
+                    line(
+                        "Index generation",
+                        plan.map_or(0, |plan| plan.index_generation),
+                    ),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Frozen Read Plan "),
+                ),
+                layout[1],
+            );
+        }
+        ReadView::Mounts => {
+            let (start, end) = visible_range(
+                state.mounts.len(),
+                state.browser_index,
+                layout[1].height.saturating_sub(3) as usize,
+            );
+            let rows = state.mounts[start..end]
+                .iter()
+                .enumerate()
+                .map(|(offset, mount)| {
+                    let index = start + offset;
+                    Row::new([
+                        if mount.network { "Network" } else { "Local" },
+                        &mount.filesystem_type,
+                        mount.mount_point.to_str().unwrap_or("<non-UTF-8>"),
+                        &mount.source,
+                    ])
+                    .style(selection_style(index, state.browser_index))
+                });
+            frame.render_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(10),
+                        Constraint::Length(12),
+                        Constraint::Percentage(40),
+                        Constraint::Percentage(40),
+                    ],
+                )
+                .header(
+                    Row::new(["Class", "Type", "Mount point", "Remote / device"])
+                        .style(Style::default().add_modifier(Modifier::BOLD)),
+                )
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Restore destination filesystems "),
+                ),
+                layout[1],
+            );
+        }
+        ReadView::Destination => {
+            let directories = state
+                .browser_entries
+                .iter()
+                .filter(|entry| entry.kind == app::BrowserEntryKind::Directory)
+                .collect::<Vec<_>>();
+            let (start, end) = visible_range(
+                directories.len(),
+                state.browser_index,
+                layout[1].height.saturating_sub(3) as usize,
+            );
+            let rows = directories[start..end]
+                .iter()
+                .enumerate()
+                .map(|(offset, entry)| {
+                    Row::new(["DIR", entry.name.as_str()])
+                        .style(selection_style(start + offset, state.browser_index))
+                });
+            frame.render_widget(
+                Table::new(rows, [Constraint::Length(8), Constraint::Min(20)])
+                    .header(
+                        Row::new(["Kind", "Directory"])
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    )
+                    .block(Block::default().borders(Borders::ALL).title(format!(
+                        " Restore into: {} ",
+                        state
+                            .browser_path
+                            .as_ref()
+                            .map_or_else(|| "—".into(), |path| path.display().to_string())
+                    ))),
+                layout[1],
+            );
+        }
+        ReadView::Confirm => {
+            let plan = state.read_plan.as_ref();
+            frame.render_widget(
+                Paragraph::new(vec![
+                    line(
+                        "Operation",
+                        if state.start_confirm {
+                            "Read LTFS — FINAL CONFIRMATION"
+                        } else {
+                            "Read LTFS"
+                        },
+                    ),
+                    line("Files", plan.map_or(0, |plan| plan.files.len())),
+                    line("Directories", plan.map_or(0, |plan| plan.directories.len())),
+                    line(
+                        "Logical payload",
+                        plan.map_or_else(|| "—".into(), |plan| human_bytes(plan.payload_bytes)),
+                    ),
+                    line(
+                        "Destination",
+                        state
+                            .read_destination
+                            .as_ref()
+                            .map_or_else(|| "—".into(), |path| path.display().to_string()),
+                    ),
+                    line("Overwrite", "Never; existing files abort the operation"),
+                    line("Execution", "Detached; safe across TUI/SSH disconnect"),
+                    line("Tape scheduling", "All extents in physical forward order"),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Read Confirmation "),
+                ),
+                layout[1],
+            );
+        }
+    }
+    let help = match state.read_view {
+        ReadView::TapeBrowser => {
+            "↑↓ Select  Enter Open dir  Space Toggle item  A Toggle current dir  S Build plan  Q Back"
+        }
+        ReadView::Plan => "Enter Choose restore destination  Esc Change selection  Q Back",
+        ReadView::Mounts => "↑↓ Select  Enter Browse mount  Esc Plan  Q Back",
+        ReadView::Destination => {
+            "↑↓ Select  Enter Open dir  S Select current directory  Esc/Backspace Parent  Q Back"
+        }
+        ReadView::Confirm if state.start_confirm => {
+            "Y Start detached Read  N/Esc Return to review  Q Back"
+        }
+        ReadView::Confirm => "Enter Final confirmation  Esc Change destination  Q Back",
     };
     frame.render_widget(
         Paragraph::new(format!("{}\n{}", state.status, help))
@@ -2959,39 +3609,54 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
         .map(|sample| sample.bytes_per_second)
         .collect();
     let mut lines = braille_area_graph(&samples, inner_width, inner_height);
-    let source = job.progress.source_bytes_per_second.map_or_else(
-        || "—".into(),
-        |speed| format!("{:.1} MiB/s", speed / 1024.0 / 1024.0),
-    );
-    let buffer = job
-        .progress
-        .buffer_used_bytes
-        .zip(job.progress.buffer_capacity_bytes)
-        .map_or_else(
-            || "—".into(),
-            |(used, capacity)| format!("{} / {}", human_bytes(used), human_bytes(capacity)),
-        );
-    let pressure = if job.progress.writer_waiting {
-        "source starvation"
-    } else if job.progress.reader_waiting {
-        "buffer full"
+    let direction = if job.spec.operation == job::OperationKind::Read {
+        let filesystem = job
+            .spec
+            .destination
+            .filesystem_type
+            .as_deref()
+            .unwrap_or("unknown");
+        lines.push(Line::from(format!(
+            " Restore destination {} │ filesystem {filesystem}",
+            job.spec.destination.path
+        )));
+        "Read"
     } else {
-        "flowing"
+        let source = job.progress.source_bytes_per_second.map_or_else(
+            || "—".into(),
+            |speed| format!("{:.1} MiB/s", speed / 1024.0 / 1024.0),
+        );
+        let buffer = job
+            .progress
+            .buffer_used_bytes
+            .zip(job.progress.buffer_capacity_bytes)
+            .map_or_else(
+                || "—".into(),
+                |(used, capacity)| format!("{} / {}", human_bytes(used), human_bytes(capacity)),
+            );
+        let pressure = if job.progress.writer_waiting {
+            "source starvation"
+        } else if job.progress.reader_waiting {
+            "buffer full"
+        } else {
+            "flowing"
+        };
+        let filesystem = job
+            .spec
+            .source
+            .filesystem_type
+            .as_deref()
+            .unwrap_or("unknown");
+        lines.push(Line::from(format!(
+            " Source I/O {source} │ Buffer {buffer} │ {pressure} │ Source {filesystem}"
+        )));
+        "Write"
     };
-    let filesystem = job
-        .spec
-        .source
-        .filesystem_type
-        .as_deref()
-        .unwrap_or("unknown");
-    lines.push(Line::from(format!(
-        " Source I/O {source} │ Buffer {buffer} │ {pressure} │ Source {filesystem}"
-    )));
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Tape Write Throughput — {current} ")),
+                .title(format!(" Tape {direction} Throughput — {current} ")),
         ),
         area,
     );
@@ -3039,11 +3704,14 @@ fn render_job_channels(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobStat
         " Session worst {worst} │ sampled {sampled}"
     )));
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Channel Error Rate — log10(BER) "),
-        ),
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
+            " Channel {} Error Rate — log10(BER) ",
+            if job.spec.operation == job::OperationKind::Read {
+                "Read"
+            } else {
+                "Write"
+            }
+        ))),
         area,
     );
 }
@@ -3794,8 +4462,9 @@ fn counter(value: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EraseView, FormatField, FormatView, Page, UiState, WorkerCommand, WorkerOwnershipState,
-        braille_area_graph, display_clock, handle_erase_key, handle_format_key,
+        EraseView, FormatField, FormatView, Page, ReadView, SourceView, UiState, WorkerCommand,
+        WorkerOwnershipState, back_read_level, back_write_level, braille_area_graph, display_clock,
+        handle_erase_key, handle_format_key,
     };
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
@@ -3873,6 +4542,74 @@ mod tests {
         handle_format_key(&mut state, KeyCode::Char('q'), &commands);
         assert_eq!(state.page, Page::Format);
         assert_eq!(state.format_view, FormatView::Running);
+    }
+
+    #[test]
+    fn write_q_navigation_walks_back_one_level_at_a_time() {
+        let mut state = UiState {
+            page: Page::WriteSource,
+            source_view: SourceView::Confirm,
+            start_confirm: true,
+            tape_target: Some("/restore".into()),
+            ..UiState::default()
+        };
+
+        back_write_level(&mut state);
+        assert_eq!(state.page, Page::WriteSource);
+        assert_eq!(state.source_view, SourceView::LtfsDestination);
+        assert!(!state.start_confirm);
+        assert!(state.tape_target.is_none());
+
+        back_write_level(&mut state);
+        assert_eq!(state.source_view, SourceView::Plan);
+        back_write_level(&mut state);
+        assert_eq!(state.source_view, SourceView::Directory);
+        back_write_level(&mut state);
+        assert_eq!(state.source_view, SourceView::Mounts);
+        back_write_level(&mut state);
+        assert_eq!(state.page, Page::Ltfs);
+    }
+
+    #[test]
+    fn read_q_navigation_walks_back_one_level_at_a_time() {
+        let mut state = UiState {
+            page: Page::ReadRestore,
+            read_view: ReadView::Confirm,
+            start_confirm: true,
+            read_destination: Some("/restore".into()),
+            ..UiState::default()
+        };
+
+        back_read_level(&mut state);
+        assert_eq!(state.page, Page::ReadRestore);
+        assert_eq!(state.read_view, ReadView::Destination);
+        assert!(!state.start_confirm);
+        assert!(state.read_destination.is_none());
+
+        back_read_level(&mut state);
+        assert_eq!(state.read_view, ReadView::Mounts);
+        back_read_level(&mut state);
+        assert_eq!(state.read_view, ReadView::Plan);
+        back_read_level(&mut state);
+        assert_eq!(state.read_view, ReadView::TapeBrowser);
+        back_read_level(&mut state);
+        assert_eq!(state.page, Page::Ltfs);
+    }
+
+    #[test]
+    fn format_q_navigation_returns_through_format_parent() {
+        let (commands, _receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Format,
+            format_view: FormatView::Confirm,
+            ..UiState::default()
+        };
+
+        handle_format_key(&mut state, KeyCode::Char('q'), &commands);
+        assert_eq!(state.page, Page::Format);
+        assert_eq!(state.format_view, FormatView::Editing);
+        handle_format_key(&mut state, KeyCode::Char('q'), &commands);
+        assert_eq!(state.page, Page::Ltfs);
     }
 
     #[test]

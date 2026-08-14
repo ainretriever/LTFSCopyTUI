@@ -1338,6 +1338,24 @@ Write 在选择 source 后先扫描并冻结 plan，以文件数和 payload byte
 runner 仍逐文件校验实际长度，防止计划后 source 变化。Read 则先读取可信 LTFS
 index，再从 index tree 选择恢复对象并汇总 length，最后选择 Linux destination。
 
+Read Plan 不按用户勾选顺序或目录遍历顺序读取磁带。计划先展开所有选中目录，保留
+恢复文件相对于卷根的逻辑路径和长度（单独选择深层文件也保留其父目录），再把所有
+文件的 extents 合并为全局调度表，按
+`(partition, start_block)` 排序。每个调度项同时记录目标文件和 `file_offset`，因此
+即使多个文件包含非连续或互相交错的 extents，runner 也能按磁带物理顺序向前读取，
+再写入各输出文件的正确偏移，避免为维持单文件逻辑顺序反复倒带。
+
+冻结的 Read preflight 必须持久化 volume UUID、index generation、选择项、展开后的
+目录/文件、payload 总量和 extent 调度表。detached runner 取得 lease 后重新读取当前
+LTFS index，UUID 或 generation 与计划不符时，在创建任何输出数据前拒绝执行。恢复
+目标默认使用 create-new 语义，禁止覆盖已有文件；NFS/CIFS destination 继续使用
+endpoint 中冻结的 filesystem type 和 mount source 做身份复核。
+
+Read 和 Write 的运行时 telemetry 必须按方向分离。Write 从 diagnostic page `0x88`
+计算写通道 BER，Read 从 page `0x87` 计算读通道 BER；二者采用与 LTFSCopyGUI 相同的
+`log10(ΔC1 / ΔCCP / 2 / 1920)` 算法，但不得复用另一方向的计数基线。Read throughput
+按恢复过程中实际从磁带取得的 payload byte 区间增量计算，并独立写入 job snapshot。
+
 第一版 Write source selector 读取 `/proc/self/mountinfo`，把 `nfs`/`nfs4`、
 `cifs`/`smb3` 等网络文件系统与其 remote source 明确显示，并把网络挂载排在本地
 挂载之前。目录浏览只枚举当前一级；选择 source 后才由独立 filesystem worker
@@ -1381,6 +1399,12 @@ Quantum LTO-5 上的首个垂直测试使用 2 GiB source 完成了以下验证�
 TUI 创建 runner 前使用带 acknowledgement 的 `Suspend` 完成设备所有权交接；只有
 进程内 device worker 已停止 telemetry 并确认后才允许 spawn。超时则不创建 job，
 避免“暂停命令尚在队列中、runner 已经访问设备”的竞争窗口。
+
+`Queued` 只表示刚刚创建 runner 的短暂启动窗口，不是等待用户手动启动的持久队列。
+如果 fork/exec 或启动前准备失败，创建方必须把已落盘状态改为 `Failed`；若 client
+发现 Unix socket 不可达、没有 runner PID 且 `Queued` 已超过 5 秒，则收敛为
+`Interrupted`，不得永久显示一个既无法运行也无法取消的幽灵任务。Interrupted
+任务禁止自动续跑，必须由用户重新建立并确认新的 Read/Write plan。
 
 Milestone 12 TUI 已增加 Jobs 页面：启动时发现 retained jobs，展示 active/terminal
 状态、进度、位置、吞吐和 diagnosis 要求，并对 cancel 使用二次确认。检测到 active

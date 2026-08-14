@@ -572,6 +572,21 @@ Overview 的 telemetry 状态只显示 `HH:MM:SS`，不显示日期、秒的小�
 或有效 label 时第三界面显示明确错误、禁用 Read/Write，但必须保留 Format 入口。
 第三界面集中排列 `[1] Read LTFS…`、`[2] Write LTFS…` 和 `[3] Format LTFS…`。
 
+Read 文件树允许选择多个文件或目录。确认前展开目录、显示文件数与逻辑总字节数，
+同时冻结 volume UUID 和 index generation。用户看到的目录结构与实际磁带读取顺序
+彼此独立：runner 按所有 extent 的 `(partition, start_block)` 全局顺序读取，并依据
+extent 的 file offset 写入对应目标文件，不能按勾选顺序反复定位磁带。
+
+Jobs 页面必须根据 operation 显示方向正确的实时指标：Read 显示 Tape Read
+Throughput 和 page `0x87` 的 Channel Read Error Rate；Write 显示 Tape Write
+Throughput 和 page `0x88` 的 Channel Write Error Rate。Read 页面不得残留或复用上一个
+Write job 的速度、通道值、source buffer 状态。
+
+LTFS Operations 以下的页面采用层级导航。`Q` 只返回当前页面的上一级：Read/Write
+的 Confirm、destination、plan、mount/browser 逐级后退，最外层 selector 才返回
+LTFS Operations；Format 返回 LTFS Operations。不能从这些页面直接跳回 Preview，
+否则用户再次进入 LTFS Operations 会被迫重新读取 index partition。
+
 穿带、退带和弹出由单一 device worker 串行执行。命令进行中显示 `Working` 模态框，
 禁用其他设备命令，并明确提示不要移除介质。SCSI 命令返回 GOOD 后仍要刷新 basic
 snapshot，只有实际介质生命周期符合目标状态才向用户报告完成；这类长命令不使用

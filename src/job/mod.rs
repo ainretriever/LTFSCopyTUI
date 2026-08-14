@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -163,6 +163,8 @@ pub struct JobSpec {
     pub created_at: String,
     #[serde(default)]
     pub write_preflight: Option<WritePreflight>,
+    #[serde(default)]
+    pub read_preflight: Option<ReadPreflight>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,6 +179,33 @@ pub struct WritePreflight {
     pub capacity_sampled_at: String,
     pub capacity_status: JobCapacityStatus,
     pub warning_acknowledged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPreflight {
+    pub volume_uuid: String,
+    pub index_generation: u64,
+    pub selections: Vec<String>,
+    pub directories: Vec<String>,
+    pub files: Vec<ReadPlanFile>,
+    pub extents: Vec<ReadPlanExtent>,
+    pub payload_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPlanFile {
+    pub tape_path: String,
+    pub relative_path: String,
+    pub length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPlanExtent {
+    pub file_index: usize,
+    pub file_offset: u64,
+    pub partition: u8,
+    pub start_block: u64,
+    pub byte_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +254,7 @@ impl JobSpec {
             volume_name: None,
             created_at: timestamp_now(),
             write_preflight: None,
+            read_preflight: None,
         }
     }
 
@@ -288,6 +318,45 @@ impl JobSpec {
         self
     }
 
+    pub fn with_read_preflight(mut self, plan: &crate::app::ReadPlan) -> Result<Self, String> {
+        if self.operation != OperationKind::Read {
+            return Err("只有 Read job 可以携带 read preflight".into());
+        }
+        self.read_preflight = Some(ReadPreflight {
+            volume_uuid: plan.volume_uuid.clone(),
+            index_generation: plan.index_generation,
+            selections: plan.selections.clone(),
+            directories: plan
+                .directories
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            files: plan
+                .files
+                .iter()
+                .map(|file| ReadPlanFile {
+                    tape_path: file.tape_path.clone(),
+                    relative_path: file.relative_path.display().to_string(),
+                    length: file.length,
+                })
+                .collect(),
+            extents: plan
+                .extents
+                .iter()
+                .map(|extent| ReadPlanExtent {
+                    file_index: extent.file_index,
+                    file_offset: extent.file_offset,
+                    partition: extent.partition,
+                    start_block: extent.start_block,
+                    byte_count: extent.byte_count,
+                })
+                .collect(),
+            payload_bytes: plan.payload_bytes,
+        });
+        self.validate()?;
+        Ok(self)
+    }
+
     fn effective_source_roots(&self) -> Vec<&Endpoint> {
         if self.source_roots.is_empty() {
             vec![&self.source]
@@ -318,6 +387,12 @@ impl JobSpec {
         {
             return Err("Read job 不能使用 Write read-back verify 或提交后 eject 策略".into());
         }
+        if let Some(preflight) = &self.read_preflight {
+            if self.operation != OperationKind::Read {
+                return Err("只有 Read job 可以携带 read preflight".into());
+            }
+            validate_read_preflight(preflight)?;
+        }
         if let Some(preflight) = &self.write_preflight {
             if self.operation != OperationKind::Write {
                 return Err("只有 Write job 可以携带 write preflight".into());
@@ -340,6 +415,91 @@ impl JobSpec {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_read_preflight(plan: &ReadPreflight) -> Result<(), String> {
+    if plan.volume_uuid.is_empty() {
+        return Err("read preflight 缺少 LTFS volume UUID".into());
+    }
+    if plan.selections.is_empty() {
+        return Err("read preflight 没有 LTFS selection".into());
+    }
+    if plan.files.is_empty() && plan.directories.is_empty() {
+        return Err("read preflight 没有可恢复内容".into());
+    }
+    let safe_relative = |value: &str| {
+        let path = Path::new(value);
+        !value.is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+    };
+    if plan
+        .directories
+        .iter()
+        .chain(plan.files.iter().map(|file| &file.relative_path))
+        .any(|path| !safe_relative(path))
+    {
+        return Err("read preflight 包含不安全的 destination relative path".into());
+    }
+    let total = plan.files.iter().try_fold(0u64, |sum, file| {
+        sum.checked_add(file.length)
+            .ok_or_else(|| "read preflight payload 溢出".to_string())
+    })?;
+    if total != plan.payload_bytes {
+        return Err("read preflight payload 与文件长度总和不一致".into());
+    }
+    let mut previous = None;
+    for extent in &plan.extents {
+        let file = plan
+            .files
+            .get(extent.file_index)
+            .ok_or_else(|| "read preflight extent 引用了不存在的文件".to_string())?;
+        if extent
+            .file_offset
+            .checked_add(extent.byte_count)
+            .is_none_or(|end| end > file.length)
+        {
+            return Err("read preflight extent 超出文件边界".into());
+        }
+        let position = (extent.partition, extent.start_block);
+        if previous.is_some_and(|previous| previous > position) {
+            return Err("read preflight extents 未按磁带位置排序".into());
+        }
+        previous = Some(position);
+    }
+    Ok(())
+}
+
+fn application_read_plan(plan: &ReadPreflight) -> crate::app::ReadPlan {
+    crate::app::ReadPlan {
+        volume_uuid: plan.volume_uuid.clone(),
+        index_generation: plan.index_generation,
+        selections: plan.selections.clone(),
+        directories: plan.directories.iter().map(PathBuf::from).collect(),
+        files: plan
+            .files
+            .iter()
+            .map(|file| crate::app::PlannedReadFile {
+                tape_path: file.tape_path.clone(),
+                relative_path: PathBuf::from(&file.relative_path),
+                length: file.length,
+            })
+            .collect(),
+        extents: plan
+            .extents
+            .iter()
+            .map(|extent| crate::app::PlannedReadExtent {
+                file_index: extent.file_index,
+                file_offset: extent.file_offset,
+                partition: extent.partition,
+                start_block: extent.start_block,
+                byte_count: extent.byte_count,
+            })
+            .collect(),
+        payload_bytes: plan.payload_bytes,
     }
 }
 
@@ -511,6 +671,52 @@ impl JobState {
                 if self.spec.read_back_verify {
                     self.completion.verification = VerificationStatus::Failed;
                 }
+            }
+        }
+    }
+
+    pub fn apply_read_event(&mut self, event: &crate::app::ReadEvent, timestamp: String) {
+        self.revision += 1;
+        self.updated_at = timestamp;
+        self.progress.current_item = Some(event.tape_path.clone());
+        self.progress.items_completed = event.files_completed as u64;
+        self.progress.items_total = event.files_total as u64;
+        self.progress.bytes_completed = event.bytes_read;
+        self.progress.bytes_total = event.bytes_total;
+        self.progress.partition = event.partition;
+        self.progress.logical_block = event.logical_block;
+        if let Some(speed) = event.tape_bytes_per_second {
+            let timestamp = self.updated_at.clone();
+            self.progress.tape_bytes_per_second = Some(speed);
+            self.progress.performance_updated_at = Some(timestamp.clone());
+            self.progress.throughput_history.push(JobThroughputSample {
+                timestamp,
+                bytes_per_second: speed,
+            });
+            if self.progress.throughput_history.len() > crate::app::PERFORMANCE_HISTORY_CAPACITY {
+                let excess = self.progress.throughput_history.len()
+                    - crate::app::PERFORMANCE_HISTORY_CAPACITY;
+                self.progress.throughput_history.drain(..excess);
+            }
+        }
+        if let Some(sample) = &event.telemetry {
+            self.progress.worst_channel_rate = sample.worst_rate;
+            self.progress.channel_rates = sample.channel_rates.clone();
+            self.progress.telemetry_updated_at = Some(sample.timestamp.clone());
+            if let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0)
+                && self
+                    .progress
+                    .session_worst_channel_rate
+                    .is_none_or(|current| rate > current)
+                && let Some(channel) = sample.channel_rates.iter().find_map(|channel| {
+                    channel
+                        .log10_bit_error_rate
+                        .filter(|value| value.total_cmp(&rate).is_eq())
+                        .map(|_| channel.channel)
+                })
+            {
+                self.progress.session_worst_channel = Some(channel);
+                self.progress.session_worst_channel_rate = Some(rate);
             }
         }
     }
@@ -838,10 +1044,23 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response, String> {
     serde_json::from_slice(&message).map_err(|error| format!("解析 IPC response 失败: {error}"))
 }
 
-pub fn reconcile_interrupted(
+pub fn reconcile_interrupted(state: JobState, process_alive: impl FnOnce(u32) -> bool) -> JobState {
+    reconcile_unreachable(state, process_alive, false)
+}
+
+fn reconcile_unreachable(
     mut state: JobState,
     process_alive: impl FnOnce(u32) -> bool,
+    queued_startup_expired: bool,
 ) -> JobState {
+    if state.phase == JobPhase::Queued && state.runner_pid.is_none() && queued_startup_expired {
+        state.revision += 1;
+        state.phase = JobPhase::Interrupted;
+        state.updated_at = timestamp_now();
+        state.message = "runner 未在启动宽限期内注册；任务从未开始".into();
+        state.error = Some("detached operation runner did not start".into());
+        return state;
+    }
     if state.phase.is_active() && state.runner_pid.is_some_and(|pid| !process_alive(pid)) {
         state.revision += 1;
         state.phase = JobPhase::Interrupted;
@@ -862,40 +1081,56 @@ pub fn spawn_detached(spec: JobSpec, root: &Path) -> Result<JobState, String> {
         return Err(format!("job {} 已存在", spec.id));
     }
     save_spec(&paths, &spec)?;
-    let state = JobState::queued(spec)?;
+    let mut state = JobState::queued(spec)?;
     save_state(&paths, &state)?;
 
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&paths.log)
-        .map_err(|error| format!("创建 runner log 失败: {error}"))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|error| format!("复制 runner log handle 失败: {error}"))?;
-    let executable =
-        std::env::current_exe().map_err(|error| format!("无法确定 tapecpy executable: {error}"))?;
-    let mut command = Command::new(executable);
-    command
-        .arg("_job-runner")
-        .arg(root)
-        .arg(state.spec.id.as_str())
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    // SAFETY: pre_exec 中只调用 async-signal-safe 的 setsid；失败会阻止 exec。
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("启动 detached operation runner 失败: {error}"))?;
+    let launch = (|| {
+        let stdout = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&paths.log)
+            .map_err(|error| format!("创建 runner log 失败: {error}"))?;
+        let stderr = stdout
+            .try_clone()
+            .map_err(|error| format!("复制 runner log handle 失败: {error}"))?;
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("无法确定 tapecpy executable: {error}"))?;
+        let mut command = Command::new(executable);
+        command
+            .arg("_job-runner")
+            .arg(root)
+            .arg(state.spec.id.as_str())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+        // SAFETY: pre_exec 中只调用 async-signal-safe 的 setsid；失败会阻止 exec。
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command
+            .spawn()
+            .map_err(|error| format!("启动 detached operation runner 失败: {error}"))
+    })();
+    let mut child = match launch {
+        Ok(child) => child,
+        Err(error) => {
+            state.revision += 1;
+            state.phase = JobPhase::Failed;
+            state.updated_at = timestamp_now();
+            state.message = "operation runner 启动失败；任务未执行".into();
+            state.error = Some(error.clone());
+            save_state(&paths, &state).map_err(|persist_error| {
+                format!("{error}; 同时无法持久化失败状态: {persist_error}")
+            })?;
+            return Err(error);
+        }
+    };
     // 前台进程存活时负责回收 child；reaper thread 不拥有任何 workflow 状态，前台
     // 退出后 runner 仍由新 session 独立运行。
     let _ = thread::Builder::new()
@@ -1010,6 +1245,18 @@ fn run_operation(
         state.phase = JobPhase::Running;
         state.updated_at = timestamp_now();
         state.message = format!("{:?} operation 正在运行", state.spec.operation);
+        if state.spec.operation == OperationKind::Read {
+            state.progress.items_total = state
+                .spec
+                .read_preflight
+                .as_ref()
+                .map_or(1, |plan| plan.files.len() as u64);
+            state.progress.bytes_total = state
+                .spec
+                .read_preflight
+                .as_ref()
+                .map_or(0, |plan| plan.payload_bytes);
+        }
     })?;
 
     match spec.operation {
@@ -1111,55 +1358,70 @@ fn run_operation(
         }
         OperationKind::Read => {
             let output_path = Path::new(&spec.destination.path);
-            let mut output = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(output_path)
-                .map_err(|error| {
-                    format!(
-                        "创建 Read destination {} 失败: {error}",
-                        output_path.display()
-                    )
-                })?;
             let mut last_persist = std::time::Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now);
+            let files_total = spec
+                .read_preflight
+                .as_ref()
+                .map_or(1, |plan| plan.files.len() as u64);
             let mut observer = |event: &crate::app::ReadEvent| {
-                if last_persist.elapsed() < Duration::from_millis(250) {
+                if event.telemetry.is_none()
+                    && event.tape_bytes_per_second.is_none()
+                    && last_persist.elapsed() < Duration::from_millis(250)
+                {
                     return;
                 }
                 last_persist = std::time::Instant::now();
                 let _ = control.update(|state| {
-                    state.revision += 1;
-                    state.updated_at = timestamp_now();
-                    state.progress.current_item = Some(event.tape_path.clone());
-                    state.progress.items_total = 1;
-                    state.progress.bytes_completed = event.bytes_read;
-                    state.progress.bytes_total = event.bytes_total;
-                    state.progress.partition = event.partition;
-                    state.progress.logical_block = event.logical_block;
+                    state.apply_read_event(event, timestamp_now());
                 });
             };
-            let bytes_read = crate::app::read_file_with_observer(
-                drive,
-                &spec.source.path,
-                &mut output,
-                cancellation,
-                &mut observer,
-            )?;
-            output
-                .sync_all()
-                .map_err(|error| format!("同步 Read destination 失败: {error}"))?;
+            let bytes_read = if let Some(preflight) = spec.read_preflight.as_ref() {
+                let plan = application_read_plan(preflight);
+                crate::app::execute_read_plan(
+                    drive,
+                    &plan,
+                    output_path,
+                    cancellation,
+                    &mut observer,
+                )?
+            } else {
+                let mut output = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(output_path)
+                    .map_err(|error| {
+                        format!(
+                            "创建 Read destination {} 失败: {error}",
+                            output_path.display()
+                        )
+                    })?;
+                let bytes = crate::app::read_file_with_observer(
+                    drive,
+                    &spec.source.path,
+                    &mut output,
+                    cancellation,
+                    &mut observer,
+                )?;
+                output
+                    .sync_all()
+                    .map_err(|error| format!("同步 Read destination 失败: {error}"))?;
+                bytes
+            };
             control.update(|state| {
                 state.revision += 1;
                 state.phase = JobPhase::Completed;
                 state.updated_at = timestamp_now();
                 state.message = "Read operation 已完成".into();
-                state.progress.items_completed = 1;
-                state.progress.items_total = 1;
-                state.progress.bytes_completed = bytes_read;
-                state.progress.bytes_total = bytes_read;
+                state.progress.items_completed = files_total;
+                state.progress.items_total = files_total;
+                state.progress.bytes_completed = spec
+                    .read_preflight
+                    .as_ref()
+                    .map_or(bytes_read, |plan| plan.payload_bytes);
+                state.progress.bytes_total = state.progress.bytes_completed;
             })?;
         }
     }
@@ -1197,7 +1459,17 @@ pub fn query_state(root: &Path, id: &JobId) -> Result<JobState, String> {
         Ok(_) => Err("job runner 返回了意外响应".into()),
         Err(_) => {
             let state = load_state(&paths)?;
-            let reconciled = reconcile_interrupted(state.clone(), process_is_alive);
+            let queued_startup_expired = state.phase == JobPhase::Queued
+                && state.runner_pid.is_none()
+                && paths
+                    .state
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|elapsed| elapsed >= Duration::from_secs(5));
+            let reconciled =
+                reconcile_unreachable(state.clone(), process_is_alive, queued_startup_expired);
             if reconciled != state {
                 save_state(&paths, &reconciled)?;
             }
@@ -1315,6 +1587,7 @@ mod tests {
             volume_name: None,
             created_at: "2026-08-10T00:00:00Z".into(),
             write_preflight: None,
+            read_preflight: None,
         }
     }
 
@@ -1333,6 +1606,52 @@ mod tests {
         value.completion_action = CompletionAction::KeepLoaded;
         value.read_back_verify = true;
         assert!(value.validate().unwrap_err().contains("Read job"));
+    }
+
+    #[test]
+    fn read_preflight_persists_physical_extent_order_and_safe_paths() {
+        let plan = crate::app::ReadPlan {
+            volume_uuid: "volume-uuid".into(),
+            index_generation: 7,
+            selections: vec!["/archive".into()],
+            directories: vec![PathBuf::from("archive")],
+            files: vec![crate::app::PlannedReadFile {
+                tape_path: "/archive/a.bin".into(),
+                relative_path: PathBuf::from("archive/a.bin"),
+                length: 8,
+            }],
+            extents: vec![
+                crate::app::PlannedReadExtent {
+                    file_index: 0,
+                    file_offset: 0,
+                    partition: 1,
+                    start_block: 10,
+                    byte_count: 4,
+                },
+                crate::app::PlannedReadExtent {
+                    file_index: 0,
+                    file_offset: 4,
+                    partition: 1,
+                    start_block: 30,
+                    byte_count: 4,
+                },
+            ],
+            payload_bytes: 8,
+        };
+        let value = spec(OperationKind::Read)
+            .with_read_preflight(&plan)
+            .unwrap();
+        let persisted = value.read_preflight.as_ref().unwrap();
+        assert_eq!(persisted.extents[0].start_block, 10);
+        assert_eq!(persisted.extents[1].start_block, 30);
+
+        let mut unsafe_value = value.clone();
+        unsafe_value.read_preflight.as_mut().unwrap().files[0].relative_path = "../escape".into();
+        assert!(unsafe_value.validate().is_err());
+
+        let mut unsorted = value;
+        unsorted.read_preflight.as_mut().unwrap().extents.swap(0, 1);
+        assert!(unsorted.validate().is_err());
     }
 
     #[test]
@@ -1514,6 +1833,26 @@ mod tests {
         let state = reconcile_interrupted(state, |_| false);
         assert_eq!(state.phase, JobPhase::Interrupted);
         assert!(state.requires_diagnosis);
+    }
+
+    #[test]
+    fn stale_queued_job_without_runner_becomes_interrupted() {
+        let state = JobState::queued(spec(OperationKind::Read)).unwrap();
+        let state = reconcile_unreachable(state, |_| true, true);
+        assert_eq!(state.phase, JobPhase::Interrupted);
+        assert!(state.runner_pid.is_none());
+        assert!(!state.requires_diagnosis);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("detached operation runner did not start")
+        );
+    }
+
+    #[test]
+    fn fresh_queued_job_keeps_its_startup_grace_period() {
+        let state = JobState::queued(spec(OperationKind::Read)).unwrap();
+        let state = reconcile_unreachable(state, |_| true, false);
+        assert_eq!(state.phase, JobPhase::Queued);
     }
 
     #[test]

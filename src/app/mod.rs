@@ -3,7 +3,7 @@
 //! Milestone 0/1 包含设备发现、选择与介质检查。后续的 LTFS 格式化、
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -1700,13 +1700,222 @@ pub fn read_file(
     read_file_with_observer(drive, path, out, &CancellationToken::default(), &mut ignore)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReadEvent {
     pub tape_path: String,
+    pub files_completed: usize,
+    pub files_total: usize,
     pub bytes_read: u64,
     pub bytes_total: u64,
     pub partition: Option<u8>,
     pub logical_block: Option<u64>,
+    pub tape_bytes_per_second: Option<f64>,
+    pub telemetry: Option<ChannelTelemetrySample>,
+}
+
+/// 从一个已解析的 LTFS index 冻结出的恢复计划。
+///
+/// `files` 保留用户可见的目录结构，`extents` 则按磁带物理位置排序，供 runner
+/// 顺序读取并写入对应文件偏移。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadPlan {
+    pub volume_uuid: String,
+    pub index_generation: u64,
+    pub selections: Vec<String>,
+    pub directories: Vec<PathBuf>,
+    pub files: Vec<PlannedReadFile>,
+    pub extents: Vec<PlannedReadExtent>,
+    pub payload_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedReadFile {
+    pub tape_path: String,
+    pub relative_path: PathBuf,
+    pub length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedReadExtent {
+    pub file_index: usize,
+    pub file_offset: u64,
+    pub partition: u8,
+    pub start_block: u64,
+    pub byte_count: u64,
+}
+
+/// 展开用户选择的文件/目录，并生成全局物理顺序的 extent 调度表。
+pub fn plan_ltfs_read(index: &Index, selections: &[String]) -> Result<ReadPlan, String> {
+    if selections.is_empty() {
+        return Err("Read plan 至少需要选择一个 LTFS 文件或目录".into());
+    }
+    let mut normalized = selections
+        .iter()
+        .map(|path| normalize_ltfs_selection(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    normalized.sort();
+    normalized.dedup();
+    for (position, path) in normalized.iter().enumerate() {
+        if normalized[..position]
+            .iter()
+            .any(|parent| ltfs_path_contains(parent, path))
+        {
+            return Err(format!("Read selection 重叠: {path}"));
+        }
+    }
+
+    let mut plan = ReadPlan {
+        volume_uuid: index.volume_uuid.clone(),
+        index_generation: index.generation,
+        selections: normalized.clone(),
+        directories: Vec::new(),
+        files: Vec::new(),
+        extents: Vec::new(),
+        payload_bytes: 0,
+    };
+    for path in &normalized {
+        let relative = PathBuf::from(path.trim_start_matches('/'));
+        if let Some(file) = index.find_file(path) {
+            append_read_file(&mut plan, path.clone(), relative, file)?;
+        } else if let Some(directory) = index.find_directory(path) {
+            append_read_directory(&mut plan, path, &relative, directory)?;
+        } else {
+            return Err(format!("LTFS path 不存在: {path}"));
+        }
+    }
+    let mut targets = BTreeSet::new();
+    for directory in &plan.directories {
+        if !targets.insert(directory.clone()) {
+            return Err(format!(
+                "Read selections 产生重复目标目录: {}",
+                directory.display()
+            ));
+        }
+    }
+    for file in &plan.files {
+        if !targets.insert(file.relative_path.clone()) {
+            return Err(format!(
+                "Read selections 产生重复目标路径: {}",
+                file.relative_path.display()
+            ));
+        }
+    }
+    plan.extents.sort_by_key(|extent| {
+        (
+            extent.partition,
+            extent.start_block,
+            extent.file_index,
+            extent.file_offset,
+        )
+    });
+    Ok(plan)
+}
+
+fn normalize_ltfs_selection(path: &str) -> Result<String, String> {
+    if path.as_bytes().contains(&0) {
+        return Err("LTFS path 包含 NUL".into());
+    }
+    let parts = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(valid_ltfs_name)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(if parts.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", parts.join("/"))
+    })
+}
+
+fn valid_ltfs_name(name: &str) -> Result<&str, String> {
+    if name.is_empty() || matches!(name, "." | "..") || name.contains('/') || name.contains('\0') {
+        Err(format!("不安全的 LTFS 路径分量: {name:?}"))
+    } else {
+        Ok(name)
+    }
+}
+
+fn ltfs_path_contains(parent: &str, child: &str) -> bool {
+    parent == "/"
+        || child
+            .strip_prefix(parent)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn append_read_directory(
+    plan: &mut ReadPlan,
+    tape_path: &str,
+    relative_path: &Path,
+    directory: &crate::ltfs::index::Directory,
+) -> Result<(), String> {
+    if !relative_path.as_os_str().is_empty() {
+        plan.directories.push(relative_path.to_path_buf());
+    }
+    for entry in &directory.entries {
+        let name = valid_ltfs_name(entry.name())?;
+        let child_tape = if tape_path == "/" {
+            format!("/{name}")
+        } else {
+            format!("{tape_path}/{name}")
+        };
+        let child_relative = relative_path.join(name);
+        match entry {
+            DirectoryEntry::Directory(child) => {
+                append_read_directory(plan, &child_tape, &child_relative, child)?
+            }
+            DirectoryEntry::File(file) => append_read_file(plan, child_tape, child_relative, file)?,
+        }
+    }
+    Ok(())
+}
+
+fn append_read_file(
+    plan: &mut ReadPlan,
+    tape_path: String,
+    relative_path: PathBuf,
+    file: &FileEntry,
+) -> Result<(), String> {
+    if file.symlink_target.is_some() {
+        return Err(format!("Read plan 暂不恢复符号链接: {tape_path}"));
+    }
+    let extent_bytes = file.extents.iter().try_fold(0u64, |total, extent| {
+        total
+            .checked_add(extent.byte_count)
+            .ok_or_else(|| format!("extent 长度溢出: {tape_path}"))
+    })?;
+    if extent_bytes > file.length {
+        return Err(format!("extent 超过文件长度: {tape_path}"));
+    }
+    let file_index = plan.files.len();
+    plan.payload_bytes = plan
+        .payload_bytes
+        .checked_add(file.length)
+        .ok_or_else(|| "Read plan 总长度溢出".to_string())?;
+    plan.files.push(PlannedReadFile {
+        tape_path,
+        relative_path,
+        length: file.length,
+    });
+    for extent in &file.extents {
+        let end = extent
+            .file_offset
+            .checked_add(extent.byte_count)
+            .ok_or_else(|| "extent file offset 溢出".to_string())?;
+        if end > file.length {
+            return Err(format!(
+                "extent 超出文件边界: {}",
+                plan.files[file_index].tape_path
+            ));
+        }
+        plan.extents.push(PlannedReadExtent {
+            file_index,
+            file_offset: extent.file_offset,
+            partition: extent.partition,
+            start_block: extent.start_block,
+            byte_count: extent.byte_count,
+        });
+    }
+    Ok(())
 }
 
 /// 可由 detached runner 观察和安全取消的单文件读取入口。
@@ -1729,6 +1938,12 @@ pub fn read_file_with_observer(
         .find_file(path)
         .ok_or_else(|| format!("文件不存在: {path}"))?;
     let bytes_total = file.length;
+    let read_baseline =
+        read_channel_counters(&mut session, device::channel_error::PageKind::Read).ok();
+    let mut telemetry =
+        ChannelTelemetryState::new(device::channel_error::PageKind::Read, read_baseline);
+    telemetry.begin_data();
+    let mut performance = ReadPerformanceState::new();
 
     let mut written = 0u64;
     for extent in &file.extents {
@@ -1749,12 +1964,23 @@ pub fn read_file_with_observer(
                     written += n as u64;
                     remaining -= n as u64;
                     logical_block += 1;
+                    let sample = telemetry.sample_if_due(
+                        &mut session,
+                        extent.partition,
+                        logical_block,
+                        written,
+                    );
+                    let speed = performance.sample_if_due(written);
                     observer(&ReadEvent {
                         tape_path: path.into(),
+                        files_completed: usize::from(written == bytes_total),
+                        files_total: 1,
                         bytes_read: written,
                         bytes_total,
                         partition: Some(extent.partition),
                         logical_block: Some(logical_block),
+                        tape_bytes_per_second: speed,
+                        telemetry: sample,
                     });
                 }
                 _ => return Err(format!("读取 {path} 时磁带记录意外结束")),
@@ -1762,6 +1988,181 @@ pub fn read_file_with_observer(
         }
     }
     Ok(written)
+}
+
+/// 在一个 TapeSession 中按全局物理 extent 顺序执行恢复计划。
+///
+/// 所有输出路径会在首次磁带数据读取前检查并以 create-new 语义建立，因此不会覆盖
+/// 已有文件。多 extent 文件通过 `file_offset` 写入正确位置。
+pub fn execute_read_plan(
+    drive: &TapeDrive,
+    plan: &ReadPlan,
+    destination: &Path,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&ReadEvent),
+) -> Result<u64, String> {
+    validate_read_plan_destination(plan, destination)?;
+    let mut session = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    let volume = inspect_volume_session(&mut session).map_err(|error| error.to_string())?;
+    let current = volume.index.ok_or_else(|| "没有可用的 index".to_string())?;
+    if current.volume_uuid != plan.volume_uuid || current.generation != plan.index_generation {
+        return Err(format!(
+            "LTFS volume/index 已变化：计划 uuid={} generation={}，当前 uuid={} generation={}",
+            plan.volume_uuid, plan.index_generation, current.volume_uuid, current.generation
+        ));
+    }
+    let read_baseline =
+        read_channel_counters(&mut session, device::channel_error::PageKind::Read).ok();
+    let mut telemetry =
+        ChannelTelemetryState::new(device::channel_error::PageKind::Read, read_baseline);
+    telemetry.begin_data();
+    let mut performance = ReadPerformanceState::new();
+
+    for directory in &plan.directories {
+        std::fs::create_dir_all(destination.join(directory)).map_err(|error| {
+            format!(
+                "创建 Read destination 目录 {} 失败: {error}",
+                directory.display()
+            )
+        })?;
+    }
+    for file in &plan.files {
+        let target = destination.join(&file.relative_path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "创建 Read destination 目录 {} 失败: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let output = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target)
+            .map_err(|error| format!("创建 Read destination {} 失败: {error}", target.display()))?;
+        output
+            .set_len(file.length)
+            .map_err(|error| format!("设置恢复文件长度 {} 失败: {error}", target.display()))?;
+    }
+
+    let mut extents_remaining = vec![0usize; plan.files.len()];
+    for extent in &plan.extents {
+        extents_remaining[extent.file_index] += 1;
+    }
+    let mut files_completed = extents_remaining
+        .iter()
+        .filter(|count| **count == 0)
+        .count();
+    let mut bytes_read = 0u64;
+    for extent in &plan.extents {
+        if cancellation.is_cancelled() {
+            return Err("[cancelled]用户请求在磁带 extent 边界停止读取".into());
+        }
+        let file = plan
+            .files
+            .get(extent.file_index)
+            .ok_or_else(|| "Read plan extent 引用了不存在的文件".to_string())?;
+        let target = destination.join(&file.relative_path);
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .map_err(|error| format!("重新打开恢复文件 {} 失败: {error}", target.display()))?;
+        std::io::Seek::seek(&mut output, std::io::SeekFrom::Start(extent.file_offset))
+            .map_err(|error| format!("定位恢复文件 {} 失败: {error}", target.display()))?;
+        session
+            .locate(extent.partition, extent.start_block)
+            .map_err(|error| error.to_string())?;
+        let mut remaining = extent.byte_count;
+        let mut logical_block = extent.start_block;
+        while remaining > 0 {
+            if cancellation.is_cancelled() {
+                return Err("[cancelled]用户请求在磁带 record 边界停止读取".into());
+            }
+            match session.read_record().map_err(|error| error.to_string())? {
+                ReadRecord::Data(buffer) => {
+                    let count = buffer.len().min(remaining as usize);
+                    std::io::Write::write_all(&mut output, &buffer[..count])
+                        .map_err(|error| format!("写入 {} 失败: {error}", target.display()))?;
+                    remaining -= count as u64;
+                    bytes_read += count as u64;
+                    logical_block += 1;
+                    let sample = telemetry.sample_if_due(
+                        &mut session,
+                        extent.partition,
+                        logical_block,
+                        bytes_read,
+                    );
+                    let speed = performance.sample_if_due(bytes_read);
+                    observer(&ReadEvent {
+                        tape_path: file.tape_path.clone(),
+                        files_completed,
+                        files_total: plan.files.len(),
+                        bytes_read,
+                        bytes_total: plan.payload_bytes,
+                        partition: Some(extent.partition),
+                        logical_block: Some(logical_block),
+                        tape_bytes_per_second: speed,
+                        telemetry: sample,
+                    });
+                }
+                _ => return Err(format!("读取 {} 时磁带记录意外结束", file.tape_path)),
+            }
+        }
+        extents_remaining[extent.file_index] -= 1;
+        if extents_remaining[extent.file_index] == 0 {
+            files_completed += 1;
+            observer(&ReadEvent {
+                tape_path: file.tape_path.clone(),
+                files_completed,
+                files_total: plan.files.len(),
+                bytes_read,
+                bytes_total: plan.payload_bytes,
+                partition: Some(extent.partition),
+                logical_block: Some(logical_block),
+                tape_bytes_per_second: None,
+                telemetry: None,
+            });
+        }
+    }
+    for file in &plan.files {
+        let target = destination.join(&file.relative_path);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .and_then(|output| output.sync_all())
+            .map_err(|error| format!("同步恢复文件 {} 失败: {error}", target.display()))?;
+    }
+    Ok(bytes_read)
+}
+
+/// 在 detached runner 接管设备前检查目标目录和覆盖冲突。
+pub fn validate_read_plan_destination(plan: &ReadPlan, destination: &Path) -> Result<(), String> {
+    if !destination.is_dir() {
+        return Err(format!(
+            "Read destination 不是已存在目录: {}",
+            destination.display()
+        ));
+    }
+    for directory in &plan.directories {
+        let target = destination.join(directory);
+        if target.exists() && !target.is_dir() {
+            return Err(format!(
+                "Read destination 目录路径已被文件占用: {}",
+                target.display()
+            ));
+        }
+    }
+    for file in &plan.files {
+        let target = destination.join(&file.relative_path);
+        if target.exists() {
+            return Err(format!(
+                "Read destination 已存在，拒绝覆盖: {}",
+                target.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 写入结果摘要。
@@ -2206,7 +2607,34 @@ impl WritePerformanceState {
     }
 }
 
+struct ReadPerformanceState {
+    last_sample: std::time::Instant,
+    last_bytes: u64,
+}
+
+impl ReadPerformanceState {
+    fn new() -> Self {
+        Self {
+            last_sample: std::time::Instant::now(),
+            last_bytes: 0,
+        }
+    }
+
+    fn sample_if_due(&mut self, bytes_read: u64) -> Option<f64> {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_sample);
+        if elapsed < std::time::Duration::from_secs(1) {
+            return None;
+        }
+        let speed = payload_throughput(bytes_read.saturating_sub(self.last_bytes), elapsed);
+        self.last_sample = now;
+        self.last_bytes = bytes_read;
+        Some(speed)
+    }
+}
+
 struct ChannelTelemetryState {
+    kind: device::channel_error::PageKind,
     started: std::time::Instant,
     last_sample: std::time::Instant,
     last_throughput_sample: std::time::Instant,
@@ -2218,9 +2646,13 @@ struct ChannelTelemetryState {
 }
 
 impl ChannelTelemetryState {
-    fn new(previous: Option<Vec<device::channel_error::ChannelCounters>>) -> Self {
+    fn new(
+        kind: device::channel_error::PageKind,
+        previous: Option<Vec<device::channel_error::ChannelCounters>>,
+    ) -> Self {
         let now = std::time::Instant::now();
         Self {
+            kind,
             started: now,
             last_sample: now,
             last_throughput_sample: now,
@@ -2243,7 +2675,7 @@ impl ChannelTelemetryState {
             return None;
         }
         self.last_sample = std::time::Instant::now();
-        let current = match read_channel_counters(session, device::channel_error::PageKind::Write) {
+        let current = match read_channel_counters(session, self.kind) {
             Ok(current) => current,
             Err(error) => {
                 self.warnings.push(error);
@@ -3227,7 +3659,10 @@ fn write_with_observer_inner(
 ) -> Result<WriteResult, String> {
     let mut session = TapeSession::open(&drive.sg_path).map_err(|e| e.to_string())?;
     let health_before = read_drive_health_session(&mut session);
-    let mut channel_telemetry = ChannelTelemetryState::new(health_before.write_channels.clone());
+    let mut channel_telemetry = ChannelTelemetryState::new(
+        device::channel_error::PageKind::Write,
+        health_before.write_channels.clone(),
+    );
     let mut volume = inspect_volume_session(&mut session).map_err(|e| e.to_string())?;
     if !volume.recognized {
         return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
@@ -3852,6 +4287,124 @@ pub fn unload_tape(drive: &TapeDrive) -> Result<(), device::Error> {
 mod tests {
     use super::*;
     use crate::ltfs::index::{Directory, TapePos};
+
+    fn read_plan_index() -> Index {
+        let file = |name: &str, length: u64, extents: Vec<Extent>| {
+            DirectoryEntry::File(FileEntry {
+                name: name.into(),
+                length,
+                extents,
+                ..Default::default()
+            })
+        };
+        Index {
+            version: "2.4.0".into(),
+            creator: "test".into(),
+            volume_uuid: "uuid".into(),
+            generation: 1,
+            update_time: "now".into(),
+            self_location: TapePos {
+                partition: 0,
+                startblock: 5,
+            },
+            previous_location: None,
+            allow_policy_update: false,
+            volume_lock_state: None,
+            highest_file_uid: None,
+            root: Directory {
+                name: "volume".into(),
+                entries: vec![
+                    file(
+                        "late.bin",
+                        8,
+                        vec![Extent {
+                            file_offset: 0,
+                            partition: 1,
+                            start_block: 40,
+                            byte_count: 8,
+                        }],
+                    ),
+                    DirectoryEntry::Directory(Directory {
+                        name: "dir".into(),
+                        entries: vec![file(
+                            "split.bin",
+                            8,
+                            vec![
+                                Extent {
+                                    file_offset: 4,
+                                    partition: 1,
+                                    start_block: 30,
+                                    byte_count: 4,
+                                },
+                                Extent {
+                                    file_offset: 0,
+                                    partition: 1,
+                                    start_block: 10,
+                                    byte_count: 4,
+                                },
+                            ],
+                        )],
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn read_plan_preserves_paths_but_schedules_all_extents_in_tape_order() {
+        let plan =
+            plan_ltfs_read(&read_plan_index(), &["/late.bin".into(), "/dir".into()]).unwrap();
+        assert_eq!(plan.payload_bytes, 16);
+        assert_eq!(plan.files.len(), 2);
+        assert!(
+            plan.files
+                .iter()
+                .any(|file| file.relative_path == Path::new("late.bin"))
+        );
+        assert!(
+            plan.files
+                .iter()
+                .any(|file| file.relative_path == Path::new("dir/split.bin"))
+        );
+        assert_eq!(
+            plan.extents
+                .iter()
+                .map(|extent| extent.start_block)
+                .collect::<Vec<_>>(),
+            vec![10, 30, 40]
+        );
+        assert_eq!(plan.extents[0].file_offset, 0);
+        assert_eq!(plan.extents[1].file_offset, 4);
+    }
+
+    #[test]
+    fn read_plan_rejects_overlapping_and_unsafe_selections() {
+        let index = read_plan_index();
+        assert!(plan_ltfs_read(&index, &["/dir".into(), "/dir/split.bin".into()]).is_err());
+        assert!(plan_ltfs_read(&index, &["/../late.bin".into()]).is_err());
+    }
+
+    #[test]
+    fn read_plan_keeps_volume_relative_parent_for_individual_files() {
+        let plan = plan_ltfs_read(&read_plan_index(), &["/dir/split.bin".into()]).unwrap();
+        assert_eq!(plan.files[0].relative_path, Path::new("dir/split.bin"));
+    }
+
+    #[test]
+    fn read_destination_conflicts_are_rejected_before_runner_start() {
+        let plan = plan_ltfs_read(&read_plan_index(), &["/dir/split.bin".into()]).unwrap();
+        let destination =
+            std::env::temp_dir().join(format!("tapecpy-read-destination-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(destination.join("dir")).unwrap();
+        assert!(validate_read_plan_destination(&plan, &destination).is_ok());
+        std::fs::write(destination.join("dir/split.bin"), b"existing").unwrap();
+        let error = validate_read_plan_destination(&plan, &destination).unwrap_err();
+        assert!(error.contains("拒绝覆盖"));
+        std::fs::remove_dir_all(destination).unwrap();
+    }
 
     #[test]
     fn tui_media_lifecycle_distinguishes_unthreaded_cartridge() {
@@ -4589,7 +5142,7 @@ mod tests {
 
     #[test]
     fn telemetry_history_rolls_but_session_worst_survives() {
-        let mut state = ChannelTelemetryState::new(None);
+        let mut state = ChannelTelemetryState::new(device::channel_error::PageKind::Write, None);
         for i in 0..CHANNEL_HISTORY_CAPACITY + 5 {
             let rate = if i == 0 { -2.5 } else { -6.0 };
             state.record_sample(ChannelTelemetrySample {
