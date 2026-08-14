@@ -222,12 +222,12 @@ Barcode        E62115L5
 Generation     LTO-5
 Write Protect  No
 
-MAM            Available
-Medium Access  Not ready
-
-LTFS
+MAM
 ──────────────────────────
-Unavailable until media is threaded
+Volume ID      E62115
+Medium Serial  1234567890
+Remaining      1.42 TiB
+Load Count     37
 ```
 
 ---
@@ -491,8 +491,11 @@ Overview 必须根据介质生命周期动态展示信息。
 │                                │ Write Protect  No                 │
 └────────────────────────────────┴───────────────────────────────────┘
 
-┌─ LTFS ─────────────────────────────────────────────────────────────┐
-│ Unavailable until media is threaded                               │
+┌─ MAM Cartridge Data ───────────────────────────────────────────────┐
+│ Volume Identifier  E62115                                         │
+│ Medium Serial      1234567890                                     │
+│ Remaining          1.42 TiB                                      │
+│ Load Count         37                                            │
 └───────────────────────────────────────────────────────────────────┘
 
 [L] Full Load / Thread    [E] Eject
@@ -512,16 +515,20 @@ Overview 必须根据介质生命周期动态展示信息。
 │                                 │ Write Protect  No                │
 └─────────────────────────────────┴──────────────────────────────────┘
 
-┌─ LTFS ──────────────────────────┬─ Health ─────────────────────────┐
-│ Volume       e621 Archive 15    │ TapeAlert       None             │
-│ Generation   183                │ Corrected W     +1823            │
-│ Index        OK                 │ Hard W          +0               │
-│ VCI          OK                 │ Corrected R     +0               │
-│ Consistency  OK                 │ Hard R          +0               │
-│ Partition    b                  │                                  │
-│ Block        1842912            │                                  │
+┌─ MAM Cartridge Data ────────────┬─ Health ─────────────────────────┐
+│ Volume ID    E62115             │ TapeAlert       None             │
+│ Manufacturer IBM                │ Corrected W     +1823            │
+│ Medium Serial 1234567890        │ Hard W          +0               │
+│ Remaining    1.42 TiB           │ Corrected R     +0               │
+│ Maximum      1.50 TiB           │ Hard R          +0               │
+│ Load Count   37                 │                                  │
+│ Total Written 22.4 TiB          │                                  │
+│ Total Read   18.1 TiB           │                                  │
 └─────────────────────────────────┴──────────────────────────────────┘
 ```
+
+Overview 不显示 Volume Name、LTFS generation、index 或 consistency。这些字段只在
+用户显式执行 `I Read LTFS` 后显示于 LTFS 页面，避免 Overview 的可用性依赖绕带。
 
 Overview 中的 corrected/hard error 默认优先显示当前 session delta。
 

@@ -2922,13 +2922,12 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     let drive = snapshot.map(|snapshot| &snapshot.drive);
     let barcode = snapshot
         .and_then(|snapshot| snapshot.media.as_ref())
+        .and_then(display_barcode)
+        .unwrap_or_else(|| "—".into());
+    let medium_serial = snapshot
+        .and_then(|snapshot| snapshot.media.as_ref())
         .and_then(|media| media.mam.as_ref())
-        .and_then(|mam| mam.barcode.as_deref())
-        .unwrap_or("—");
-    let volume_name = snapshot
-        .and_then(|snapshot| snapshot.volume.as_ref())
-        .and_then(|volume| volume.index.as_ref())
-        .and_then(|index| index.volume_name())
+        .and_then(|mam| mam.medium_serial.as_deref())
         .unwrap_or("—");
     let title = format!(
         "tapecpy │ {} {} │ {} │ {} │ {} │ {}",
@@ -2937,7 +2936,7 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         drive.map_or("—", |drive| drive.serial.as_str()),
         drive.map_or_else(|| "—".into(), |drive| drive.nst_path.display().to_string()),
         barcode,
-        volume_name
+        medium_serial
     );
     let selected = match state.page {
         Page::Overview => 0,
@@ -2991,7 +2990,9 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
         columns[0],
     );
     let media = snapshot.media.as_ref();
-    let mam = media.and_then(|media| media.mam.as_ref());
+    let barcode = media
+        .and_then(display_barcode)
+        .unwrap_or_else(|| "—".into());
     let write_protect = media
         .and_then(|media| media.tape_status)
         .map(|status| yes_no(status.is_write_protected()))
@@ -2999,10 +3000,7 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
     frame.render_widget(
         Paragraph::new(vec![
             line("State", lifecycle_label(snapshot.lifecycle)),
-            line(
-                "Barcode",
-                mam.and_then(|mam| mam.barcode.as_deref()).unwrap_or("—"),
-            ),
+            line("Barcode", barcode),
             line(
                 "Generation",
                 media.and_then(|media| media.density_name()).unwrap_or("—"),
@@ -3018,49 +3016,68 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
                 .block(Block::default().borders(Borders::ALL).title(" Media ")),
             rows[1],
         ),
-        MediaLifecycle::PresentUnthreaded => frame.render_widget(
-            Paragraph::new("LTFS unavailable until media is threaded\n\n[L] Full Load / Thread    [U] Unload / Eject")
-                .block(Block::default().borders(Borders::ALL).title(" LTFS ")),
-            rows[1],
-        ),
-        _ => render_overview_loaded(frame, rows[1], snapshot),
+        _ => render_overview_media(frame, rows[1], snapshot),
     }
 }
 
-fn render_overview_loaded(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &DeviceSnapshot) {
+fn display_barcode(media: &crate::device::MediaInfo) -> Option<String> {
+    media
+        .full_label_hint()
+        .or_else(|| media.mam.as_ref()?.barcode.clone())
+}
+
+fn render_overview_media(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &DeviceSnapshot) {
     let columns =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
-    let index = snapshot
-        .volume
-        .as_ref()
-        .and_then(|volume| volume.index.as_ref());
-    let diagnosis = snapshot.diagnosis.as_ref();
+    let mam = snapshot.media.as_ref().and_then(|media| media.mam.as_ref());
     frame.render_widget(
         Paragraph::new(vec![
             line(
-                "Volume",
-                index.and_then(|index| index.volume_name()).unwrap_or("—"),
+                "MAM",
+                if mam.is_some() {
+                    "Available"
+                } else {
+                    "Unavailable"
+                },
             ),
             line(
-                "Generation",
-                index.map_or_else(|| "—".into(), |index| index.generation.to_string()),
-            ),
-            line("Index", if index.is_some() { "OK" } else { "Unavailable" }),
-            line(
-                "Consistency",
-                diagnosis.map_or_else(
-                    || "Unavailable".into(),
-                    |diagnosis| format!("{:?}", diagnosis.consistency),
-                ),
+                "Volume Identifier",
+                mam.and_then(|mam| mam.volume_identifier.as_deref())
+                    .unwrap_or("—"),
             ),
             line(
-                "Safe to write",
-                diagnosis.map_or("Unknown", |diagnosis| {
-                    yes_no(diagnosis.safe_for_normal_write)
-                }),
+                "Manufacturer",
+                mam.and_then(|mam| mam.medium_manufacturer.as_deref())
+                    .unwrap_or("—"),
+            ),
+            line(
+                "Medium Serial",
+                mam.and_then(|mam| mam.medium_serial.as_deref())
+                    .unwrap_or("—"),
+            ),
+            line(
+                "Remaining",
+                mam_capacity(mam.and_then(|mam| mam.remaining_capacity_mib)),
+            ),
+            line(
+                "Maximum",
+                mam_capacity(mam.and_then(|mam| mam.max_capacity_mib)),
+            ),
+            line("Load Count", counter(mam.and_then(|mam| mam.load_count))),
+            line(
+                "Total Written",
+                mam_capacity(mam.and_then(|mam| mam.total_written_mib)),
+            ),
+            line(
+                "Total Read",
+                mam_capacity(mam.and_then(|mam| mam.total_read_mib)),
             ),
         ])
-        .block(Block::default().borders(Borders::ALL).title(" LTFS ")),
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" MAM Cartridge Data "),
+        ),
         columns[0],
     );
     let health = snapshot.health.as_ref();
@@ -3119,6 +3136,12 @@ fn render_overview_loaded(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: 
         ),
         columns[1],
     );
+}
+
+fn mam_capacity(value_mib: Option<u64>) -> String {
+    value_mib
+        .and_then(|value| value.checked_mul(1024 * 1024))
+        .map_or_else(|| "—".into(), human_bytes)
 }
 
 fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {

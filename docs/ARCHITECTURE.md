@@ -1271,6 +1271,11 @@ LTFS label/index，也不因磁带定位把用户留在驱动器选择页。LTFS
 index 读取和一致性诊断。`R Basic refresh` 只刷新基础状态，并清除可能已经过期的
 LTFS 快照。
 
+阶段 2 起，Overview 的介质身份与容量区域完全以 READ ATTRIBUTE 得到的 MAM 为
+数据源，不再显示 Volume Name、LTFS generation、index 或 consistency。这样介质
+进仓但尚未 thread 时也能立即显示可取得的信息，并保证 Overview 在执行过
+`I Read LTFS` 前后不会改变数据来源。LTFS 专属信息只属于显式读取的 LTFS 页面。
+
 当前稳定介质状态由 Application 层表达为 `NO_MEDIA_DETECTED`、
 `PRESENT_UNTHREADED` 和 `LOADED_THREADED`，另保留 transitioning/unknown 状态。
 Quantum LTO-5 实机证明：未穿带介质会以 TUR `3A/04` 报告，但此时仍可读取
