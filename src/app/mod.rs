@@ -3832,6 +3832,16 @@ pub fn load_tape(drive: &TapeDrive) -> Result<(), device::Error> {
     session.load()
 }
 
+pub fn load_tape_unthreaded(drive: &TapeDrive) -> Result<(), device::Error> {
+    let mut session = TapeSession::open(&drive.sg_path)?;
+    session.load_unthreaded()
+}
+
+pub fn unthread_tape(drive: &TapeDrive) -> Result<(), device::Error> {
+    let mut session = TapeSession::open(&drive.sg_path)?;
+    session.unthread()
+}
+
 /// 弹出介质（eject）。
 pub fn unload_tape(drive: &TapeDrive) -> Result<(), device::Error> {
     let mut session = TapeSession::open(&drive.sg_path)?;

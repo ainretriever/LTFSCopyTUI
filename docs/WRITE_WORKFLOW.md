@@ -194,7 +194,7 @@ CLI 通过显式选项 `--read-back-verify` 启用这一行为。校验发生在
 
 索引更新不是可选行为：正常 Write 必须先提交 data/index 两份 index 和 MAM VCI，
 才能报告写入完成。用户可以选择完成策略：默认在提交（以及可选 read-back verify）
-后保持装载，或选择 `EjectAfterCommit` 自动执行 `Unload / Eject`。自动弹出同样由
+后保持装载，或选择 `EjectAfterCommit` 自动执行直接 `Eject`。自动弹出同样由
 detached runner 执行，不依赖 TUI 或 SSH 存活。
 
 自动弹出的顺序固定为：

@@ -1084,7 +1084,7 @@ fn run_operation(
                     JobPhase::Completed
                 };
                 state.message = if spec.completion_action == CompletionAction::EjectAfterCommit {
-                    "写入和索引提交已完成，正在自动 Unload / Eject".into()
+                    "写入和索引提交已完成，正在自动 Eject".into()
                 } else {
                     "Write operation 已完成；磁带保持装载".into()
                 };
@@ -1104,7 +1104,7 @@ fn run_operation(
                         state.phase = JobPhase::Completed;
                         state.completion.eject = EjectStatus::Failed(error.to_string());
                         state.message = "写入和索引提交成功，但自动弹出失败".into();
-                        state.error = Some(format!("自动 Unload / Eject 失败：{error}"));
+                        state.error = Some(format!("自动 Eject 失败：{error}"));
                     })?,
                 };
             }

@@ -27,7 +27,7 @@ use crate::device::TapeDrive;
 use crate::job::{self, CompletionAction, EjectStatus, JobPhase, JobState, VerificationStatus};
 
 const MIN_WIDTH: u16 = 100;
-const MIN_HEIGHT: u16 = 30;
+const MIN_HEIGHT: u16 = 35;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -93,6 +93,8 @@ enum WorkerCommand {
     Refresh,
     ReadLtfs,
     Load,
+    LoadUnthreaded,
+    Unthread,
     Unload,
     Format(app::FormatOptions),
     Erase(app::EraseMode),
@@ -490,35 +492,69 @@ fn device_worker(commands: Receiver<WorkerCommand>, events: Sender<WorkerEvent>)
                 if ownership.allows_device_access()
                     && let Some(drive) = selected.as_ref()
                 {
-                    let _ = events.send(WorkerEvent::Busy("Loading / threading media"));
-                    with_worker_lease(drive, "load", &events, || match app::load_tape(drive) {
-                        Ok(()) => {
-                            let _ = events.send(WorkerEvent::Status("LOAD completed".into()));
-                            refresh_basic_snapshot(drive, &mut channel_tracker, &events);
-                        }
-                        Err(error) => {
-                            let _ = events.send(WorkerEvent::Error(error.to_string()));
-                        }
-                    });
+                    run_cartridge_action(
+                        drive,
+                        &mut channel_tracker,
+                        &events,
+                        "load-threaded",
+                        "Loading and threading cartridge",
+                        MediaLifecycle::LoadedThreaded,
+                        app::load_tape,
+                    );
                     last_telemetry = Instant::now();
                 } else if !ownership.allows_device_access() {
                     reject_suspended_command(&events, "Load");
+                }
+            }
+            Ok(WorkerCommand::LoadUnthreaded) => {
+                if ownership.allows_device_access()
+                    && let Some(drive) = selected.as_ref()
+                {
+                    run_cartridge_action(
+                        drive,
+                        &mut channel_tracker,
+                        &events,
+                        "load-unthreaded",
+                        "Loading cartridge without threading",
+                        MediaLifecycle::PresentUnthreaded,
+                        app::load_tape_unthreaded,
+                    );
+                    last_telemetry = Instant::now();
+                } else if !ownership.allows_device_access() {
+                    reject_suspended_command(&events, "Load Unthreaded");
+                }
+            }
+            Ok(WorkerCommand::Unthread) => {
+                if ownership.allows_device_access()
+                    && let Some(drive) = selected.as_ref()
+                {
+                    run_cartridge_action(
+                        drive,
+                        &mut channel_tracker,
+                        &events,
+                        "unthread",
+                        "Unthreading cartridge without ejecting",
+                        MediaLifecycle::PresentUnthreaded,
+                        app::unthread_tape,
+                    );
+                    last_telemetry = Instant::now();
+                } else if !ownership.allows_device_access() {
+                    reject_suspended_command(&events, "Unthread");
                 }
             }
             Ok(WorkerCommand::Unload) => {
                 if ownership.allows_device_access()
                     && let Some(drive) = selected.as_ref()
                 {
-                    let _ = events.send(WorkerEvent::Busy("Unloading / ejecting media"));
-                    with_worker_lease(drive, "unload", &events, || match app::unload_tape(drive) {
-                        Ok(()) => {
-                            let _ = events.send(WorkerEvent::Status("UNLOAD completed".into()));
-                            refresh_basic_snapshot(drive, &mut channel_tracker, &events);
-                        }
-                        Err(error) => {
-                            let _ = events.send(WorkerEvent::Error(error.to_string()));
-                        }
-                    });
+                    run_cartridge_action(
+                        drive,
+                        &mut channel_tracker,
+                        &events,
+                        "eject",
+                        "Ejecting cartridge",
+                        MediaLifecycle::NoMediaDetected,
+                        app::unload_tape,
+                    );
                     last_telemetry = Instant::now();
                 } else if !ownership.allows_device_access() {
                     reject_suspended_command(&events, "Unload");
@@ -686,6 +722,45 @@ fn reject_suspended_command(events: &Sender<WorkerEvent>, command: &str) {
     )));
 }
 
+fn run_cartridge_action(
+    drive: &TapeDrive,
+    tracker: &mut ChannelTelemetryTracker,
+    events: &Sender<WorkerEvent>,
+    operation: &str,
+    busy: &'static str,
+    expected: MediaLifecycle,
+    action: fn(&TapeDrive) -> Result<(), crate::device::Error>,
+) {
+    let _ = events.send(WorkerEvent::Busy(busy));
+    with_worker_lease(drive, operation, events, || match action(drive) {
+        Ok(()) => {
+            let snapshot = app::inspect_device_snapshot_basic(drive);
+            let actual = snapshot.lifecycle;
+            let channels = tracker.observe(snapshot.health.as_ref(), &snapshot.refreshed_at);
+            let _ = events.send(WorkerEvent::Snapshot(
+                Box::new(snapshot),
+                channels,
+                SnapshotScope::Basic,
+            ));
+            if actual == expected {
+                let _ = events.send(WorkerEvent::Status(format!(
+                    "{operation} completed: {}",
+                    lifecycle_label(actual)
+                )));
+            } else {
+                let _ = events.send(WorkerEvent::Error(format!(
+                    "{operation} returned success, but media state is {} (expected {})",
+                    lifecycle_label(actual),
+                    lifecycle_label(expected)
+                )));
+            }
+        }
+        Err(error) => {
+            let _ = events.send(WorkerEvent::Error(error.to_string()));
+        }
+    });
+}
+
 fn refresh_basic_snapshot(
     drive: &TapeDrive,
     tracker: &mut ChannelTelemetryTracker,
@@ -750,11 +825,11 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
                 snapshot.health = Some(*health);
             }
             state.channels = channels;
-            state.status = format!("Telemetry refreshed at {timestamp}");
+            state.status = format!("Telemetry refreshed at {}", display_clock(&timestamp));
         }
         WorkerEvent::TelemetryUnavailable(channels, reason, timestamp) => {
             state.channels = channels;
-            state.status = format!("Telemetry stale at {timestamp}: {reason}");
+            state.status = format!("Telemetry stale at {}: {reason}", display_clock(&timestamp));
         }
         WorkerEvent::FormatProgress(event) => {
             state.format_view = FormatView::Running;
@@ -875,6 +950,9 @@ fn handle_key(
     job_commands: &Sender<JobCommand>,
     file_commands: &Sender<FileCommand>,
 ) {
+    if state.busy.is_some() {
+        return;
+    }
     if state.page == Page::WriteSource {
         handle_source_key(state, code, file_commands, commands);
         return;
@@ -897,7 +975,7 @@ fn handle_key(
         handle_erase_key(state, code, commands);
         return;
     }
-    if matches!(code, KeyCode::F(4) | KeyCode::Char('4')) {
+    if matches!(code, KeyCode::F(4)) {
         state.page = Page::Jobs;
         return;
     }
@@ -941,9 +1019,75 @@ fn handle_key(
             state.snapshot = None;
             state.page = Page::Overview;
         }
-        KeyCode::F(1) | KeyCode::Char('1') => state.page = Page::Overview,
-        KeyCode::F(2) | KeyCode::Char('2') => state.page = Page::Ltfs,
-        KeyCode::F(3) | KeyCode::Char('3') => state.page = Page::Health,
+        KeyCode::F(1) => state.page = Page::Overview,
+        KeyCode::F(2) => state.page = Page::Ltfs,
+        KeyCode::F(3) => state.page = Page::Health,
+        KeyCode::Char('1') if state.page == Page::Overview => {
+            let available = state
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.lifecycle == MediaLifecycle::NoMediaDetected);
+            start_available_cartridge_command(
+                state,
+                commands,
+                available,
+                WorkerCommand::LoadUnthreaded,
+                "Load Unthreaded",
+            );
+        }
+        KeyCode::Char('2') if state.page == Page::Overview => {
+            let available = state.snapshot.as_ref().is_some_and(|snapshot| {
+                matches!(
+                    snapshot.lifecycle,
+                    MediaLifecycle::NoMediaDetected | MediaLifecycle::PresentUnthreaded
+                )
+            });
+            start_available_cartridge_command(
+                state,
+                commands,
+                available,
+                WorkerCommand::Load,
+                "Load & Thread",
+            );
+        }
+        KeyCode::Char('3') if state.page == Page::Overview => {
+            start_cartridge_command(
+                state,
+                commands,
+                MediaLifecycle::LoadedThreaded,
+                WorkerCommand::Unthread,
+                "Unthread",
+            );
+        }
+        KeyCode::Char('4') if state.page == Page::Overview => {
+            let available = state.snapshot.as_ref().is_some_and(|snapshot| {
+                matches!(
+                    snapshot.lifecycle,
+                    MediaLifecycle::PresentUnthreaded | MediaLifecycle::LoadedThreaded
+                )
+            });
+            start_available_cartridge_command(
+                state,
+                commands,
+                available,
+                WorkerCommand::Unload,
+                "Eject",
+            );
+        }
+        KeyCode::Char('5') if state.page == Page::Overview => open_erase_workflow(state),
+        KeyCode::Char('6') if state.page == Page::Overview => {
+            if state
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.lifecycle == MediaLifecycle::LoadedThreaded)
+            {
+                state.page = Page::Ltfs;
+                state.status =
+                    "LTFS Operations: press I only when ready to read LTFS metadata".into();
+            } else {
+                state.status = "LTFS Operations requires Load & Thread first".into();
+            }
+        }
         KeyCode::Char('w') | KeyCode::Char('W') => {
             let writable = state.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.lifecycle == MediaLifecycle::LoadedThreaded
@@ -1011,6 +1155,36 @@ fn handle_key(
             }
         }
         _ => {}
+    }
+}
+
+fn start_cartridge_command(
+    state: &mut UiState,
+    commands: &Sender<WorkerCommand>,
+    required: MediaLifecycle,
+    command: WorkerCommand,
+    label: &str,
+) {
+    let available = state
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.lifecycle == required);
+    start_available_cartridge_command(state, commands, available, command, label);
+}
+
+fn start_available_cartridge_command(
+    state: &mut UiState,
+    commands: &Sender<WorkerCommand>,
+    available: bool,
+    command: WorkerCommand,
+    label: &str,
+) {
+    if selected_device_claimed(state) {
+        state.status = format!("{label} blocked: detached operation owns this drive");
+    } else if !available {
+        state.status = format!("{label} is unavailable in the current cartridge state");
+    } else if commands.send(command).is_err() {
+        state.status = format!("{label} failed: device worker has exited");
     }
 }
 
@@ -1713,12 +1887,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         return;
     }
 
-    let layout = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(10),
-        Constraint::Length(3),
-    ])
-    .split(area);
+    let layout = Layout::vertical([Constraint::Length(3), Constraint::Min(10)]).split(area);
     render_header(frame, layout[0], state);
     match state.page {
         Page::Overview => render_overview(frame, layout[1], state),
@@ -1728,7 +1897,6 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         Page::ErrorDetails => render_error(frame, layout[1], state),
         Page::WriteSource | Page::Format | Page::Erase => unreachable!(),
     }
-    render_status(frame, layout[2], state);
     if let Some(message) = state.busy {
         render_busy(frame, area, message);
     }
@@ -3010,14 +3178,7 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
         .block(Block::default().borders(Borders::ALL).title(" Cartridge ")),
         columns[1],
     );
-    match snapshot.lifecycle {
-        MediaLifecycle::NoMediaDetected => frame.render_widget(
-            Paragraph::new("Media state: No media detected")
-                .block(Block::default().borders(Borders::ALL).title(" Media ")),
-            rows[1],
-        ),
-        _ => render_overview_media(frame, rows[1], snapshot),
-    }
+    render_overview_media(frame, rows[1], state, snapshot);
 }
 
 fn display_barcode(media: &crate::device::MediaInfo) -> Option<String> {
@@ -3026,7 +3187,12 @@ fn display_barcode(media: &crate::device::MediaInfo) -> Option<String> {
         .or_else(|| media.mam.as_ref()?.barcode.clone())
 }
 
-fn render_overview_media(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &DeviceSnapshot) {
+fn render_overview_media(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    state: &UiState,
+    snapshot: &DeviceSnapshot,
+) {
     let columns =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
     let mam = snapshot.media.as_ref().and_then(|media| media.mam.as_ref());
@@ -3080,6 +3246,7 @@ fn render_overview_media(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &
         ),
         columns[0],
     );
+    let right = Layout::vertical([Constraint::Length(8), Constraint::Min(15)]).split(columns[1]);
     let health = snapshot.health.as_ref();
     frame.render_widget(
         Paragraph::new(vec![
@@ -3134,8 +3301,96 @@ fn render_overview_media(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &
                 .borders(Borders::ALL)
                 .title(" Health (cumulative) "),
         ),
-        columns[1],
+        right[0],
     );
+    render_cartridge_operations(frame, right[1], state, snapshot);
+}
+
+fn render_cartridge_operations(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    state: &UiState,
+    snapshot: &DeviceSnapshot,
+) {
+    let locked = selected_device_claimed(state);
+    let no_media = snapshot.lifecycle == MediaLifecycle::NoMediaDetected;
+    let unthreaded = snapshot.lifecycle == MediaLifecycle::PresentUnthreaded;
+    let threaded = snapshot.lifecycle == MediaLifecycle::LoadedThreaded;
+    let present = unthreaded || threaded;
+    let write_protected = snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.tape_status)
+        .is_some_and(|status| status.is_write_protected());
+    let operation = |key, english, chinese, available| {
+        cartridge_operation_line(key, english, chinese, available && !locked, locked)
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            operation("1", "Load Unthreaded", "装入，不穿带", no_media),
+            operation("2", "Load & Thread", "装入并穿带", no_media || unthreaded),
+            operation("3", "Unthread", "退带，不弹出", threaded),
+            operation("4", "Eject", "直接弹出", present),
+            operation("5", "Erase…", "擦除…", threaded && !write_protected),
+            operation("6", "LTFS Operations…", "LTFS 操作…", threaded),
+            Line::from(vec![
+                Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(&state.status),
+            ]),
+            navigation_hint_line("F1", "Overview"),
+            navigation_hint_line("F2", "LTFS"),
+            navigation_hint_line("F3", "Health"),
+            navigation_hint_line("F4", "Jobs"),
+            navigation_hint_line("R", "Refresh"),
+            navigation_hint_line("Q", "Back / Exit"),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cartridge Operations "),
+        ),
+        area,
+    );
+}
+
+fn navigation_hint_line<'a>(key: &'a str, label: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!("[{key}] "), Style::default().fg(Color::Cyan)),
+        Span::raw(label),
+    ])
+}
+
+fn display_clock(timestamp: &str) -> &str {
+    timestamp
+        .split_once('T')
+        .and_then(|(_, time)| time.get(..8))
+        .unwrap_or(timestamp)
+}
+
+fn cartridge_operation_line<'a>(
+    key: &'a str,
+    english: &'a str,
+    chinese: &'a str,
+    available: bool,
+    locked: bool,
+) -> Line<'a> {
+    let style = if available {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let state = if locked {
+        "Locked"
+    } else if available {
+        "Ready"
+    } else {
+        "—"
+    };
+    Line::from(vec![
+        Span::styled(format!("[{key}] {english:<19}"), style),
+        Span::styled(format!("{chinese:<14}"), style),
+        Span::styled(state, style),
+    ])
 }
 
 fn mam_capacity(value_mib: Option<u64>) -> String {
@@ -3396,22 +3651,13 @@ fn render_error(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     );
 }
 
-fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{}\nF1 Overview  F2 LTFS  F3 Health  F4 Jobs  I Read LTFS  W Write  F Format  E Erase  R Refresh  L Load  U Unload  Q Back",
-            state.status
-        ))
-        .block(Block::default().borders(Borders::TOP)),
-        area,
-    );
-}
-
 fn render_busy(frame: &mut ratatui::Frame<'_>, area: Rect, message: &str) {
-    let popup = centered_rect(50, 5, area);
+    let popup = centered_rect(58, 7, area);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(format!("{message}…\n\nUI remains responsive"))
+        Paragraph::new(format!(
+            "{message}…\n\nThe tape drive is operating. Do not remove media.\nDevice commands are disabled until completion."
+        ))
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL).title(" Working ")),
         popup,
@@ -3462,7 +3708,7 @@ fn counter(value: Option<u64>) -> String {
 mod tests {
     use super::{
         EraseView, FormatField, FormatView, Page, UiState, WorkerCommand, WorkerOwnershipState,
-        braille_area_graph, handle_erase_key, handle_format_key,
+        braille_area_graph, display_clock, handle_erase_key, handle_format_key,
     };
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
@@ -3473,6 +3719,12 @@ mod tests {
         assert!(WorkerOwnershipState::Active.allows_device_access());
         assert!(!WorkerOwnershipState::Suspending.allows_device_access());
         assert!(!WorkerOwnershipState::Suspended.allows_device_access());
+    }
+
+    #[test]
+    fn telemetry_timestamp_is_displayed_to_whole_seconds_only() {
+        assert_eq!(display_clock("2026-08-14T12:10:35.114344947Z"), "12:10:35");
+        assert_eq!(display_clock("unknown"), "unknown");
     }
 
     #[test]

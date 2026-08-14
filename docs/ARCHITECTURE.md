@@ -1285,8 +1285,17 @@ MAM；因此不能只根据 TUR 的“not ready”结果断言没有介质。
 固定显示 4×4 的 16 通道实时矩阵，不显示历史曲线；采样失败时保留最后一次成功
 值并标记 stale。
 
-当前底层的 SCSI `UNLOAD` 同时完成 unthread/eject，尚不能诚实地提供两个独立
-动作。因此第一版把它显示为 `Unload / Eject`，不伪造尚未实现的状态转换。
+阶段 2 将 cartridge 机械控制明确拆成四种动作：`Load Unthreaded`（LOAD UNLOAD
+action `0x09`）、`Load & Thread`（`0x01`）、`Unthread`（`0x0A`）和 `Eject`
+（`0x00`）。Eject 对 threaded/unthreaded 两种在仓状态都直接发送 `0x00`，不先执行
+host-side REWIND；需要的 unthread 由驱动器完成。这些命令仍由单一 device worker
+在统一 lease 内执行；TUI 不直接发送
+CDB。因为 LTO 设备对 partial load/unload 的支持可能不同，SCSI GOOD 不是唯一完成
+依据：worker 随后刷新 basic snapshot，并校验稳定介质生命周期是否到达预期状态。
+
+Overview 移除底部全局操作提示条，把上述四项与 `Erase…`、`LTFS Operations…`
+集中放在 Health 下方的状态感知操作框。穿带/退带期间显示 Working 模态框并禁用其他
+设备命令，不显示无法由设备反馈支撑的伪进度；非 IMMED SG_IO 使用现有 1800 秒超时。
 
 ## 33.1 可脱离的长时间任务
 

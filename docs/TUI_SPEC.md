@@ -331,14 +331,14 @@ Unload
 至少需要在概念上区分：
 
 ```text
-Partial Load
+Load Unthreaded
 Full Load / Thread
 
 Unthread
 Eject
 ```
 
-### Partial Load
+### Load Unthreaded
 
 目标是让 cartridge 进入磁带机，但不完成完整 thread。
 
@@ -349,7 +349,12 @@ Eject
 * 查看介质信息；
 * 不进行完整磁带加载。
 
-如果某台设备不支持该功能，则不应假装支持。
+底层对应 LTO `LOAD UNLOAD` action `0x09`。如果某台设备不支持该功能，操作结果和
+随后刷新的介质状态必须明确报告，而不能只根据命令返回值假装转换成功。
+
+该操作的合法起始状态是 `NO_MEDIA_DETECTED`，目标状态是
+`PRESENT_UNTHREADED`。不得把目标状态误用为操作的前置条件。`Full Load / Thread`
+可以从 `NO_MEDIA_DETECTED` 或 `PRESENT_UNTHREADED` 开始。
 
 ### Full Load / Thread
 
@@ -364,6 +369,8 @@ Full Load / Thread
         ↓
 LOADED_THREADED
 ```
+
+底层对应 `LOAD UNLOAD` action `0x01`。
 
 ### Unthread
 
@@ -380,6 +387,8 @@ PRESENT_UNTHREADED
 ```
 
 磁带退出完整磁带路径，但 cartridge 仍保持在磁带机内。
+
+底层对应 `LOAD UNLOAD` action `0x0A`。
 
 ### Eject
 
@@ -477,6 +486,10 @@ Overview 必须根据介质生命周期动态展示信息。
 └───────────────────────────────────────────────────────────────────┘
 ```
 
+无介质时仅 cartridge 数据变为不可用；`Health (cumulative)` 和
+`Cartridge Operations` 的框架仍保留，操作按状态灰显，页面导航、刷新和退出提示也
+不能随 cartridge 一起消失。
+
 ---
 
 # 14. Overview：Present / Unthreaded
@@ -498,7 +511,8 @@ Overview 必须根据介质生命周期动态展示信息。
 │ Load Count         37                                            │
 └───────────────────────────────────────────────────────────────────┘
 
-[L] Full Load / Thread    [E] Eject
+右侧 Health 下方显示与 Loaded / Threaded 相同的 Cartridge Operations 框；当前不可用
+的动作灰显。
 ```
 
 ---
@@ -515,15 +529,19 @@ Overview 必须根据介质生命周期动态展示信息。
 │                                 │ Write Protect  No                │
 └─────────────────────────────────┴──────────────────────────────────┘
 
-┌─ MAM Cartridge Data ────────────┬─ Health ─────────────────────────┐
+┌─ MAM Cartridge Data ────────────┬─ Health (cumulative) ────────────┐
 │ Volume ID    E62115             │ TapeAlert       None             │
 │ Manufacturer IBM                │ Corrected W     +1823            │
 │ Medium Serial 1234567890        │ Hard W          +0               │
 │ Remaining    1.42 TiB           │ Corrected R     +0               │
 │ Maximum      1.50 TiB           │ Hard R          +0               │
-│ Load Count   37                 │                                  │
-│ Total Written 22.4 TiB          │                                  │
-│ Total Read   18.1 TiB           │                                  │
+│ Load Count   37                 ├─ Cartridge Operations ───────────┤
+│ Total Written 22.4 TiB          │ [1] Load Unthreaded  装入，不穿带│
+│ Total Read   18.1 TiB           │ [2] Load & Thread    装入并穿带  │
+│                                 │ [3] Unthread        退带，不弹出 │
+│                                 │ [4] Eject           直接弹出     │
+│                                 │ [5] Erase…          擦除…        │
+│                                 │ [6] LTFS Operations… LTFS 操作… │
 └─────────────────────────────────┴──────────────────────────────────┘
 ```
 
@@ -533,6 +551,26 @@ Overview 不显示 Volume Name、LTFS generation、index 或 consistency。这�
 Overview 中的 corrected/hard error 默认优先显示当前 session delta。
 
 原始累计计数器可以在 Health 页面显示。
+
+Overview 不再保留独立的底部操作提示条。六项 cartridge 操作集中在 Health 下方，
+按当前机械状态、写保护状态和 detached job 的设备所有权显示 `Ready`、不可用或
+`Locked`。`[5] Erase…` 只进入已有的破坏性确认工作流；`[6] LTFS Operations…`
+只进入 LTFS 页面，不自动读取 label/index。操作框底部同时保留 `F1`–`F4` 页面导航、
+`R Refresh` 和 `Q Back/Exit` 提示；这些提示与 cartridge 操作一样逐项纵向排列，不能
+压缩成一条容易截断的横向快捷键栏。
+
+Overview 的 telemetry 状态只显示 `HH:MM:SS`，不显示日期、秒的小数部分
+或时区后缀，避免周期刷新消息挤占操作框宽度。
+
+穿带、退带和弹出由单一 device worker 串行执行。命令进行中显示 `Working` 模态框，
+禁用其他设备命令，并明确提示不要移除介质。SCSI 命令返回 GOOD 后仍要刷新 basic
+snapshot，只有实际介质生命周期符合目标状态才向用户报告完成；这类长命令不使用
+无法反映设备内部进度的伪进度条。
+
+`[4] Eject` 不要求用户先执行 `Unthread`。无论 cartridge 是
+`PRESENT_UNTHREADED` 还是 `LOADED_THREADED`，host 都解除门锁并直接发送 Eject
+action；需要的退带动作由驱动器完成。特别禁止在 Eject 前无条件发送 REWIND，因为
+未穿带介质会在 REWIND 阶段失败。
 
 ---
 

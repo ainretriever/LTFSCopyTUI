@@ -363,6 +363,28 @@ impl TapeSession {
         Ok(())
     }
 
+    /// 把 cartridge 保持在驱动器内，但不把介质穿入 tape path。
+    pub fn load_unthreaded(&mut self) -> Result<(), Error> {
+        self.load_action(0x09, "LOAD UNTHREADED")
+    }
+
+    /// 把介质退回 cartridge，但不弹出 cartridge。
+    pub fn unthread(&mut self) -> Result<(), Error> {
+        self.load_action(0x0a, "UNTHREAD")
+    }
+
+    fn load_action(&mut self, action: u8, name: &str) -> Result<(), Error> {
+        let result = scsi::load_unload_action(&self.fd, action).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 {name} 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, name));
+        }
+        self.partition = None;
+        Ok(())
+    }
+
     /// FORMAT MEDIUM type 0 移除临时分区，恢复未分区介质。
     pub fn remove_partitions(&mut self) -> Result<(), Error> {
         let result = scsi::format_medium(&self.fd, 0x00).map_err(|e| Error::Io {
@@ -467,10 +489,11 @@ impl TapeSession {
         Ok(())
     }
 
-    /// SCSI UNLOAD：弹出介质（eject）。
+    /// 直接弹出 cartridge，不要求介质当前已经穿带。
     ///
-    /// 与 st 驱动 MTOFFL 语义一致：先解除介质移除保护（门锁），
-    /// 再发送 START STOP（全 0，驱动器据此执行卸载/弹出）。
+    /// 先解除介质移除保护（门锁），再使用 LTFSCopyGUI 同样采用的
+    /// LOAD UNLOAD action 0x00。设备负责在需要时完成 unthread；host 不预先
+    /// REWIND，因为未穿带介质无法执行 rewind。
     pub fn unload(&mut self) -> Result<(), Error> {
         let result =
             scsi::prevent_allow_medium_removal(&self.fd, false).map_err(|e| Error::Io {
@@ -480,15 +503,12 @@ impl TapeSession {
         if !result.is_good() {
             return Err(self.scsi_error(&result, "PREVENT ALLOW MEDIUM REMOVAL"));
         }
-        // st 驱动 MTOFFL 先回绕；START STOP 全 0 触发驱动器卸载/弹出。
-        self.rewind()?;
-        let result =
-            scsi::start_stop_unit(&self.fd, false, false, false).map_err(|e| Error::Io {
-                context: format!("向 {} 发送 UNLOAD 失败", self.path.display()),
-                source: e,
-            })?;
+        let result = scsi::load_unload_action(&self.fd, 0x00).map_err(|e| Error::Io {
+            context: format!("向 {} 发送 EJECT 失败", self.path.display()),
+            source: e,
+        })?;
         if !result.is_good() {
-            return Err(self.scsi_error(&result, "UNLOAD"));
+            return Err(self.scsi_error(&result, "EJECT"));
         }
         self.partition = None;
         Ok(())
