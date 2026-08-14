@@ -67,7 +67,7 @@ enum EraseView {
 enum FileCommand {
     ListMounts,
     Browse(PathBuf),
-    Scan(PathBuf, Option<u64>),
+    Scan(Vec<PathBuf>, Option<u64>),
     Stop,
 }
 
@@ -169,6 +169,7 @@ struct UiState {
     browser_path: Option<PathBuf>,
     browser_entries: Vec<app::BrowserEntry>,
     browser_index: usize,
+    selected_source_roots: Vec<PathBuf>,
     source_plan: Option<app::SourcePlan>,
     capacity: Option<app::CapacityAssessment>,
     file_busy: bool,
@@ -215,6 +216,7 @@ impl Default for UiState {
             browser_path: None,
             browser_entries: Vec::new(),
             browser_index: 0,
+            selected_source_roots: Vec::new(),
             source_plan: None,
             capacity: None,
             file_busy: false,
@@ -335,8 +337,8 @@ fn file_worker(commands: Receiver<FileCommand>, events: Sender<FileEvent>) {
             FileCommand::Browse(path) => {
                 app::browse_directory(&path).map(|entries| FileEvent::Directory(path, entries))
             }
-            FileCommand::Scan(path, remaining_capacity_mib) => {
-                app::scan_source_roots(std::slice::from_ref(&path)).map(|plan| {
+            FileCommand::Scan(paths, remaining_capacity_mib) => {
+                app::scan_source_roots(&paths).map(|plan| {
                     let capacity = app::assess_write_capacity(
                         plan.payload_bytes,
                         remaining_capacity_mib,
@@ -372,7 +374,7 @@ fn apply_file_event(state: &mut UiState, event: FileEvent) {
             state.browser_entries = entries;
             state.browser_index = 0;
             state.source_view = SourceView::Directory;
-            state.status = "Enter opens a directory; Space selects the highlighted source".into();
+            state.status = "Space toggles a source; S scans all selected sources".into();
         }
         FileEvent::Plan(plan, capacity) => {
             state.source_plan = Some(plan);
@@ -957,6 +959,7 @@ fn handle_key(
                 state.file_busy = true;
                 state.source_plan = None;
                 state.capacity = None;
+                state.selected_source_roots.clear();
                 let _ = file_commands.send(FileCommand::ListMounts);
             } else {
                 state.status =
@@ -1287,13 +1290,21 @@ fn handle_source_key(
                     app::BrowserEntryKind::Directory | app::BrowserEntryKind::File
                 )
             {
-                start_source_scan(state, commands, entry.path.clone());
+                toggle_source_root(state, entry.path.clone());
             }
         }
         KeyCode::Char(' ') if state.source_view == SourceView::Mounts => {
             if let Some(mount) = state.mounts.get(state.browser_index) {
-                start_source_scan(state, commands, mount.mount_point.clone());
+                toggle_source_root(state, mount.mount_point.clone());
             }
+        }
+        KeyCode::Char('s') | KeyCode::Char('S')
+            if matches!(
+                state.source_view,
+                SourceView::Directory | SourceView::Mounts
+            ) =>
+        {
+            start_source_scan(state, commands);
         }
         KeyCode::Backspace | KeyCode::Esc if state.source_view == SourceView::Directory => {
             let Some(current) = state.browser_path.as_ref() else {
@@ -1402,7 +1413,29 @@ fn handle_source_key(
     }
 }
 
-fn start_source_scan(state: &mut UiState, commands: &Sender<FileCommand>, path: PathBuf) {
+fn toggle_source_root(state: &mut UiState, path: PathBuf) {
+    if let Some(position) = state
+        .selected_source_roots
+        .iter()
+        .position(|selected| selected == &path)
+    {
+        state.selected_source_roots.remove(position);
+        state.status = format!("Removed source {}", path.display());
+    } else {
+        state.selected_source_roots.push(path.clone());
+        state.status = format!(
+            "Selected {} ({} roots total)",
+            path.display(),
+            state.selected_source_roots.len()
+        );
+    }
+}
+
+fn start_source_scan(state: &mut UiState, commands: &Sender<FileCommand>) {
+    if state.selected_source_roots.is_empty() {
+        state.status = "Select at least one source with Space first".into();
+        return;
+    }
     let remaining_capacity_mib = state
         .snapshot
         .as_ref()
@@ -1410,8 +1443,14 @@ fn start_source_scan(state: &mut UiState, commands: &Sender<FileCommand>, path: 
         .and_then(|media| media.mam.as_ref())
         .and_then(|mam| mam.remaining_capacity_mib);
     state.file_busy = true;
-    state.status = format!("Scanning source {}", path.display());
-    let _ = commands.send(FileCommand::Scan(path, remaining_capacity_mib));
+    state.status = format!(
+        "Scanning {} selected source roots",
+        state.selected_source_roots.len()
+    );
+    let _ = commands.send(FileCommand::Scan(
+        state.selected_source_roots.clone(),
+        remaining_capacity_mib,
+    ));
 }
 
 fn open_tape_directory(state: &mut UiState, path: &str) {
@@ -1444,11 +1483,7 @@ fn open_tape_directory(state: &mut UiState, path: &str) {
 }
 
 fn select_tape_destination(state: &mut UiState) {
-    let Some(root) = state
-        .source_plan
-        .as_ref()
-        .and_then(|plan| plan.roots.first())
-    else {
+    let Some(plan) = state.source_plan.as_ref() else {
         state.status = "Source plan is unavailable".into();
         return;
     };
@@ -1461,9 +1496,9 @@ fn select_tape_destination(state: &mut UiState) {
         state.status = "Trusted LTFS index is unavailable".into();
         return;
     };
-    match app::plan_write_destination(index, root, &state.tape_directory) {
-        Ok(target) => {
-            state.tape_target = Some(target);
+    match app::validate_write_destinations(index, &plan.roots, &state.tape_directory) {
+        Ok(_) => {
+            state.tape_target = Some(state.tape_directory.clone());
             state.capacity_acknowledged = false;
             state.start_confirm = false;
             state.source_view = SourceView::Confirm;
@@ -1495,7 +1530,7 @@ fn start_write_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>)
         state.status = "Capacity assessment is unavailable".into();
         return;
     };
-    let Some(source_root) = plan.roots.first() else {
+    let Some(_) = plan.roots.first() else {
         state.status = "Source root is unavailable".into();
         return;
     };
@@ -1503,16 +1538,26 @@ fn start_write_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>)
         state.status = "LTFS target is unavailable".into();
         return;
     };
-    let mount = state
-        .mounts
+    let source_roots = plan
+        .roots
         .iter()
-        .filter(|mount| source_root.starts_with(&mount.mount_point))
-        .max_by_key(|mount| mount.mount_point.components().count());
-    let source = job::Endpoint {
-        path: source_root.display().to_string(),
-        filesystem_type: mount.map(|mount| mount.filesystem_type.clone()),
-        mount_source: mount.map(|mount| mount.source.clone()),
-    };
+        .map(|root| {
+            let mount = state
+                .mounts
+                .iter()
+                .filter(|mount| root.starts_with(&mount.mount_point))
+                .max_by_key(|mount| mount.mount_point.components().count());
+            job::Endpoint {
+                path: root.display().to_string(),
+                filesystem_type: mount.map(|mount| mount.filesystem_type.clone()),
+                mount_source: mount.map(|mount| mount.source.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let source = source_roots
+        .first()
+        .cloned()
+        .expect("source plan is not empty");
     let destination = job::Endpoint {
         path: tape_target.clone(),
         filesystem_type: None,
@@ -1537,6 +1582,7 @@ fn start_write_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>)
         destination,
         state.read_back_verify,
     )
+    .with_source_roots(source_roots)
     .with_completion(state.completion_action, barcode, volume_name)
     .with_write_preflight(plan, capacity, state.capacity_acknowledged)
     {
@@ -2060,6 +2106,11 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
                 .map(|(offset, mount)| {
                     let index = start + offset;
                     Row::new([
+                        if state.selected_source_roots.contains(&mount.mount_point) {
+                            "[x]"
+                        } else {
+                            "[ ]"
+                        },
                         if mount.network { "Network" } else { "Local" },
                         &mount.filesystem_type,
                         mount.mount_point.to_str().unwrap_or("<non-UTF-8>"),
@@ -2071,6 +2122,7 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
                 Table::new(
                     rows,
                     [
+                        Constraint::Length(4),
                         Constraint::Length(10),
                         Constraint::Length(12),
                         Constraint::Percentage(38),
@@ -2078,7 +2130,7 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
                     ],
                 )
                 .header(
-                    Row::new(["Class", "Type", "Mount point", "Remote / device"])
+                    Row::new(["Sel", "Class", "Type", "Mount point", "Remote / device"])
                         .style(Style::default().add_modifier(Modifier::BOLD)),
                 )
                 .block(
@@ -2108,6 +2160,11 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
                             app::BrowserEntryKind::Other => "OTHER",
                         };
                         Row::new([
+                            if state.selected_source_roots.contains(&entry.path) {
+                                "[x]".into()
+                            } else {
+                                "[ ]".into()
+                            },
                             kind.to_string(),
                             entry.name.clone(),
                             entry.size.map_or_else(|| "—".into(), human_bytes),
@@ -2125,13 +2182,14 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
                 Table::new(
                     rows,
                     [
+                        Constraint::Length(4),
                         Constraint::Length(10),
                         Constraint::Percentage(70),
                         Constraint::Percentage(30),
                     ],
                 )
                 .header(
-                    Row::new(["Kind", "Name", "Size"])
+                    Row::new(["Sel", "Kind", "Name", "Size"])
                         .style(Style::default().add_modifier(Modifier::BOLD)),
                 )
                 .block(Block::default().borders(Borders::ALL).title(title)),
@@ -2143,9 +2201,9 @@ fn render_write_source(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiSta
         SourceView::Confirm => render_write_confirmation(frame, layout[1], state),
     }
     let help = match state.source_view {
-        SourceView::Mounts => "↑↓ Select  Enter Browse  Space Select whole mount  Q Back",
+        SourceView::Mounts => "↑↓ Select  Enter Browse  Space Toggle  S Scan selection  Q Back",
         SourceView::Directory => {
-            "↑↓ Select  Enter Open directory  Space Select source  Esc/Backspace Parent  Q Back"
+            "↑↓ Select  Enter Open  Space Toggle  S Scan selection  Esc/Backspace Parent  Q Back"
         }
         SourceView::Plan => "Enter Continue to LTFS destination  Esc Change source  Q Back",
         SourceView::LtfsDestination => {
@@ -2225,11 +2283,16 @@ fn render_write_confirmation(frame: &mut ratatui::Frame<'_>, area: Rect, state: 
             },
         ),
         line(
-            "Source",
-            plan.and_then(|plan| plan.roots.first())
-                .map_or_else(|| "—".into(), |path| path.display().to_string()),
+            "Source roots",
+            plan.map_or_else(
+                || "—".into(),
+                |plan| format!("{} selected", plan.roots.len()),
+            ),
         ),
-        line("LTFS target", state.tape_target.as_deref().unwrap_or("—")),
+        line(
+            "LTFS destination",
+            state.tape_target.as_deref().unwrap_or("—"),
+        ),
         line("Files", plan.map_or(0, |plan| plan.files.len())),
         line("Directories", plan.map_or(0, |plan| plan.directories_total)),
         line(
@@ -2290,55 +2353,38 @@ fn render_source_plan(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiStat
         return;
     };
     let capacity = state.capacity.as_ref();
-    let root = plan.roots.first();
-    let mount = root.and_then(|root| {
-        state
-            .mounts
-            .iter()
-            .filter(|mount| root.starts_with(&mount.mount_point))
-            .max_by_key(|mount| mount.mount_point.components().count())
-    });
     let planned = capacity
         .and_then(|capacity| capacity.planned_fraction)
         .map_or_else(
             || "Unknown".into(),
             |value| format!("{:.1}%", value * 100.0),
         );
+    let mut lines = vec![line("Source roots", plan.roots.len())];
+    for (index, root) in plan.roots.iter().enumerate().take(5) {
+        lines.push(Line::from(format!("  {:<18}{}", index + 1, root.display())));
+    }
+    if plan.roots.len() > 5 {
+        lines.push(line("  …", format!("{} more", plan.roots.len() - 5)));
+    }
+    lines.extend([
+        line("Files", plan.files.len()),
+        line("Directories", plan.directories_total),
+        line("Payload", human_bytes(plan.payload_bytes)),
+        line(
+            "LTFS available",
+            capacity
+                .and_then(|capacity| capacity.available_bytes)
+                .map_or_else(|| "Unknown".into(), human_bytes),
+        ),
+        line("Planned use", planned),
+        line(
+            "Capacity status",
+            capacity.map_or_else(|| "Unknown".into(), |value| format!("{:?}", value.status)),
+        ),
+        line("Scanned", &plan.scanned_at),
+    ]);
     frame.render_widget(
-        Paragraph::new(vec![
-            line(
-                "Source",
-                root.map_or_else(|| "—".into(), |root| root.display().to_string()),
-            ),
-            line(
-                "Filesystem",
-                mount.map_or("Unknown", |mount| mount.filesystem_type.as_str()),
-            ),
-            line(
-                "Mount source",
-                mount.map_or("Unknown", |mount| mount.source.as_str()),
-            ),
-            line(
-                "Network mount",
-                mount.map_or("Unknown", |mount| yes_no(mount.network)),
-            ),
-            line("Files", plan.files.len()),
-            line("Directories", plan.directories_total),
-            line("Payload", human_bytes(plan.payload_bytes)),
-            line(
-                "LTFS available",
-                capacity
-                    .and_then(|capacity| capacity.available_bytes)
-                    .map_or_else(|| "Unknown".into(), human_bytes),
-            ),
-            line("Planned use", planned),
-            line(
-                "Capacity status",
-                capacity.map_or_else(|| "Unknown".into(), |value| format!("{:?}", value.status)),
-            ),
-            line("Scanned", &plan.scanned_at),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Frozen source plan "),
@@ -2461,7 +2507,18 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
             |speed| format!("{:.1} MiB/s", speed / 1024.0 / 1024.0),
         );
         let mut lines = vec![
-            line("Source", &job.spec.source.path),
+            line(
+                "Source",
+                if job.spec.source_roots.is_empty() {
+                    job.spec.source.path.clone()
+                } else {
+                    format!(
+                        "{} roots (first: {})",
+                        job.spec.source_roots.len(),
+                        job.spec.source.path
+                    )
+                },
+            ),
             line("Destination", &job.spec.destination.path),
             line(
                 "Drive",
@@ -2623,7 +2680,18 @@ fn render_job_completion(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiS
                 job.progress.items_total
             ),
         ),
-        line("Source", &job.spec.source.path),
+        line(
+            "Source",
+            if job.spec.source_roots.is_empty() {
+                job.spec.source.path.clone()
+            } else {
+                format!(
+                    "{} roots (first: {})",
+                    job.spec.source_roots.len(),
+                    job.spec.source.path
+                )
+            },
+        ),
         line("Destination", &job.spec.destination.path),
     ];
     if let Some(error) = &job.error {

@@ -1327,8 +1327,12 @@ index，再从 index tree 选择恢复对象并汇总 length，最后选择 Linu
 `cifs`/`smb3` 等网络文件系统与其 remote source 明确显示，并把网络挂载排在本地
 挂载之前。目录浏览只枚举当前一级；选择 source 后才由独立 filesystem worker
 递归扫描，避免大型目录或慢速 NFS/CIFS 阻塞 TUI redraw。tapecpy 只使用已经挂载
-的 Linux 路径，不负责保存凭据或自行 mount。当前 runner 垂直切片只支持一个
-source root，多选必须在 writer 数据模型扩展后再开放，不能只在 TUI 中伪造。
+的 Linux 路径，不负责保存凭据或自行 mount。Milestone 15 已把 source selector、
+job protocol 和 writer 数据模型扩展为多个 source root。每个 root 仍记录并复核
+自己的 filesystem type / mount source；多个 root 的 basename 映射到同一所选
+LTFS 父目录，重名、重复或互相包含的选择在创建 runner 前拒绝。所有 root 由同一个
+writer plan、数据管线和 LTFS index transaction 提交，因此只产生一个新 generation，
+而不是在 TUI 中把多个单源任务伪装成一次操作。
 新建 job 同时记录 host endpoint 的 filesystem type 和 mount source；runner 在
 访问数据前重新核对挂载身份，防止 NFS/CIFS 消失后把裸露的本地 mount point 当成
 原共享继续操作。旧 job 未记录这些字段时保持向后兼容。

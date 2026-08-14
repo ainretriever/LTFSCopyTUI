@@ -150,6 +150,8 @@ pub struct JobSpec {
     pub drive_selector: String,
     pub drive_serial: String,
     pub source: Endpoint,
+    #[serde(default)]
+    pub source_roots: Vec<Endpoint>,
     pub destination: Endpoint,
     pub read_back_verify: bool,
     #[serde(default)]
@@ -215,6 +217,7 @@ impl JobSpec {
             drive_selector,
             drive_serial,
             source,
+            source_roots: Vec::new(),
             destination,
             read_back_verify,
             completion_action: CompletionAction::KeepLoaded,
@@ -246,9 +249,15 @@ impl JobSpec {
         if self.operation != OperationKind::Write {
             return Err("Read job 不能携带 write preflight".into());
         }
-        let source_root = std::fs::canonicalize(&self.source.path)
-            .map_err(|error| format!("无法确认 write source {}: {error}", self.source.path))?;
-        if plan.roots.as_slice() != [source_root.as_path()] {
+        let configured = self.effective_source_roots();
+        let canonical = configured
+            .iter()
+            .map(|source| {
+                std::fs::canonicalize(&source.path)
+                    .map_err(|error| format!("无法确认 write source {}: {error}", source.path))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if plan.roots != canonical {
             return Err("source plan 与 job source 不一致".into());
         }
         if capacity.payload_bytes != plan.payload_bytes {
@@ -272,6 +281,19 @@ impl JobSpec {
         });
         self.validate()?;
         Ok(self)
+    }
+
+    pub fn with_source_roots(mut self, source_roots: Vec<Endpoint>) -> Self {
+        self.source_roots = source_roots;
+        self
+    }
+
+    fn effective_source_roots(&self) -> Vec<&Endpoint> {
+        if self.source_roots.is_empty() {
+            vec![&self.source]
+        } else {
+            self.source_roots.iter().collect()
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -300,8 +322,11 @@ impl JobSpec {
             if self.operation != OperationKind::Write {
                 return Err("只有 Write job 可以携带 write preflight".into());
             }
-            if preflight.roots.len() != 1 {
-                return Err("当前 runner 垂直切片只支持一个 source root".into());
+            if preflight.roots.is_empty() {
+                return Err("write preflight 至少需要一个 source root".into());
+            }
+            if preflight.roots.len() != self.effective_source_roots().len() {
+                return Err("write preflight 与 job source roots 数量不一致".into());
             }
             if preflight.capacity_status == JobCapacityStatus::BlockedInsufficient {
                 return Err("source payload 超过 LTFS available capacity".into());
@@ -945,11 +970,14 @@ fn run_operation(
             spec.drive_serial, drive.serial
         ));
     }
-    let host_endpoint = match spec.operation {
-        OperationKind::Write => &spec.source,
-        OperationKind::Read => &spec.destination,
-    };
-    validate_host_mount(host_endpoint)?;
+    match spec.operation {
+        OperationKind::Write => {
+            for endpoint in spec.effective_source_roots() {
+                validate_host_mount(endpoint)?;
+            }
+        }
+        OperationKind::Read => validate_host_mount(&spec.destination)?,
+    }
     if let Some(preflight) = spec.write_preflight.as_ref() {
         let media = crate::app::inspect_media(drive).map_err(|error| error.to_string())?;
         let current_capacity = crate::app::assess_write_capacity(
@@ -991,30 +1019,45 @@ fn run_operation(
                     state.apply_write_event(event, timestamp_now());
                 });
             };
-            let result = crate::app::WriteSession::new(drive)
-                .run_detailed_with_options(
+            let options = crate::app::WriteOptions {
+                verification: if spec.read_back_verify {
+                    crate::app::WriteVerification::ReadBackSha256
+                } else {
+                    crate::app::WriteVerification::None
+                },
+                expected_source: spec.write_preflight.as_ref().map(|preflight| {
+                    crate::app::WritePlanExpectation {
+                        files: preflight.files_total,
+                        directories: preflight.directories_total,
+                        payload_bytes: preflight.payload_bytes,
+                    }
+                }),
+                failpoint: None,
+                cancellation: Some(cancellation.clone()),
+                cancelpoint: None,
+            };
+            let session = crate::app::WriteSession::new(drive);
+            let result = if spec.source_roots.is_empty() {
+                session.run_detailed_with_options(
                     Path::new(&spec.source.path),
                     &spec.destination.path,
-                    crate::app::WriteOptions {
-                        verification: if spec.read_back_verify {
-                            crate::app::WriteVerification::ReadBackSha256
-                        } else {
-                            crate::app::WriteVerification::None
-                        },
-                        expected_source: spec.write_preflight.as_ref().map(|preflight| {
-                            crate::app::WritePlanExpectation {
-                                files: preflight.files_total,
-                                directories: preflight.directories_total,
-                                payload_bytes: preflight.payload_bytes,
-                            }
-                        }),
-                        failpoint: None,
-                        cancellation: Some(cancellation.clone()),
-                        cancelpoint: None,
-                    },
+                    options,
                     &mut observer,
                 )
-                .map_err(|error| error.to_string())?;
+            } else {
+                let roots = spec
+                    .source_roots
+                    .iter()
+                    .map(|endpoint| PathBuf::from(&endpoint.path))
+                    .collect::<Vec<_>>();
+                session.run_roots_detailed_with_options(
+                    &roots,
+                    &spec.destination.path,
+                    options,
+                    &mut observer,
+                )
+            }
+            .map_err(|error| error.to_string())?;
             control.update(|state| {
                 state.revision += 1;
                 state.updated_at = timestamp_now();
@@ -1260,6 +1303,7 @@ mod tests {
                 filesystem_type: Some("nfs4".into()),
                 mount_source: Some("nas:/archive".into()),
             },
+            source_roots: Vec::new(),
             destination: Endpoint {
                 path: "/destination".into(),
                 filesystem_type: None,
@@ -1329,12 +1373,49 @@ mod tests {
     }
 
     #[test]
+    fn write_preflight_accepts_multiple_explicit_source_roots() {
+        let base = std::env::temp_dir().join(format!(
+            "tapecpy-multi-preflight-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = base.join("first");
+        let second = base.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("one.bin"), b"1").unwrap();
+        fs::write(second.join("two.bin"), b"22").unwrap();
+        let plan = crate::app::scan_source_roots(&[first.clone(), second.clone()]).unwrap();
+        let capacity = crate::app::assess_write_capacity(plan.payload_bytes, Some(10), "sampled");
+        let endpoints = [first, second]
+            .into_iter()
+            .map(|path| Endpoint {
+                path: path.display().to_string(),
+                filesystem_type: None,
+                mount_source: None,
+            })
+            .collect::<Vec<_>>();
+        let value = spec(OperationKind::Write)
+            .with_source_roots(endpoints)
+            .with_write_preflight(&plan, &capacity, false)
+            .unwrap();
+        assert_eq!(value.source_roots.len(), 2);
+        assert_eq!(value.write_preflight.unwrap().roots.len(), 2);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn legacy_job_spec_defaults_to_no_write_preflight() {
         let value = serde_json::to_value(spec(OperationKind::Write)).unwrap();
         let mut object = value.as_object().unwrap().clone();
         object.remove("write_preflight");
+        object.remove("source_roots");
         let decoded: JobSpec = serde_json::from_value(object.into()).unwrap();
         assert!(decoded.write_preflight.is_none());
+        assert!(decoded.source_roots.is_empty());
     }
 
     #[test]

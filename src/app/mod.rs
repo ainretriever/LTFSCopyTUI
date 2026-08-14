@@ -2040,6 +2040,22 @@ impl<'a> WriteSession<'a> {
         )
     }
 
+    pub fn run_roots_detailed_with_options(
+        &self,
+        local_roots: &[std::path::PathBuf],
+        destination_directory: &str,
+        options: WriteOptions,
+        observer: &mut dyn FnMut(&WriteEvent),
+    ) -> Result<WriteResult, WriteFailure> {
+        write_with_observer_detailed(
+            self.drive,
+            WriteSourceRequest::LocalRoots(local_roots),
+            destination_directory,
+            options,
+            observer,
+        )
+    }
+
     /// 写入一个不落盘、长度固定且可由 seed 重现的伪随机测试文件。
     pub fn run_pseudorandom(
         &self,
@@ -2439,19 +2455,7 @@ pub fn plan_write_destination(
     source_root: &Path,
     destination_directory: &str,
 ) -> Result<String, String> {
-    let name = source_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-        .ok_or_else(|| {
-            format!(
-                "source root 没有可用的 LTFS 名称: {}",
-                source_root.display()
-            )
-        })?;
-    if name.contains('/') {
-        return Err(format!("source 名称包含路径分隔符: {name}"));
-    }
+    let name = source_root_name(source_root)?;
     let directory = index
         .find_directory(destination_directory)
         .ok_or_else(|| format!("LTFS destination 不存在: {destination_directory}"))?;
@@ -2470,6 +2474,41 @@ pub fn plan_write_destination(
     } else {
         format!("{}/{name}", destination_directory.trim_end_matches('/'))
     })
+}
+
+pub fn validate_write_destinations(
+    index: &Index,
+    source_roots: &[std::path::PathBuf],
+    destination_directory: &str,
+) -> Result<Vec<String>, String> {
+    let mut targets = Vec::with_capacity(source_roots.len());
+    for root in source_roots {
+        let target = plan_write_destination(index, root, destination_directory)?;
+        if targets.iter().any(|existing| existing == &target) {
+            return Err(format!(
+                "多个 source root 映射到同一个 LTFS target: {target}"
+            ));
+        }
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
+fn source_root_name(source_root: &Path) -> Result<&str, String> {
+    let name = source_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .ok_or_else(|| {
+            format!(
+                "source root 没有可用的 LTFS 名称: {}",
+                source_root.display()
+            )
+        })?;
+    if name.contains('/') {
+        return Err(format!("source 名称包含路径分隔符: {name}"));
+    }
+    Ok(name)
 }
 
 fn scan_source_entry(
@@ -2810,6 +2849,7 @@ impl PlannedSource {
 
 enum WriteSourceRequest<'a> {
     Local(&'a Path),
+    LocalRoots(&'a [std::path::PathBuf]),
     Pseudorandom { size: u64, seed: u64 },
 }
 
@@ -2833,6 +2873,35 @@ fn plan_source_tree(
     };
     plan_entry(index, source, target, now, &mut plan)?;
     Ok(plan)
+}
+
+fn plan_source_roots(
+    index: &mut Index,
+    roots: &[std::path::PathBuf],
+    destination_directory: &str,
+    now: &str,
+) -> Result<WritePlan, String> {
+    if roots.is_empty() {
+        return Err("至少选择一个 source root".into());
+    }
+    let mut plan = WritePlan {
+        highest_uid: index.highest_file_uid.unwrap_or(0),
+        ..Default::default()
+    };
+    for root in roots {
+        let target = destination_path_for_root(root, destination_directory)?;
+        plan_entry(index, root, &target, now, &mut plan)?;
+    }
+    Ok(plan)
+}
+
+fn destination_path_for_root(root: &Path, destination_directory: &str) -> Result<String, String> {
+    let name = source_root_name(root)?;
+    Ok(if destination_directory == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{name}", destination_directory.trim_end_matches('/'))
+    })
 }
 
 fn plan_entry(
@@ -3188,6 +3257,9 @@ fn write_with_observer_inner(
     let plan = match source {
         WriteSourceRequest::Local(local_path) => {
             plan_source_tree(&mut index, local_path, tape_path, &now)?
+        }
+        WriteSourceRequest::LocalRoots(local_roots) => {
+            plan_source_roots(&mut index, local_roots, tape_path, &now)?
         }
         WriteSourceRequest::Pseudorandom { size, seed } => {
             plan_pseudorandom_file(&mut index, tape_path, size, seed, &now)?
@@ -3932,6 +4004,43 @@ mod tests {
                 .unwrap_err()
                 .contains("已存在")
         );
+    }
+
+    #[test]
+    fn multiple_roots_share_one_plan_and_reject_duplicate_target_names() {
+        let base = std::env::temp_dir().join(format!(
+            "tapecpy-multi-plan-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let left = base.join("left");
+        let right = base.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("a.bin"), b"aa").unwrap();
+        std::fs::write(right.join("b.bin"), b"bbb").unwrap();
+
+        let mut index = empty_index();
+        let roots = vec![left.clone(), right.clone()];
+        let targets = validate_write_destinations(&index, &roots, "/").unwrap();
+        assert_eq!(targets, vec!["/left", "/right"]);
+        let plan = plan_source_roots(&mut index, &roots, "/", "now").unwrap();
+        assert_eq!(plan.files.len(), 2);
+        assert_eq!(plan.directories, 2);
+        assert_eq!(plan.total_bytes, 5);
+        assert!(index.find_file("/left/a.bin").is_some());
+        assert!(index.find_file("/right/b.bin").is_some());
+
+        let duplicate_parent = base.join("duplicate");
+        let duplicate_left = duplicate_parent.join("one/same");
+        let duplicate_right = duplicate_parent.join("two/same");
+        std::fs::create_dir_all(&duplicate_left).unwrap();
+        std::fs::create_dir_all(&duplicate_right).unwrap();
+        let error =
+            validate_write_destinations(&empty_index(), &[duplicate_left, duplicate_right], "/")
+                .unwrap_err();
+        assert!(error.contains("同一个 LTFS target"));
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
