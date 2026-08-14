@@ -440,14 +440,15 @@ TUI 必须 capability-driven，不应假定所有 LTO 驱动器行为完全相�
 
 按 `Enter Open` 后必须立即离开 Device Selection 并进入 Overview，不能等待 LTFS
 label/index 读取完成。进入 Overview 时只在后台刷新基础设备、介质和健康状态；
-LTFS 字段保持 `Not read`，直到用户明确执行：
+LTFS 字段保持未读取，直到用户明确执行：
 
 ```text
-[I] Read LTFS
+[6] LTFS Operations…
 ```
 
-该动作才允许读取 LTFS label、index 和一致性信息。`R Basic refresh` 不隐含 LTFS
-读取，并应清除可能因换带而过期的 LTFS 快照。
+该动作立即读取 LTFS partitions、label、index 和一致性信息，完成后进入第三层
+LTFS Operations 页面。`R Basic refresh` 不隐含 LTFS 读取，并应清除可能因换带而
+过期的 LTFS 快照。
 
 ---
 
@@ -546,7 +547,8 @@ Overview 必须根据介质生命周期动态展示信息。
 ```
 
 Overview 不显示 Volume Name、LTFS generation、index 或 consistency。这些字段只在
-用户显式执行 `I Read LTFS` 后显示于 LTFS 页面，避免 Overview 的可用性依赖绕带。
+用户显式执行 `[6] LTFS Operations…` 后显示于 LTFS 页面，避免 Overview 的可用性
+依赖绕带。
 
 Overview 中的 corrected/hard error 默认优先显示当前 session delta。
 
@@ -561,6 +563,14 @@ Overview 不再保留独立的底部操作提示条。六项 cartridge 操作集
 
 Overview 的 telemetry 状态只显示 `HH:MM:SS`，不显示日期、秒的小数部分
 或时区后缀，避免周期刷新消息挤占操作框宽度。
+
+顶部框只显示当前 drive/cartridge 身份和右对齐的 `Status`，不重复显示 `F2 LTFS`、
+`F3 Health`、`F4 Jobs` 或 `D Details`。页面导航提示集中在 Overview 的操作框中。
+
+`[6] LTFS Operations…` 是所有 LTFS 操作的唯一入口；`F2` 不得绕过 partition probe
+直接进入页面。probe 找到有效卷时第三界面开放 Read/Write；找不到 LTFS partition
+或有效 label 时第三界面显示明确错误、禁用 Read/Write，但必须保留 Format 入口。
+第三界面集中排列 `[1] Read LTFS…`、`[2] Write LTFS…` 和 `[3] Format LTFS…`。
 
 穿带、退带和弹出由单一 device worker 串行执行。命令进行中显示 `Working` 模态框，
 禁用其他设备命令，并明确提示不要移除介质。SCSI 命令返回 GOOD 后仍要刷新 basic

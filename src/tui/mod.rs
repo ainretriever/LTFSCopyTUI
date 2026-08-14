@@ -16,9 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
-};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
 
 use crate::app::{
     self, ChannelTelemetryFrame, ChannelTelemetryTracker, DeviceSnapshot, MediaLifecycle,
@@ -159,6 +157,7 @@ struct UiState {
     page: Page,
     snapshot: Option<DeviceSnapshot>,
     ltfs_read: bool,
+    ltfs_open_pending: bool,
     channels: ChannelTelemetryFrame,
     busy: Option<&'static str>,
     status: String,
@@ -206,6 +205,7 @@ impl Default for UiState {
             page: Page::Overview,
             snapshot: None,
             ltfs_read: false,
+            ltfs_open_pending: false,
             channels: ChannelTelemetryFrame::default(),
             busy: Some("Discovering tape drives"),
             status: "Starting Milestone 12 TUI".into(),
@@ -793,6 +793,29 @@ fn read_ltfs_snapshot(
     ));
 }
 
+fn ltfs_probe_error(snapshot: &DeviceSnapshot) -> Option<String> {
+    if snapshot.lifecycle != MediaLifecycle::LoadedThreaded {
+        return Some("cartridge is not loaded / threaded".into());
+    }
+    match snapshot.volume.as_ref() {
+        Some(volume) if volume.recognized => None,
+        Some(volume) => Some(
+            volume
+                .reason
+                .clone()
+                .unwrap_or_else(|| "no valid LTFS partition label was found".into()),
+        ),
+        None => Some(
+            snapshot
+                .warnings
+                .iter()
+                .find(|warning| warning.starts_with("LTFS 查询失败:"))
+                .cloned()
+                .unwrap_or_else(|| "LTFS partition probe returned no volume".into()),
+        ),
+    }
+}
+
 fn timestamp_now() -> String {
     app::ltfs_time_now()
 }
@@ -807,17 +830,32 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.status = format!("{} tape drive(s) discovered", state.drives.len());
         }
         WorkerEvent::Snapshot(snapshot, channels, scope) => {
-            state.snapshot = Some(*snapshot);
+            let snapshot = *snapshot;
+            let ltfs_error = if scope == SnapshotScope::Ltfs {
+                ltfs_probe_error(&snapshot)
+            } else {
+                None
+            };
+            state.snapshot = Some(snapshot);
             state.channels = channels;
             state.selected = true;
             state.busy = None;
             state.ltfs_read = scope == SnapshotScope::Ltfs;
-            state.status = match scope {
-                SnapshotScope::Basic => {
-                    "Basic device state refreshed; LTFS information is blank until I Read LTFS"
-                        .into()
+            if scope == SnapshotScope::Ltfs && state.ltfs_open_pending {
+                state.page = Page::Ltfs;
+                state.ltfs_open_pending = false;
+            }
+            state.status = match (scope, ltfs_error) {
+                (SnapshotScope::Basic, _) => {
+                    "Basic device state refreshed; LTFS metadata has not been probed".into()
                 }
-                SnapshotScope::Ltfs => "LTFS label, index and consistency read completed".into(),
+                (SnapshotScope::Ltfs, Some(error)) => {
+                    state.last_error = Some(error.clone());
+                    format!("LTFS probe failed: {error}")
+                }
+                (SnapshotScope::Ltfs, None) => {
+                    "LTFS partitions, label, index and consistency read completed".into()
+                }
             };
         }
         WorkerEvent::Telemetry(health, channels, timestamp) => {
@@ -890,6 +928,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.busy = None;
         }
         WorkerEvent::Error(error) => {
+            state.ltfs_open_pending = false;
             state.last_error = Some(error.clone());
             state.status = format!("ERROR: {error}");
             state.busy = None;
@@ -1001,7 +1040,7 @@ fn handle_key(
                     state.snapshot = Some(app::pending_device_snapshot(&drive));
                     state.ltfs_read = false;
                     state.busy = Some("Refreshing basic device state");
-                    state.status = "Device opened; LTFS information has not been read".into();
+                    state.status = "Device opened; use [6] to enter LTFS Operations".into();
                     let _ = commands.send(WorkerCommand::Select(state.drive_index));
                 }
             }
@@ -1015,12 +1054,14 @@ fn handle_key(
 
     match code {
         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-            state.selected = false;
-            state.snapshot = None;
-            state.page = Page::Overview;
+            if state.page == Page::Overview {
+                state.selected = false;
+                state.snapshot = None;
+            } else {
+                state.page = Page::Overview;
+            }
         }
         KeyCode::F(1) => state.page = Page::Overview,
-        KeyCode::F(2) => state.page = Page::Ltfs,
         KeyCode::F(3) => state.page = Page::Health,
         KeyCode::Char('1') if state.page == Page::Overview => {
             let available = state
@@ -1081,14 +1122,32 @@ fn handle_key(
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.lifecycle == MediaLifecycle::LoadedThreaded)
             {
-                state.page = Page::Ltfs;
-                state.status =
-                    "LTFS Operations: press I only when ready to read LTFS metadata".into();
+                state.ltfs_open_pending = true;
+                state.status = "Reading LTFS partitions before opening operations".into();
+                if commands.send(WorkerCommand::ReadLtfs).is_err() {
+                    state.ltfs_open_pending = false;
+                    state.status = "LTFS probe failed: device worker has exited".into();
+                }
             } else {
                 state.status = "LTFS Operations requires Load & Thread first".into();
             }
         }
-        KeyCode::Char('w') | KeyCode::Char('W') => {
+        KeyCode::Char('1') if state.page == Page::Ltfs => {
+            let readable = state
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.volume.as_ref())
+                .and_then(|volume| volume.index.as_ref())
+                .is_some();
+            state.status = if readable {
+                "LTFS Read selected; file selection workflow is the next implementation step".into()
+            } else {
+                "LTFS Read unavailable: no readable LTFS index".into()
+            };
+        }
+        KeyCode::Char('2') | KeyCode::Char('w') | KeyCode::Char('W')
+            if state.page == Page::Ltfs =>
+        {
             let writable = state.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.lifecycle == MediaLifecycle::LoadedThreaded
                     && snapshot
@@ -1107,28 +1166,17 @@ fn handle_key(
                 let _ = file_commands.send(FileCommand::ListMounts);
             } else {
                 state.status =
-                    "Write requires a loaded, healthy LTFS volume; press I to read LTFS first"
+                    "Write requires a loaded, healthy LTFS volume; enter through [6] LTFS Operations"
                         .into();
             }
         }
-        KeyCode::Char('f') | KeyCode::Char('F') => {
+        KeyCode::Char('3') | KeyCode::Char('f') | KeyCode::Char('F')
+            if state.page == Page::Ltfs =>
+        {
             open_format_workflow(state);
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
             open_erase_workflow(state);
-        }
-        KeyCode::Char('i') | KeyCode::Char('I') => {
-            if selected_device_claimed(state) {
-                state.status = "LTFS read blocked: detached operation owns this drive".into();
-            } else if state
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.lifecycle == MediaLifecycle::LoadedThreaded)
-            {
-                let _ = commands.send(WorkerCommand::ReadLtfs);
-            } else {
-                state.status = "LTFS read requires loaded / threaded media".into();
-            }
         }
         KeyCode::Char('d') | KeyCode::Char('D') if state.last_error.is_some() => {
             state.page = Page::ErrorDetails
@@ -2216,7 +2264,7 @@ fn render_erase(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
                 ));
                 lines.push(line(
                     "LTFS cache",
-                    "Cleared; press I only if you want to probe again",
+                    "Cleared; return to Overview and use [6] to probe again",
                 ));
             } else {
                 lines.push(line(
@@ -3106,33 +3154,24 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         barcode,
         medium_serial
     );
-    let selected = match state.page {
-        Page::Overview => 0,
-        Page::Ltfs => 1,
-        Page::Health => 2,
-        Page::Jobs => 3,
-        Page::JobCompletion => 3,
-        Page::ErrorDetails => 4,
-        Page::WriteSource => 1,
-        Page::Format => 1,
-        Page::Erase => 1,
-    };
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let columns =
+        Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)]).split(inner);
     frame.render_widget(
-        Tabs::new([
-            title,
-            "F2 LTFS".into(),
-            "F3 Health".into(),
-            "F4 Jobs".into(),
-            "D Details".into(),
-        ])
-        .select(selected)
-        .block(Block::default().borders(Borders::ALL))
-        .highlight_style(
+        Paragraph::new(title).style(
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        area,
+        columns[0],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("Status  {}", state.status))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(Color::DarkGray)),
+        columns[1],
     );
 }
 
@@ -3333,16 +3372,15 @@ fn render_cartridge_operations(
             operation("4", "Eject", "直接弹出", present),
             operation("5", "Erase…", "擦除…", threaded && !write_protected),
             operation("6", "LTFS Operations…", "LTFS 操作…", threaded),
-            Line::from(vec![
-                Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
-                Span::raw(&state.status),
-            ]),
             navigation_hint_line("F1", "Overview"),
-            navigation_hint_line("F2", "LTFS"),
             navigation_hint_line("F3", "Health"),
             navigation_hint_line("F4", "Jobs"),
             navigation_hint_line("R", "Refresh"),
             navigation_hint_line("Q", "Back / Exit"),
+            Line::from(vec![
+                Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(&state.status),
+            ]),
         ])
         .block(
             Block::default()
@@ -3416,13 +3454,10 @@ fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     }
     if !state.ltfs_read {
         frame.render_widget(
-            Paragraph::new(
-                "LTFS information has not been read.\n\nPress [I] Read LTFS when you want to read the label, index and consistency state.",
-            )
-            .block(
+            Paragraph::new("Reading LTFS partitions, label, index and consistency…").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" LTFS Volume — not read "),
+                    .title(" LTFS Operations "),
             ),
             area,
         );
@@ -3438,7 +3473,9 @@ fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         .iter()
         .map(|warning| ListItem::new(warning.clone()))
         .collect::<Vec<_>>();
-    let split = Layout::vertical([Constraint::Length(15), Constraint::Min(5)]).split(area);
+    let columns =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    let left = Layout::vertical([Constraint::Length(15), Constraint::Min(5)]).split(columns[0]);
     frame.render_widget(
         Paragraph::new(vec![
             line(
@@ -3492,12 +3529,62 @@ fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
                 .borders(Borders::ALL)
                 .title(" LTFS Volume "),
         ),
-        split[0],
+        left[0],
     );
     frame.render_widget(
         List::new(warnings).block(Block::default().borders(Borders::ALL).title(" Warnings ")),
-        split[1],
+        left[1],
     );
+
+    let readable = index.is_some();
+    let writable = diagnosis.is_some_and(|diagnosis| diagnosis.safe_for_normal_write);
+    let format_available = snapshot
+        .media
+        .as_ref()
+        .and_then(|media| media.tape_status)
+        .is_none_or(|status| !status.is_write_protected())
+        && !selected_device_claimed(state);
+    frame.render_widget(
+        Paragraph::new(vec![
+            ltfs_operation_line("1", "Read LTFS…", "读取文件…", readable),
+            ltfs_operation_line("2", "Write LTFS…", "写入文件…", writable),
+            ltfs_operation_line("3", "Format LTFS…", "格式化…", format_available),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(&state.status),
+            ]),
+            Line::from(""),
+            navigation_hint_line("F1", "Overview"),
+            navigation_hint_line("F3", "Health"),
+            navigation_hint_line("F4", "Jobs"),
+            navigation_hint_line("Q", "Back / Exit"),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" LTFS Operations "),
+        ),
+        columns[1],
+    );
+}
+
+fn ltfs_operation_line<'a>(
+    key: &'a str,
+    english: &'a str,
+    chinese: &'a str,
+    available: bool,
+) -> Line<'a> {
+    let style = if available {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    Line::from(vec![
+        Span::styled(format!("[{key}] {english:<17}"), style),
+        Span::styled(format!("{chinese:<10}"), style),
+        Span::styled(if available { "Ready" } else { "—" }, style),
+    ])
 }
 
 fn render_health(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {

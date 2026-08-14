@@ -1266,15 +1266,16 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 装卸载和健康采样，避免不同页面或 telemetry poller 同时改变顺序设备状态。
 
 选择驱动器时 TUI 必须立即进入设备页，只异步取得基础介质与健康状态，不自动读取
-LTFS label/index，也不因磁带定位把用户留在驱动器选择页。LTFS 区域在用户明确执行
-`I Read LTFS` 前保持未读取状态；该命令才由 device worker 串行执行 LTFS 识别、
-index 读取和一致性诊断。`R Basic refresh` 只刷新基础状态，并清除可能已经过期的
+LTFS label/index，也不因磁带定位把用户留在驱动器选择页。Overview 的
+`[6] LTFS Operations…` 是唯一入口：它先由 device worker 串行执行 partition、LTFS
+label/index 和一致性诊断，再进入第三层操作页。无有效 LTFS 时仍进入该页并显示错误，
+Read/Write 禁用而 Format 保留。`R Basic refresh` 只刷新基础状态，并清除可能已经过期的
 LTFS 快照。
 
 阶段 2 起，Overview 的介质身份与容量区域完全以 READ ATTRIBUTE 得到的 MAM 为
 数据源，不再显示 Volume Name、LTFS generation、index 或 consistency。这样介质
 进仓但尚未 thread 时也能立即显示可取得的信息，并保证 Overview 在执行过
-`I Read LTFS` 前后不会改变数据来源。LTFS 专属信息只属于显式读取的 LTFS 页面。
+LTFS probe 前后不会改变数据来源。LTFS 专属信息只属于显式进入的 LTFS 页面。
 
 当前稳定介质状态由 Application 层表达为 `NO_MEDIA_DETECTED`、
 `PRESENT_UNTHREADED` 和 `LOADED_THREADED`，另保留 transitioning/unknown 状态。
@@ -1539,7 +1540,7 @@ Quantum LTO-5 上曾耗时 865 秒，full-tape long erase 可能持续数小时�
 Volume Name；单个快捷键只能打开工作流，必须经过独立最终破坏性确认才能启动。
 
 完成或失败后，worker 只刷新 basic device/MAM snapshot，并强制清除 TUI 中此前读取的
-LTFS 状态。用户若确实需要探测残留 label/index，必须再次显式按 `I`；失败页要求先查看
+LTFS 状态。用户若确实需要探测残留 label/index，必须返回 Overview 再次使用 `[6]`；失败页要求先查看
 错误和介质状态再决定是否 Format，尤其不能掩盖 minimum-long 的临时分区恢复失败。
 
 Quantum LTO-5 测试带完成了两条真实 TUI 验收。short erase 在 6 秒内完成，完成页清除
