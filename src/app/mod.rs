@@ -3629,6 +3629,7 @@ enum SourcePipelineMessage {
     Data(Vec<u8>),
     FileEnd {
         actual_size: u64,
+        sha256: String,
     },
     Error(String),
 }
@@ -3811,6 +3812,7 @@ fn produce_source_blocks(
             .map_err(|_| "tape writer 已关闭 source pipeline".to_string())?;
         let mut source = planned.source.open(planned.size)?;
         let mut actual_size = 0u64;
+        let mut hasher = Sha256::new();
         loop {
             if cancellation.is_cancelled() {
                 return Err("[cancelled]source reader 在数据块边界停止".into());
@@ -3836,34 +3838,52 @@ fn produce_source_blocks(
                 }
             };
             buffer.resize(block_size, 0);
-            use std::io::Read;
-            let read = source
-                .read(&mut buffer)
+            let filled = read_full_source_block(source.as_mut(), &mut buffer)
                 .map_err(|error| format!("读取 {description} 失败: {error}"))?;
-            if read == 0 {
+            if filled == 0 {
                 allocated = allocated.saturating_sub(1);
                 break;
             }
-            buffer.truncate(read);
-            actual_size += read as u64;
+            buffer.truncate(filled);
+            hasher.update(&buffer);
+            actual_size += filled as u64;
             metrics
                 .bytes_read
-                .fetch_add(read as u64, std::sync::atomic::Ordering::AcqRel);
+                .fetch_add(filled as u64, std::sync::atomic::Ordering::AcqRel);
             metrics
                 .queued_bytes
-                .fetch_add(read as u64, std::sync::atomic::Ordering::AcqRel);
+                .fetch_add(filled as u64, std::sync::atomic::Ordering::AcqRel);
             if messages.send(SourcePipelineMessage::Data(buffer)).is_err() {
                 metrics
                     .queued_bytes
-                    .fetch_sub(read as u64, std::sync::atomic::Ordering::AcqRel);
+                    .fetch_sub(filled as u64, std::sync::atomic::Ordering::AcqRel);
                 return Err("tape writer 已关闭 source pipeline".into());
             }
         }
         messages
-            .send(SourcePipelineMessage::FileEnd { actual_size })
+            .send(SourcePipelineMessage::FileEnd {
+                actual_size,
+                sha256: format!("{:x}", hasher.finalize()),
+            })
             .map_err(|_| "tape writer 已关闭 source pipeline".to_string())?;
     }
     Ok(())
+}
+
+fn read_full_source_block(
+    source: &mut dyn std::io::Read,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut filled = 0usize;
+    while filled < buffer.len() {
+        match source.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
 }
 
 impl PlannedSource {
@@ -4375,7 +4395,6 @@ fn write_with_observer_inner(
         expected_size: u64,
         start_block: u64,
         bytes_written: u64,
-        hasher: Sha256,
     }
     let mut active_file: Option<ActiveWriteFile> = None;
     while progress.files_completed < plan.files.len() {
@@ -4407,7 +4426,6 @@ fn write_with_observer_inner(
                     expected_size,
                     start_block: data_pos,
                     bytes_written: 0,
-                    hasher: Sha256::new(),
                 });
             }
             SourcePipelineMessage::Data(data) => {
@@ -4424,7 +4442,6 @@ fn write_with_observer_inner(
                     return Err(format!("写入 {} 失败: {e}", file.description));
                 }
                 first_write = false;
-                file.hasher.update(&data);
                 file.bytes_written += data.len() as u64;
                 total += data.len() as u64;
                 progress.bytes_written = total;
@@ -4463,7 +4480,10 @@ fn write_with_observer_inner(
                     );
                 }
             }
-            SourcePipelineMessage::FileEnd { actual_size } => {
+            SourcePipelineMessage::FileEnd {
+                actual_size,
+                sha256,
+            } => {
                 let Some(file) = active_file.take() else {
                     return Err("source pipeline 在 FileStart 前发送了 FileEnd".into());
                 };
@@ -4487,7 +4507,6 @@ fn write_with_observer_inner(
                 } else {
                     Vec::new()
                 };
-                let sha256 = format!("{:x}", file.hasher.finalize());
                 entry
                     .extended_attributes
                     .retain(|attr| !attr.key.eq_ignore_ascii_case("ltfs.hash.sha256sum"));
@@ -5825,16 +5844,23 @@ mod tests {
         ];
         let pipeline = SourcePipeline::spawn(files, 4, 8, CancellationToken::default()).unwrap();
         let mut events = Vec::new();
+        let mut file_bytes = Vec::new();
         loop {
             match pipeline.recv() {
                 Ok(SourcePipelineMessage::FileStart { target, .. }) => {
                     events.push(format!("start:{target}"));
+                    file_bytes.clear();
                 }
                 Ok(SourcePipelineMessage::Data(data)) => {
                     events.push(format!("data:{}", data.len()));
+                    file_bytes.extend_from_slice(&data);
                     pipeline.recycle(data);
                 }
-                Ok(SourcePipelineMessage::FileEnd { actual_size }) => {
+                Ok(SourcePipelineMessage::FileEnd {
+                    actual_size,
+                    sha256,
+                }) => {
+                    assert_eq!(sha256, format!("{:x}", Sha256::digest(&file_bytes)));
                     events.push(format!("end:{actual_size}"));
                     if actual_size == 7 {
                         break;
@@ -5862,6 +5888,28 @@ mod tests {
         assert_eq!(snapshot.bytes_read, 17);
         assert_eq!(snapshot.queued_bytes, 0);
         pipeline.join().unwrap();
+    }
+
+    #[test]
+    fn source_block_reader_coalesces_short_reads_until_block_is_full() {
+        struct OneByteReader(std::io::Cursor<Vec<u8>>);
+        impl std::io::Read for OneByteReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let limit = buffer.len().min(1);
+                std::io::Read::read(&mut self.0, &mut buffer[..limit])
+            }
+        }
+
+        let mut source = OneByteReader(std::io::Cursor::new(vec![1, 2, 3, 4, 5]));
+        let mut first = [0u8; 4];
+        assert_eq!(read_full_source_block(&mut source, &mut first).unwrap(), 4);
+        assert_eq!(first, [1, 2, 3, 4]);
+        let mut final_block = [0u8; 4];
+        assert_eq!(
+            read_full_source_block(&mut source, &mut final_block).unwrap(),
+            1
+        );
+        assert_eq!(final_block[0], 5);
     }
 
     #[test]

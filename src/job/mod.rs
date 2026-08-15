@@ -1269,7 +1269,20 @@ fn run_operation(
 
     match spec.operation {
         OperationKind::Write => {
+            let mut last_persist = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            let mut last_persisted_phase = None;
             let mut observer = |event: &WriteEvent| {
+                let durable_boundary = last_persisted_phase != Some(event.phase)
+                    || event.telemetry.is_some()
+                    || event.performance.is_some()
+                    || event.failure.is_some();
+                if !durable_boundary && last_persist.elapsed() < Duration::from_millis(250) {
+                    return;
+                }
+                last_persist = std::time::Instant::now();
+                last_persisted_phase = Some(event.phase);
                 let _ = control.update(|state| {
                     state.apply_write_event(event, timestamp_now());
                 });

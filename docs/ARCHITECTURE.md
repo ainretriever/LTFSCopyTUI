@@ -1493,9 +1493,14 @@ runner 的持久化快照保留最近 600 个 1 秒 tape-throughput 样本（10 
 Write 数据路径使用一个 source reader 和一个唯一 tape writer，中间是默认 512 MiB
 的 bounded buffer。source reader 按冻结计划顺序发送显式 `FileStart`、`Data` 和
 `FileEnd`，只访问本地/NFS/CIFS 文件系统；tape writer 是唯一设备 owner，只有它能
-写 record、维护 extent/block position，并对实际成功提交给磁带路径的数据计算
-SHA-256。buffer 按 LTFS block 懒分配并循环复用，满时对 source reader 施加背压，
-不会把完整文件载入内存或建立临时磁盘缓存。
+写 record、维护 extent/block position。source reader 会把普通 `read(2)` 的短读
+合并到完整 LTFS block（仅文件末块允许不足），并在读取时计算 SHA-256；`FileEnd`
+携带摘要，使 hash 与上一块 SG_IO WRITE 并行。buffer 按 LTFS block 懒分配并循环
+复用，满时对 source reader 施加背压，不会把完整文件载入内存或建立临时磁盘缓存。
+
+Write runner 的普通文件/字节进度最多每 250 ms 持久化一次，避免大量小文件把
+`state.json` 的 `sync_all` 串入磁带 record 写入热路径。phase 变化、BER telemetry、
+失败、取消与最终完成仍立即落盘，detach/attach 的故障语义不变。
 
 性能采样和设备诊断分离：source/tape 区间吞吐及 buffer occupancy 每 1 秒采样，
 BER 仍每 5 秒读取一次。任务快照分别保存 source bytes/s、成功 tape payload bytes/s、
@@ -1507,6 +1512,13 @@ Quantum LTO-5/NFS 实机写入验证了 bounded pipeline：710 MiB 和 1.28 GiB 
 1 秒历史和 16 通道 BER；文件结束时强制发布 buffer=0，避免 finalization 页面保留
 最后一个周期的过期占用值。干净验收卷从 generation 1 提交到 generation 2，两份
 index 和两份 VCI 一致，诊断为 `Healthy`。
+
+2026-08-15 使用重新格式化的 `TEST01L5` 和 NFS 混合目录（163 files，
+5,040,679,554 bytes）复验优化后的 Write pipeline。稳定区间 20 个持久化样本为
+137.6–149.9 MB/s，算术均值 144.9 MB/s（138.2 MiB/s）；source 首个稳定样本
+145.7 MB/s，512 MiB buffer 保持接近满载且 reader/writer 均未等待。任务 revision
+从同一数据集旧测试的 395 次降到 54 次。提交后 generation 2 的 P0B5/P1B9720
+index 与两份 VCI 完全一致，有界诊断为 `Healthy`、normal-write safe。
 
 实机测试还证明设备锁必须覆盖所有设备入口：一次在 runner
 `SyncingIndexPartition` 尚未结束时启动的旧版 `diagnose` 与 MAM 更新发生设备竞争，
@@ -1648,7 +1660,6 @@ UUID `cc45750c-2a99-486b-8e20-153e99e814dc`，generation 1。按计划没有启�
 
 ### Hash
 
-* hash 是否需要移入异步 pipeline；
 * 是否支持 SHA-256 之外的算法。
 
 ### LTFS

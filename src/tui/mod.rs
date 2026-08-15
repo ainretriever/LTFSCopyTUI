@@ -4044,17 +4044,22 @@ fn render_cartridge_operations(
         .as_ref()
         .and_then(|media| media.tape_status)
         .is_some_and(|status| status.is_write_protected());
-    let operation = |key, english, chinese, available| {
-        cartridge_operation_line(key, english, chinese, available && !locked, locked)
+    let operation = |key, action, description, available| {
+        cartridge_operation_line(key, action, description, available && !locked, locked)
     };
     frame.render_widget(
         Paragraph::new(vec![
-            operation("1", "Load Unthreaded", "装入，不穿带", no_media),
-            operation("2", "Load & Thread", "装入并穿带", no_media || unthreaded),
-            operation("3", "Unthread", "退带，不弹出", threaded),
-            operation("4", "Eject", "直接弹出", present),
-            operation("5", "Erase…", "擦除…", threaded && !write_protected),
-            operation("6", "LTFS Operations…", "LTFS 操作…", threaded),
+            operation("1", "Load Unthreaded", "Insert only", no_media),
+            operation(
+                "2",
+                "Load & Thread",
+                "Insert & thread",
+                no_media || unthreaded,
+            ),
+            operation("3", "Unthread", "Keep inserted", threaded),
+            operation("4", "Eject", "Eject directly", present),
+            operation("5", "Erase…", "Erase options", threaded && !write_protected),
+            operation("6", "LTFS Operations…", "Open workflows", threaded),
             navigation_hint_line("F1", "Overview"),
             navigation_hint_line("F3", "Health"),
             navigation_hint_line("F4", "Jobs"),
@@ -4090,8 +4095,8 @@ fn display_clock(timestamp: &str) -> &str {
 
 fn cartridge_operation_line<'a>(
     key: &'a str,
-    english: &'a str,
-    chinese: &'a str,
+    action: &'a str,
+    description: &'a str,
     available: bool,
     locked: bool,
 ) -> Line<'a> {
@@ -4108,8 +4113,8 @@ fn cartridge_operation_line<'a>(
         "—"
     };
     Line::from(vec![
-        Span::styled(format!("[{key}] {english:<19}"), style),
-        Span::styled(format!("{chinese:<14}"), style),
+        Span::styled(format!("[{key}] {action:<19}"), style),
+        Span::styled(format!("{description:<15}"), style),
         Span::styled(state, style),
     ])
 }
@@ -4229,9 +4234,9 @@ fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         && !selected_device_claimed(state);
     frame.render_widget(
         Paragraph::new(vec![
-            ltfs_operation_line("1", "Read LTFS…", "读取文件…", readable),
-            ltfs_operation_line("2", "Write LTFS…", "写入文件…", writable),
-            ltfs_operation_line("3", "Format LTFS…", "格式化…", format_available),
+            ltfs_operation_line("1", "Read LTFS…", readable),
+            ltfs_operation_line("2", "Write LTFS…", writable),
+            ltfs_operation_line("3", "Format LTFS…", format_available),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
@@ -4252,20 +4257,14 @@ fn render_ltfs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     );
 }
 
-fn ltfs_operation_line<'a>(
-    key: &'a str,
-    english: &'a str,
-    chinese: &'a str,
-    available: bool,
-) -> Line<'a> {
+fn ltfs_operation_line<'a>(key: &'a str, action: &'a str, available: bool) -> Line<'a> {
     let style = if available {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     Line::from(vec![
-        Span::styled(format!("[{key}] {english:<17}"), style),
-        Span::styled(format!("{chinese:<10}"), style),
+        Span::styled(format!("[{key}] {action:<27}"), style),
         Span::styled(if available { "Ready" } else { "—" }, style),
     ])
 }
@@ -4478,8 +4477,9 @@ fn counter(value: Option<u64>) -> String {
 mod tests {
     use super::{
         EraseView, FormatField, FormatView, Page, ReadView, SourceView, UiState, WorkerCommand,
-        WorkerOwnershipState, back_read_level, back_write_level, braille_area_graph, display_clock,
-        handle_erase_key, handle_format_key,
+        WorkerOwnershipState, back_read_level, back_write_level, braille_area_graph,
+        cartridge_operation_line, display_clock, handle_erase_key, handle_format_key,
+        ltfs_operation_line,
     };
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
@@ -4496,6 +4496,29 @@ mod tests {
     fn telemetry_timestamp_is_displayed_to_whole_seconds_only() {
         assert_eq!(display_clock("2026-08-14T12:10:35.114344947Z"), "12:10:35");
         assert_eq!(display_clock("unknown"), "unknown");
+    }
+
+    #[test]
+    fn preview_cartridge_operations_are_english_only() {
+        let line =
+            cartridge_operation_line("3", "Unthread", "Keep inserted", true, false).to_string();
+        assert_eq!(line, "[3] Unthread           Keep inserted  Ready");
+        assert!(
+            !line
+                .chars()
+                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
+        );
+    }
+
+    #[test]
+    fn ltfs_operations_are_english_only() {
+        let line = ltfs_operation_line("1", "Read LTFS…", true).to_string();
+        assert_eq!(line, "[1] Read LTFS…                 Ready");
+        assert!(
+            !line
+                .chars()
+                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
+        );
     }
 
     #[test]
