@@ -483,27 +483,18 @@ pub fn inspect_device_snapshot(drive: &TapeDrive) -> DeviceSnapshot {
     if snapshot.lifecycle != MediaLifecycle::LoadedThreaded {
         return snapshot;
     }
-    match inspect_volume(drive) {
-        Ok(result) => {
+    match inspect_volume_snapshot(drive) {
+        Ok((result, diagnosis)) => {
             snapshot.warnings.extend(result.warnings.iter().cloned());
             snapshot.volume = Some(result);
-        }
-        Err(error) => snapshot.warnings.push(format!("LTFS 查询失败: {error}")),
-    }
-    if snapshot
-        .volume
-        .as_ref()
-        .is_some_and(|volume| volume.recognized)
-    {
-        match diagnose_volume(drive) {
-            Ok(result) => {
+            if let Some(result) = diagnosis {
                 snapshot
                     .warnings
                     .extend(result.partition_errors.iter().cloned());
                 snapshot.diagnosis = Some(result);
             }
-            Err(error) => snapshot.warnings.push(format!("一致性诊断失败: {error}")),
         }
+        Err(error) => snapshot.warnings.push(format!("LTFS 查询失败: {error}")),
     }
     snapshot.refreshed_at = ltfs_time_now();
     snapshot
@@ -1497,6 +1488,21 @@ pub fn inspect_volume(drive: &TapeDrive) -> Result<VolumeInfo, device::Error> {
     inspect_volume_session(&mut session)
 }
 
+/// 为交互界面读取卷信息，并利用 MAM VCI 定点校验两份当前 index。
+///
+/// 这条路径不会从 label 后扫描到 EOD；完整历史和未索引尾部检查仍由
+/// `diagnose_volume` / `diagnose_volume_full` 承担。
+fn inspect_volume_snapshot(
+    drive: &TapeDrive,
+) -> Result<(VolumeInfo, Option<VolumeDiagnosis>), device::Error> {
+    let mut session = TapeSession::open(&drive.sg_path)?;
+    let (volume, vci) = inspect_volume_session_guided(&mut session)?;
+    let diagnosis = volume
+        .recognized
+        .then(|| diagnose_preview_consistency(&volume, vci));
+    Ok((volume, diagnosis))
+}
+
 /// 只读扫描两个 partition 的 label、所有 index 文件和 VCI，用于不一致卷诊断。
 /// 与普通 `inspect_volume` 不同，本函数不静默丢弃损坏的 index candidate。
 pub fn diagnose_volume(drive: &TapeDrive) -> Result<VolumeDiagnosis, String> {
@@ -1619,18 +1625,102 @@ fn diagnose_volume_with_options(
 
 /// 用已有会话检查 LTFS 卷（供需要继续使用同一会话的命令复用）。
 fn inspect_volume_session(session: &mut TapeSession) -> Result<VolumeInfo, device::Error> {
+    inspect_volume_session_guided(session).map(|(volume, _)| volume)
+}
+
+/// 写入启动前保留顺序扫描：它确认 VCI 指向的 index 之后没有更新的有效
+/// index，并重新取得安全的覆盖起点。交互式预览不承担这项机械成本。
+fn inspect_volume_session_for_write(
+    session: &mut TapeSession,
+) -> Result<VolumeInfo, device::Error> {
+    let (mut volume, _) = inspect_volume_session_guided(session)?;
+    let Some(label) = volume.label.as_ref() else {
+        return Ok(volume);
+    };
+    match scan_latest_index(session, label.index_partition) {
+        Ok((index, write_block)) => {
+            volume.index = index;
+            volume.index_write_block = write_block;
+        }
+        Err(error) => volume.warnings.push(format!(
+            "写入前分区 {} index 顺序扫描失败: {error}",
+            label.index_partition
+        )),
+    }
+    Ok(volume)
+}
+
+fn read_vci_copies(
+    session: &mut TapeSession,
+    warnings: &mut Vec<String>,
+) -> Vec<(u8, VolumeCoherencyInformation)> {
+    let mut copies = Vec::new();
+    for partition in [0u8, 1u8] {
+        match session.read_mam_attribute(partition, mam::VOLUME_COHERENCY_INFORMATION) {
+            Ok(raw) => match VolumeCoherencyInformation::parse(&raw) {
+                Ok(copy) => copies.push((partition, copy)),
+                Err(error) => warnings.push(format!("分区 {partition} VCI 解析失败: {error}")),
+            },
+            Err(error) => warnings.push(format!("分区 {partition} VCI 读取失败: {error}")),
+        }
+    }
+    copies
+}
+
+fn preferred_partition_order(
+    current_partition: u8,
+    vci: &[(u8, VolumeCoherencyInformation)],
+) -> Vec<u8> {
+    let mut guided = vci.to_vec();
+    guided.sort_by_key(|(_, copy)| copy.block);
+    let mut order = guided
+        .into_iter()
+        .map(|(partition, _)| partition)
+        .collect::<Vec<_>>();
+    order.extend([current_partition, 0, 1]);
+    order.retain(|partition| *partition <= 1);
+    let mut seen = [false; 2];
+    order.retain(|partition| {
+        let fresh = !seen[*partition as usize];
+        seen[*partition as usize] = true;
+        fresh
+    });
+    order
+}
+
+fn candidate_matches_vci(
+    label: &Label,
+    vci: &VolumeCoherencyInformation,
+    candidate: &IndexCandidateDiagnostic,
+) -> bool {
+    candidate.index.as_ref().is_some_and(|index| {
+        vci.volume_uuid == label.volume_uuid
+            && index.volume_uuid == label.volume_uuid
+            && index.generation == vci.generation
+            && index.self_location.partition == label.index_partition
+            && index.self_location.startblock == vci.block
+            && candidate.actual_start_block == vci.block
+    })
+}
+
+fn inspect_volume_session_guided(
+    session: &mut TapeSession,
+) -> Result<(VolumeInfo, Vec<(u8, VolumeCoherencyInformation)>), device::Error> {
     session.set_variable_block()?;
 
     let mut info = VolumeInfo::default();
     let mut labels: Vec<(u8, AnsiLabel, Label)> = Vec::new();
 
-    // 先倒带到当前分区 BOT 并确认所在分区，优先探测当前分区，
-    // 减少跨分区 LOCATE（LTO 驱动器上每次跨分区约 10 秒）。
-    session.rewind()?;
-    let start_partition = session.read_position()?.partition as u8;
-    let order = [start_partition, 1 - start_partition];
+    // VCI 是 MAM 属性，读取它不会移动磁带。通常 index 分区的当前 index
+    // 位于很小的块号，因此优先探测 VCI block 较小的物理分区。
+    let vci = read_vci_copies(session, &mut info.warnings);
+    let start_partition = session
+        .read_position()
+        .map(|position| position.partition as u8)
+        .unwrap_or(0);
+    let order = preferred_partition_order(start_partition, &vci);
 
-    for &partition in &order {
+    for partition in order {
         match probe_partition_label(session, partition) {
             Ok(Some((ansi, label))) => {
                 let is_index = label.this_partition == label.index_partition;
@@ -1651,7 +1741,7 @@ fn inspect_volume_session(session: &mut TapeSession) -> Result<VolumeInfo, devic
     let Some((_, first_ansi, first_label)) = labels.first() else {
         info.recognized = false;
         info.reason = Some("两个分区均未找到有效 LTFS label（无 ANSI \"LTFS\" 签名）。".into());
-        return Ok(info);
+        return Ok((info, vci));
     };
 
     info.recognized = true;
@@ -1664,9 +1754,34 @@ fn inspect_volume_session(session: &mut TapeSession) -> Result<VolumeInfo, devic
         .iter()
         .find(|(_, _, l)| l.this_partition == index_logical)
         .map(|(p, _, _)| vec![*p])
-        .unwrap_or_else(|| vec![start_partition]);
+        .unwrap_or_else(|| vec![index_logical]);
 
     for partition in index_phys {
+        let direct = vci
+            .iter()
+            .find(|(physical, _)| *physical == partition)
+            .and_then(|(_, copy)| {
+                read_index_candidate_at(session, partition, copy.block)
+                    .map_err(|error| {
+                        info.warnings.push(format!(
+                            "分区 {partition} VCI 指向 block {}，定点读取失败: {error}",
+                            copy.block
+                        ));
+                    })
+                    .ok()
+                    .filter(|candidate| candidate_matches_vci(first_label, copy, candidate))
+                    .and_then(|candidate| candidate.index)
+                    .map(|index| (index, copy.block.checked_sub(1)))
+            });
+        if let Some((index, write_block)) = direct {
+            info.index = Some(index);
+            info.index_write_block = write_block;
+            break;
+        }
+
+        info.warnings.push(format!(
+            "分区 {partition} 的 VCI 无法可信定位当前 index，回退为顺序扫描"
+        ));
         match scan_latest_index(session, partition) {
             Ok((Some(idx), write_block)) => {
                 if idx.self_location.partition == index_logical || info.index.is_none() {
@@ -1686,7 +1801,77 @@ fn inspect_volume_session(session: &mut TapeSession) -> Result<VolumeInfo, devic
         info.warnings
             .push("已识别 LTFS label，但未找到可解析的 index。".into());
     }
-    Ok(info)
+    Ok((info, vci))
+}
+
+fn diagnose_preview_consistency(
+    volume: &VolumeInfo,
+    vci: Vec<(u8, VolumeCoherencyInformation)>,
+) -> VolumeDiagnosis {
+    let label_uuid = volume.label.as_ref().map(|label| label.volume_uuid.clone());
+    let candidates = volume
+        .index
+        .clone()
+        .map(|index| IndexCandidateDiagnostic {
+            physical_partition: index.self_location.partition,
+            actual_start_block: index.self_location.startblock,
+            byte_len: 0,
+            index: Some(index),
+            parse_error: None,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let (consistency, safe_for_normal_write) = classify_preview_consistency(
+        label_uuid.as_deref(),
+        candidates
+            .first()
+            .and_then(|candidate| candidate.index.as_ref()),
+        &vci,
+    );
+    VolumeDiagnosis {
+        label_uuid,
+        candidates,
+        vci,
+        partition_errors: Vec::new(),
+        consistency,
+        safe_for_normal_write,
+    }
+}
+
+fn classify_preview_consistency(
+    label_uuid: Option<&str>,
+    index: Option<&Index>,
+    vci: &[(u8, VolumeCoherencyInformation)],
+) -> (VolumeConsistency, bool) {
+    let Some(index) = index else {
+        return (VolumeConsistency::NoUsableIndex, false);
+    };
+    if label_uuid.is_some_and(|uuid| uuid != index.volume_uuid) {
+        return (VolumeConsistency::ForeignIndex, false);
+    }
+    if vci.is_empty() {
+        return (VolumeConsistency::MamUnavailable, false);
+    }
+    if vci.len() != 2
+        || vci.iter().any(|(_, copy)| {
+            copy.generation != vci[0].1.generation
+                || copy.volume_uuid != vci[0].1.volume_uuid
+                || copy.vcr != vci[0].1.vcr
+        })
+    {
+        return (VolumeConsistency::DivergentVci, false);
+    }
+    if vci[0].1.generation != index.generation || vci[0].1.volume_uuid != index.volume_uuid {
+        return (VolumeConsistency::StaleVci, false);
+    }
+    if vci
+        .iter()
+        .find(|(partition, _)| *partition == index.self_location.partition)
+        .is_none_or(|(_, copy)| copy.block != index.self_location.startblock)
+    {
+        return (VolumeConsistency::InvalidIndexLocation, false);
+    }
+    (VolumeConsistency::Healthy, true)
 }
 
 /// 读取 LTFS 卷中的文件内容（按 extent 定位到磁带数据分区，流式写入 `out`）。
@@ -4083,7 +4268,7 @@ fn write_with_observer_inner(
         device::channel_error::PageKind::Write,
         health_before.write_channels.clone(),
     );
-    let mut volume = inspect_volume_session(&mut session).map_err(|e| e.to_string())?;
+    let mut volume = inspect_volume_session_for_write(&mut session).map_err(|e| e.to_string())?;
     if !volume.recognized {
         return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
     }
@@ -5841,6 +6026,67 @@ mod tests {
         assert_eq!(
             Index::parse_xml(&index_index.to_xml()).unwrap(),
             index_index
+        );
+    }
+
+    #[test]
+    fn vci_partition_order_prefers_the_shallow_index_copy() {
+        let copies = vec![
+            (
+                1,
+                VolumeCoherencyInformation {
+                    vcr: vec![1; 8],
+                    generation: 7,
+                    block: 9_720,
+                    volume_uuid: "11111111-2222-4333-8444-555555555555".into(),
+                    acsi_version: 1,
+                },
+            ),
+            (
+                0,
+                VolumeCoherencyInformation {
+                    vcr: vec![1; 8],
+                    generation: 7,
+                    block: 5,
+                    volume_uuid: "11111111-2222-4333-8444-555555555555".into(),
+                    acsi_version: 1,
+                },
+            ),
+        ];
+        assert_eq!(preferred_partition_order(1, &copies), vec![0, 1]);
+        assert_eq!(preferred_partition_order(0, &[]), vec![0, 1]);
+    }
+
+    #[test]
+    fn preview_consistency_uses_current_index_and_matching_vci_pair() {
+        let uuid = "11111111-2222-4333-8444-555555555555";
+        let image = build_initial_format_image(
+            &FormatOptions::new("E6008A", "preview"),
+            uuid,
+            "2026-08-15T00:00:00.000000000Z",
+        )
+        .unwrap();
+        let index = Index::parse_xml(&image.index_index_xml).unwrap();
+        let copies = vec![
+            (
+                0,
+                VolumeCoherencyInformation::new(&[1], 1, 5, uuid).unwrap(),
+            ),
+            (
+                1,
+                VolumeCoherencyInformation::new(&[1], 1, 5, uuid).unwrap(),
+            ),
+        ];
+        assert_eq!(
+            classify_preview_consistency(Some(uuid), Some(&index), &copies),
+            (VolumeConsistency::Healthy, true)
+        );
+
+        let mut divergent = copies;
+        divergent[1].1.vcr[7] = 2;
+        assert_eq!(
+            classify_preview_consistency(Some(uuid), Some(&index), &divergent),
+            (VolumeConsistency::DivergentVci, false)
         );
     }
 

@@ -1248,6 +1248,20 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 读取 data partition index，避免大卷诊断隐式触发数小时全带读取。只有显式
 `--full` 才允许顺序扫描完整 data partition。
 
+交互式 LTFS Operations 的首次打开采用另一条低延迟路径：先读取不会引起走带的
+两份 MAM VCI，按 VCI block 较小者优先定位 index 分区，再从 VCI 声明位置定点
+读取当前 index，并用两份 VCI 的 generation/UUID/VCR 及当前 index 所在分区的
+block 完成预览级一致性检查。VCI 缺失、损坏，或 generation/UUID/self-location
+不匹配时，卷识别自动回退为 index 分区顺序扫描。预览不会为了检查第二份 index
+而跨到 data 分区；该快速检查不替代显式 `diagnose`，也不替代 Write runner 启动时
+的 index 分区顺序扫描、data index 定点验证和物理 EOD 检查，后者仍负责取得可信
+覆盖点并维持写入安全边界。
+
+2026-08-15 在 Quantum LTO-5 测试带（index `P0B5`、data index `P1B9720`）验证：
+旧 `volume` 路径耗时 50.93 秒；新快路径在磁头已位于 index 分区时为 3.52 秒，
+从 data 分区切回 index 分区时为 28.90 秒。后一个数值主要是不可消除的跨分区机械
+定位时间，正常预览不再额外跨回 data 分区读取第二份 index。
+
 实际 milestone 顺序允许根据实现过程中发现的问题调整。
 
 关键要求是：
