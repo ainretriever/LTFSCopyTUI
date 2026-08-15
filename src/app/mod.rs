@@ -6,6 +6,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -835,6 +836,7 @@ pub enum RawMamStatus {
 pub struct RawMamAssessment {
     pub status: RawMamStatus,
     pub partition_count: Option<u8>,
+    pub application_format: Option<String>,
     pub evidence: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -864,6 +866,153 @@ pub struct RawWriteResult {
 
 pub type TarWriteResult = RawWriteResult;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequentialTerminator {
+    Filemark,
+    EndOfData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequentialReadResult {
+    pub bytes_read: u64,
+    pub records_read: u64,
+    pub sha256: String,
+    pub terminator: SequentialTerminator,
+    pub required_free_bytes: u64,
+    pub available_free_bytes: u64,
+}
+
+pub fn read_raw_image(
+    drive: &TapeDrive,
+    destination: &Path,
+    observer: &mut dyn FnMut(u64),
+) -> Result<SequentialReadResult, String> {
+    if destination.exists() {
+        return Err(format!(
+            "RAW recovery destination 已存在，拒绝覆盖: {}",
+            destination.display()
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(format!(
+            "RAW recovery destination 目录不存在: {}",
+            parent.display()
+        ));
+    }
+    let media = device::inspect_media(drive).map_err(|error| error.to_string())?;
+    let density = media
+        .density_code
+        .ok_or_else(|| "无法识别介质代际，拒绝启动 RAW recovery".to_string())?;
+    let required_free_bytes = device::density::lto_native_capacity_bytes(density)
+        .ok_or_else(|| format!("密度代码 0x{density:02x} 没有已知 LTO 原生容量上限"))?;
+    let available_free_bytes = filesystem_available_bytes(parent)?;
+    if available_free_bytes <= required_free_bytes {
+        return Err(format!(
+            "RAW recovery 空间不足: available={available_free_bytes}, required greater than {required_free_bytes} bytes"
+        ));
+    }
+
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("创建 RAW recovery destination 失败: {error}"))?;
+    let queue_depth = (DEFAULT_READ_BUFFER_BYTES / crate::device::tape::READ_BUF_LEN).max(1);
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(queue_depth);
+    let writer = std::thread::spawn(move || -> Result<(), String> {
+        let mut output = std::io::BufWriter::with_capacity(8 * 1024 * 1024, output);
+        while let Ok(data) = receiver.recv() {
+            output
+                .write_all(&data)
+                .map_err(|error| format!("写入 RAW recovery destination 失败: {error}"))?;
+        }
+        output
+            .flush()
+            .map_err(|error| format!("flush RAW recovery destination 失败: {error}"))?;
+        output
+            .get_ref()
+            .sync_all()
+            .map_err(|error| format!("sync RAW recovery destination 失败: {error}"))
+    });
+
+    let tape_result = (|| -> Result<(u64, u64, String, SequentialTerminator), String> {
+        let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+        tape.load().map_err(|error| error.to_string())?;
+        tape.set_variable_block()
+            .map_err(|error| error.to_string())?;
+        tape.locate(0, 0).map_err(|error| error.to_string())?;
+        let mut bytes = 0u64;
+        let mut records = 0u64;
+        let mut hasher = Sha256::new();
+        let terminator = loop {
+            match tape.read_record().map_err(|error| error.to_string())? {
+                ReadRecord::Data(data) => {
+                    bytes += data.len() as u64;
+                    records += 1;
+                    hasher.update(&data);
+                    sender
+                        .send(data)
+                        .map_err(|_| "RAW recovery destination writer 已停止".to_string())?;
+                    observer(bytes);
+                }
+                ReadRecord::Filemark => break SequentialTerminator::Filemark,
+                ReadRecord::Eod => break SequentialTerminator::EndOfData,
+            }
+        };
+        Ok((
+            bytes,
+            records,
+            format!("{:x}", hasher.finalize()),
+            terminator,
+        ))
+    })();
+    drop(sender);
+    let writer_result = writer
+        .join()
+        .map_err(|_| "RAW recovery destination writer thread panic".to_string())?;
+    match (tape_result, writer_result) {
+        (Ok((bytes_read, records_read, sha256, terminator)), Ok(())) => Ok(SequentialReadResult {
+            bytes_read,
+            records_read,
+            sha256,
+            terminator,
+            required_free_bytes,
+            available_free_bytes,
+        }),
+        (Err(error), _) => Err(format!(
+            "{error}; partial output remains at {}",
+            destination.display()
+        )),
+        (Ok(_), Err(error)) => Err(format!(
+            "{error}; partial output remains at {}",
+            destination.display()
+        )),
+    }
+}
+
+fn filesystem_available_bytes(path: &Path) -> Result<u64, String> {
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("filesystem path 包含 NUL: {}", path.display()))?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stats` points to writable storage.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "读取 destination filesystem 可用空间失败: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: successful statvfs initialized the structure.
+    let stats = unsafe { stats.assume_init() };
+    stats
+        .f_bavail
+        .checked_mul(stats.f_frsize)
+        .ok_or_else(|| "destination filesystem 可用空间计算溢出".to_string())
+}
+
 pub fn assess_raw_overwrite(drive: &TapeDrive) -> Result<RawMamAssessment, String> {
     let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
     assess_raw_overwrite_session(&mut tape)
@@ -877,6 +1026,7 @@ fn assess_raw_overwrite_session(tape: &mut TapeSession) -> Result<RawMamAssessme
             return Ok(RawMamAssessment {
                 status: RawMamStatus::Unknown,
                 partition_count: None,
+                application_format: None,
                 evidence: Vec::new(),
                 warnings: vec![format!("无法读取介质分区布局: {error}")],
             });
@@ -884,9 +1034,23 @@ fn assess_raw_overwrite_session(tape: &mut TapeSession) -> Result<RawMamAssessme
     };
     let mut evidence = Vec::new();
     let mut warnings = Vec::new();
+    let mut application_format = None;
     for partition in 0..partition_count.unwrap_or(1) {
         match tape.read_mam_attributes(partition) {
-            Ok(attributes) => collect_ltfs_mam_evidence(partition, &attributes, &mut evidence),
+            Ok(attributes) => {
+                if partition == 0 {
+                    application_format = attributes
+                        .iter()
+                        .find(|attribute| attribute.id == mam::APPLICATION_FORMAT_VERSION)
+                        .map(|attribute| {
+                            String::from_utf8_lossy(&attribute.value)
+                                .trim_matches(['\0', ' '])
+                                .to_string()
+                        })
+                        .filter(|value| !value.is_empty());
+                }
+                collect_ltfs_mam_evidence(partition, &attributes, &mut evidence)
+            }
             Err(error) => warnings.push(format!("P{partition} MAM 读取失败: {error}")),
         }
     }
@@ -900,6 +1064,7 @@ fn assess_raw_overwrite_session(tape: &mut TapeSession) -> Result<RawMamAssessme
     Ok(RawMamAssessment {
         status,
         partition_count,
+        application_format,
         evidence,
         warnings,
     })

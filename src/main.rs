@@ -58,6 +58,10 @@ tapecpy — Linux LTFS 磁带工具
                               从 BOT 覆盖写 RAW records；可加 --verify
   tapecpy tar-write <文件或目录> [选择器] --force [--overwrite-ltfs]
                               用 GNU tar 生成 POSIX/PAX stream 并从 BOT 覆盖写入
+  tapecpy raw-read <输出文件> [选择器]
+                              从 BOT 恢复首个 tape file 为 RAW image
+  tapecpy tar-read <输出.tar> [选择器]
+                              从 BOT 恢复完整 TAR image；浏览和解包在落盘后进行
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -103,6 +107,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("erase") => cmd_erase(&args[1..]),
         Some("raw-write") => cmd_raw_write(&args[1..]),
         Some("tar-write") => cmd_tar_write(&args[1..]),
+        Some("raw-read") => cmd_sequential_read(&args[1..], false),
+        Some("tar-read") => cmd_sequential_read(&args[1..], true),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -1338,6 +1344,60 @@ fn cmd_tar_write(args: &[String]) -> Result<(), String> {
         "TAR write 完成: bytes={} records={} sha256={} verified={}",
         result.bytes_written, result.records_written, result.sha256, result.verified
     );
+    Ok(())
+}
+
+fn cmd_sequential_read(args: &[String], tar: bool) -> Result<(), String> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(if tar {
+            "用法: tapecpy tar-read <输出.tar> [选择器]".into()
+        } else {
+            "用法: tapecpy raw-read <输出文件> [选择器]".into()
+        });
+    }
+    let destination = std::path::Path::new(&args[0]);
+    let operation = if tar { "tar-read" } else { "raw-read" };
+    let (drive, _device_lock) = selected_locked_drive(args.get(1).map(String::as_str), operation)?;
+    let assessment = app::assess_raw_overwrite(&drive)?;
+    eprintln!(
+        "MAM stream hint: {} (LTFS assessment: {:?})",
+        assessment
+            .application_format
+            .as_deref()
+            .unwrap_or("Unknown"),
+        assessment.status
+    );
+    for evidence in &assessment.evidence {
+        eprintln!("MAM evidence: {evidence}");
+    }
+    print_warnings(&assessment.warnings);
+    let mut last_report = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    let mut observer = |bytes: u64| {
+        if last_report.elapsed() >= std::time::Duration::from_secs(1) {
+            eprintln!(
+                "{} recovery: {} bytes",
+                if tar { "TAR" } else { "RAW" },
+                bytes
+            );
+            last_report = std::time::Instant::now();
+        }
+    };
+    let result = app::read_raw_image(&drive, destination, &mut observer)?;
+    println!(
+        "{} recovery 完成: bytes={} records={} sha256={} terminator={:?} free={}/required>{}",
+        if tar { "TAR" } else { "RAW" },
+        result.bytes_read,
+        result.records_read,
+        result.sha256,
+        result.terminator,
+        result.available_free_bytes,
+        result.required_free_bytes
+    );
+    if tar {
+        println!("GNU tar image: {}", destination.display());
+    }
     Ok(())
 }
 

@@ -35,6 +35,24 @@ pub fn lto_generation_suffix(code: u8) -> Option<&'static str> {
     }
 }
 
+/// LTO data cartridge nominal native capacity in decimal bytes.
+/// Recovery uses this conservative generation ceiling rather than MAM remaining capacity.
+pub fn lto_native_capacity_bytes(code: u8) -> Option<u64> {
+    match code {
+        0x40 => Some(100_000_000_000),
+        0x41 | 0x42 => Some(200_000_000_000),
+        0x44 => Some(400_000_000_000),
+        0x46 => Some(800_000_000_000),
+        0x58 => Some(1_500_000_000_000),
+        0x5a => Some(2_500_000_000_000),
+        0x5c => Some(6_000_000_000_000),
+        0x5d => Some(9_000_000_000_000),
+        0x5e => Some(12_000_000_000_000),
+        0x60 => Some(18_000_000_000_000),
+        _ => None,
+    }
+}
+
 /// (密度代码, 格式名称)。按代码升序排列，便于二分查找。
 const DENSITY_TABLE: &[(u8, &str)] = &[
     (0x00, "default"),
@@ -163,6 +181,13 @@ mod tests {
         assert_eq!(lto_generation_suffix(0x5d), Some("M8"));
         assert_eq!(lto_generation_suffix(0x60), Some("L9"));
         assert_eq!(lto_generation_suffix(0x19), None);
+    }
+
+    #[test]
+    fn lto_native_capacity_mapping_uses_decimal_bytes() {
+        assert_eq!(lto_native_capacity_bytes(0x58), Some(1_500_000_000_000));
+        assert_eq!(lto_native_capacity_bytes(0x5d), Some(9_000_000_000_000));
+        assert_eq!(lto_native_capacity_bytes(0xfe), None);
     }
 
     #[test]
