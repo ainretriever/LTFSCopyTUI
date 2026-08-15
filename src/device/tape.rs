@@ -398,6 +398,24 @@ impl TapeSession {
         Ok(())
     }
 
+    /// 返回介质当前启用的物理分区数量（medium partition mode page byte 3 + P0）。
+    pub fn partition_count(&mut self) -> Result<u8, Error> {
+        let mut page = [0u8; 28];
+        let result = scsi::mode_sense10(&self.fd, 0x11, 0, &mut page).map_err(|e| Error::Io {
+            context: format!("向 {} 读取 medium partition page 失败", self.path.display()),
+            source: e,
+        })?;
+        if !result.is_good() {
+            return Err(self.scsi_error(&result, "MODE SENSE medium partition"));
+        }
+        if page[16] & 0x3f != 0x11 || page[17] < 4 {
+            return Err(Error::Protocol(
+                "medium partition page 截断或类型错误".into(),
+            ));
+        }
+        Ok(page[19].saturating_add(1))
+    }
+
     pub fn write_mam_attribute(
         &mut self,
         partition: u8,

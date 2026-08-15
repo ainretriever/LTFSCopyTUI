@@ -675,9 +675,9 @@ LTFS Index XML
 
 # 17. RAW
 
-RAW 不是第一阶段优先功能。
-
-未来 RAW 模式提供最直接的顺序磁带 I/O。
+RAW 不是第一阶段优先功能。LTFS 主线完成后，阶段 2 开始提供最直接的顺序磁带
+I/O；具体覆盖状态机和第一版真机结果见
+[`RAW_TAR_WORKFLOW.md`](RAW_TAR_WORKFLOW.md)。
 
 原则为：
 
@@ -703,7 +703,7 @@ RAW 本身不保存：
 
 # 18. TAR
 
-TAR 也不是第一阶段优先功能。
+TAR 也不是第一阶段优先功能。它在阶段 2 的 RAW 数据通路验证后接入。
 
 TAR 应被视为普通顺序数据流上面的 archive codec。
 

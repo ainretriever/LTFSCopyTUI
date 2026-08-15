@@ -155,6 +155,9 @@ RAW 模式本身不保存：
 
 如果需要保存文件系统 metadata，应使用 TAR 或 LTFS。
 
+覆盖判定、设备准备、record 语义和真机验收见
+[`RAW_TAR_WORKFLOW.md`](RAW_TAR_WORKFLOW.md)。
+
 ## 8. TAR
 
 TAR 模式的基本结构为：

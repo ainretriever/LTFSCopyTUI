@@ -54,6 +54,10 @@ tapecpy — Linux LTFS 磁带工具
                               破坏性地重新格式化为 LTFS（必须显式指定 --force）
   tapecpy erase <short|long|minimum> [选择器] --force
                               擦除介质：快速、全带长擦除、最小分区长擦除
+  tapecpy raw-write <文件> [选择器] --force [--overwrite-ltfs]
+                              从 BOT 覆盖写 RAW records；可加 --verify
+  tapecpy tar-write <文件或目录> [选择器] --force [--overwrite-ltfs]
+                              用 GNU tar 生成 POSIX/PAX stream 并从 BOT 覆盖写入
                               选择器: 列表序号、/dev/nstX、/dev/stX 或 /dev/sgX
   tapecpy --help              显示本帮助
 ";
@@ -97,6 +101,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("_job-runner") => cmd_internal_job_runner(&args[1..]),
         Some("format") => cmd_format(&args[1..]),
         Some("erase") => cmd_erase(&args[1..]),
+        Some("raw-write") => cmd_raw_write(&args[1..]),
+        Some("tar-write") => cmd_tar_write(&args[1..]),
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             Ok(())
@@ -1076,6 +1082,7 @@ fn parse_byte_size(text: &str) -> Result<u64, String> {
         .map_err(|_| format!("无效大小: {text}"))?;
     let multiplier = match text[split..].to_ascii_lowercase().as_str() {
         "" | "b" => 1,
+        "kib" => 1024,
         "mib" => 1024_u64.pow(2),
         "gib" => 1024_u64.pow(3),
         "mb" => 1_000_000,
@@ -1165,6 +1172,171 @@ fn cmd_erase(args: &[String]) -> Result<(), String> {
         "{} erase 完成，耗时 {} 秒",
         result.mode.cli_name(),
         result.elapsed_seconds
+    );
+    Ok(())
+}
+
+fn cmd_raw_write(args: &[String]) -> Result<(), String> {
+    let force = args.iter().any(|argument| argument == "--force");
+    let overwrite_ltfs = args.iter().any(|argument| argument == "--overwrite-ltfs");
+    let overwrite_unknown = args
+        .iter()
+        .any(|argument| argument == "--overwrite-unknown-mam");
+    let verify = args.iter().any(|argument| argument == "--verify");
+    let block_size = args
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--block-size="))
+        .map(parse_byte_size)
+        .transpose()?
+        .unwrap_or(512 * 1024);
+    let block_size =
+        usize::try_from(block_size).map_err(|_| "RAW block size 超出平台范围".to_string())?;
+    let positional = args
+        .iter()
+        .filter(|argument| {
+            !matches!(
+                argument.as_str(),
+                "--force" | "--overwrite-ltfs" | "--overwrite-unknown-mam" | "--verify"
+            ) && !argument.starts_with("--block-size=")
+        })
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if positional.is_empty() || positional.len() > 2 {
+        return Err(
+            "用法: tapecpy raw-write <文件> [选择器] --force [--overwrite-ltfs|--overwrite-unknown-mam] [--block-size=512KiB] [--verify]".into(),
+        );
+    }
+    if !force {
+        return Err("RAW write 会从 BOT 覆盖整盘逻辑内容；确认后加上 --force".into());
+    }
+    let source = std::path::Path::new(positional[0]);
+    let expected_size = std::fs::metadata(source)
+        .map_err(|error| format!("读取 source {} 失败: {error}", source.display()))?
+        .len();
+    let (drive, _device_lock) = selected_locked_drive(positional.get(1).copied(), "raw-write")?;
+    let assessment = app::assess_raw_overwrite(&drive)?;
+    for evidence in &assessment.evidence {
+        eprintln!("MAM evidence: {evidence}");
+    }
+    print_warnings(&assessment.warnings);
+    match assessment.status {
+        app::RawMamStatus::LtfsDetected if !overwrite_ltfs => {
+            return Err("MAM 显示磁带包含 LTFS；确认覆盖后重新执行并加上 --overwrite-ltfs".into());
+        }
+        app::RawMamStatus::Unknown if !overwrite_unknown => {
+            return Err(
+                "无法可靠判断 MAM 是否包含 LTFS；确认风险后加上 --overwrite-unknown-mam".into(),
+            );
+        }
+        _ => {}
+    }
+    eprintln!(
+        "RAW overwrite: device={} source={} bytes={} block_size={} MAM={:?}",
+        drive.sg_path.display(),
+        source.display(),
+        expected_size,
+        block_size,
+        assessment.status
+    );
+    let mut last_report = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    let mut observer = |written: u64, total: u64| {
+        if written == total || last_report.elapsed() >= std::time::Duration::from_secs(1) {
+            eprintln!("RAW data: {written}/{total} bytes");
+            last_report = std::time::Instant::now();
+        }
+    };
+    let result = app::write_raw_file_confirmed(
+        &drive,
+        source,
+        app::RawWriteOptions { block_size, verify },
+        expected_size,
+        &mut observer,
+    )?;
+    println!(
+        "RAW write 完成: bytes={} records={} sha256={} verified={}",
+        result.bytes_written, result.records_written, result.sha256, result.verified
+    );
+    Ok(())
+}
+
+fn cmd_tar_write(args: &[String]) -> Result<(), String> {
+    let force = args.iter().any(|argument| argument == "--force");
+    let overwrite_ltfs = args.iter().any(|argument| argument == "--overwrite-ltfs");
+    let overwrite_unknown = args
+        .iter()
+        .any(|argument| argument == "--overwrite-unknown-mam");
+    let verify = args.iter().any(|argument| argument == "--verify");
+    let block_size = args
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--block-size="))
+        .map(parse_byte_size)
+        .transpose()?
+        .unwrap_or(512 * 1024);
+    let block_size =
+        usize::try_from(block_size).map_err(|_| "TAR block size 超出平台范围".to_string())?;
+    let positional = args
+        .iter()
+        .filter(|argument| {
+            !matches!(
+                argument.as_str(),
+                "--force" | "--overwrite-ltfs" | "--overwrite-unknown-mam" | "--verify"
+            ) && !argument.starts_with("--block-size=")
+        })
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if positional.is_empty() || positional.len() > 2 {
+        return Err(
+            "用法: tapecpy tar-write <文件或目录> [选择器] --force [--overwrite-ltfs|--overwrite-unknown-mam] [--block-size=512KiB] [--verify]".into(),
+        );
+    }
+    if !force {
+        return Err("TAR write 会从 BOT 覆盖整盘逻辑内容；确认后加上 --force".into());
+    }
+    let source = std::path::Path::new(positional[0]);
+    let (drive, _device_lock) = selected_locked_drive(positional.get(1).copied(), "tar-write")?;
+    let assessment = app::assess_raw_overwrite(&drive)?;
+    for evidence in &assessment.evidence {
+        eprintln!("MAM evidence: {evidence}");
+    }
+    print_warnings(&assessment.warnings);
+    match assessment.status {
+        app::RawMamStatus::LtfsDetected if !overwrite_ltfs => {
+            return Err("MAM 显示磁带包含 LTFS；确认覆盖后重新执行并加上 --overwrite-ltfs".into());
+        }
+        app::RawMamStatus::Unknown if !overwrite_unknown => {
+            return Err(
+                "无法可靠判断 MAM 是否包含 LTFS；确认风险后加上 --overwrite-unknown-mam".into(),
+            );
+        }
+        _ => {}
+    }
+    eprintln!(
+        "TAR overwrite: device={} source={} block_size={} MAM={:?}",
+        drive.sg_path.display(),
+        source.display(),
+        block_size,
+        assessment.status
+    );
+    let mut last_report = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    let mut observer = |written: u64| {
+        if last_report.elapsed() >= std::time::Duration::from_secs(1) {
+            eprintln!("TAR stream: {written} bytes");
+            last_report = std::time::Instant::now();
+        }
+    };
+    let result = app::write_tar_source_confirmed(
+        &drive,
+        source,
+        app::RawWriteOptions { block_size, verify },
+        &mut observer,
+    )?;
+    println!(
+        "TAR write 完成: bytes={} records={} sha256={} verified={}",
+        result.bytes_written, result.records_written, result.sha256, result.verified
     );
     Ok(())
 }

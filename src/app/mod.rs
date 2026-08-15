@@ -4,8 +4,10 @@
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
 use std::collections::{BTreeSet, VecDeque};
+use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
@@ -820,6 +822,455 @@ pub struct EraseResult {
 
 pub struct EraseSession<'a> {
     drive: &'a TapeDrive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawMamStatus {
+    LtfsDetected,
+    NoLtfsDetected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMamAssessment {
+    pub status: RawMamStatus,
+    pub partition_count: Option<u8>,
+    pub evidence: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawWriteOptions {
+    pub block_size: usize,
+    pub verify: bool,
+}
+
+impl Default for RawWriteOptions {
+    fn default() -> Self {
+        Self {
+            block_size: 512 * 1024,
+            verify: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawWriteResult {
+    pub bytes_written: u64,
+    pub records_written: u64,
+    pub sha256: String,
+    pub verified: bool,
+}
+
+pub type TarWriteResult = RawWriteResult;
+
+pub fn assess_raw_overwrite(drive: &TapeDrive) -> Result<RawMamAssessment, String> {
+    let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    assess_raw_overwrite_session(&mut tape)
+}
+
+fn assess_raw_overwrite_session(tape: &mut TapeSession) -> Result<RawMamAssessment, String> {
+    let partition_count = match tape.partition_count() {
+        Ok(count) if count > 0 => Some(count),
+        Ok(_) => None,
+        Err(error) => {
+            return Ok(RawMamAssessment {
+                status: RawMamStatus::Unknown,
+                partition_count: None,
+                evidence: Vec::new(),
+                warnings: vec![format!("无法读取介质分区布局: {error}")],
+            });
+        }
+    };
+    let mut evidence = Vec::new();
+    let mut warnings = Vec::new();
+    for partition in 0..partition_count.unwrap_or(1) {
+        match tape.read_mam_attributes(partition) {
+            Ok(attributes) => collect_ltfs_mam_evidence(partition, &attributes, &mut evidence),
+            Err(error) => warnings.push(format!("P{partition} MAM 读取失败: {error}")),
+        }
+    }
+    let status = if !evidence.is_empty() {
+        RawMamStatus::LtfsDetected
+    } else if warnings.is_empty() {
+        RawMamStatus::NoLtfsDetected
+    } else {
+        RawMamStatus::Unknown
+    };
+    Ok(RawMamAssessment {
+        status,
+        partition_count,
+        evidence,
+        warnings,
+    })
+}
+
+fn collect_ltfs_mam_evidence(
+    partition: u8,
+    attributes: &[crate::device::tape::MamAttributeRecord],
+    evidence: &mut Vec<String>,
+) {
+    for attribute in attributes {
+        let trimmed = String::from_utf8_lossy(&attribute.value)
+            .trim_matches(['\0', ' '])
+            .to_string();
+        let marker = match attribute.id {
+            mam::APPLICATION_NAME if trimmed.starts_with("LTFS ") => {
+                Some(format!("Application Name={trimmed}"))
+            }
+            mam::APPLICATION_FORMAT_VERSION if trimmed.starts_with("2.") => {
+                Some(format!("Application Format Version={trimmed}"))
+            }
+            mam::VOLUME_COHERENCY_INFORMATION
+                if VolumeCoherencyInformation::parse(&attribute.value).is_ok()
+                    || attribute.value.windows(5).any(|window| window == b"LTFS\0") =>
+            {
+                Some("LTFS Volume Coherency Information".into())
+            }
+            _ => None,
+        };
+        if let Some(marker) = marker {
+            evidence.push(format!("P{partition}: {marker}"));
+        }
+    }
+}
+
+pub fn write_raw_file(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    observer: &mut dyn FnMut(u64, u64),
+) -> Result<RawWriteResult, String> {
+    if !(1..=1024 * 1024).contains(&options.block_size) {
+        return Err("RAW block size 必须在 1..=1048576 bytes 范围内".into());
+    }
+    let metadata = std::fs::metadata(source).map_err(|error| {
+        format!(
+            "读取 RAW source {} metadata 失败: {error}",
+            source.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!("RAW source 不是普通文件: {}", source.display()));
+    }
+    let expected_size = metadata.len();
+    let assessment = assess_raw_overwrite(drive)?;
+    if assessment.status != RawMamStatus::NoLtfsDetected {
+        return Err(format!(
+            "RAW overwrite 尚未确认 MAM 风险: {:?}",
+            assessment.status
+        ));
+    }
+    write_raw_file_confirmed(drive, source, options, expected_size, observer)
+}
+
+pub fn write_raw_file_confirmed(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    expected_size: u64,
+    observer: &mut dyn FnMut(u64, u64),
+) -> Result<RawWriteResult, String> {
+    if !(1..=1024 * 1024).contains(&options.block_size) {
+        return Err("RAW block size 必须在 1..=1048576 bytes 范围内".into());
+    }
+    let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    prepare_stream_overwrite(&mut tape, "RAW")?;
+
+    let pipeline = SourcePipeline::spawn(
+        vec![PlannedFile {
+            source: PlannedSource::Local(source.to_path_buf()),
+            target: "RAW".into(),
+            size: expected_size,
+        }],
+        options.block_size,
+        DEFAULT_WRITE_BUFFER_BYTES,
+        CancellationToken::default(),
+    )?;
+    let mut bytes_written = 0u64;
+    let mut records_written = 0u64;
+    let sha256 = loop {
+        match pipeline.recv_timeout(std::time::Duration::from_millis(250))? {
+            Some(SourcePipelineMessage::FileStart { .. }) => {}
+            Some(SourcePipelineMessage::Data(data)) => {
+                tape.write_record(&data)
+                    .map_err(|error| error.to_string())?;
+                bytes_written += data.len() as u64;
+                records_written += 1;
+                pipeline.recycle(data);
+                observer(bytes_written, expected_size);
+            }
+            Some(SourcePipelineMessage::FileEnd {
+                actual_size,
+                sha256: digest,
+            }) => {
+                if actual_size != expected_size || bytes_written != expected_size {
+                    return Err(format!(
+                        "RAW source 大小在计划后变化: expected={expected_size}, read={actual_size}, written={bytes_written}"
+                    ));
+                }
+                break digest;
+            }
+            Some(SourcePipelineMessage::Error(error)) => return Err(error),
+            None => observer(bytes_written, expected_size),
+        }
+    };
+    pipeline.join()?;
+    finish_stream_write(&mut tape)?;
+    let verified = if options.verify {
+        verify_stream(&mut tape, bytes_written, &sha256, false)?;
+        true
+    } else {
+        false
+    };
+    Ok(RawWriteResult {
+        bytes_written,
+        records_written,
+        sha256,
+        verified,
+    })
+}
+
+fn prepare_stream_overwrite(tape: &mut TapeSession, format: &str) -> Result<(), String> {
+    // FORMAT MEDIUM is position-sensitive on the tested LTO-5 drive.  An LTFS
+    // inspection commonly leaves the tape on partition 1, so explicitly return
+    // to partition 0 BOT before replacing the partition layout.
+    tape.load().map_err(|error| error.to_string())?;
+    tape.locate(0, 0).map_err(|error| error.to_string())?;
+    tape.remove_partitions()
+        .map_err(|error| error.to_string())?;
+    tape.rethread().map_err(|error| error.to_string())?;
+    tape.set_variable_block()
+        .map_err(|error| error.to_string())?;
+    tape.short_erase().map_err(|error| error.to_string())?;
+    write_stream_mam(tape, format)?;
+    // ERASE completion does not guarantee that the logical position exposed to
+    // the following WRITE remains BOT.  WRITE ATTRIBUTE is position-independent,
+    // then an explicit rewind establishes the RAW stream's first record at BOT.
+    tape.rewind().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn finish_stream_write(tape: &mut TapeSession) -> Result<(), String> {
+    tape.write_filemark().map_err(|error| error.to_string())?;
+    tape.flush().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn write_tar_source_confirmed(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    observer: &mut dyn FnMut(u64),
+) -> Result<TarWriteResult, String> {
+    if !(1..=1024 * 1024).contains(&options.block_size) {
+        return Err("TAR block size 必须在 1..=1048576 bytes 范围内".into());
+    }
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("读取 TAR source {} 失败: {error}", source.display()))?;
+    if !(metadata.is_file() || metadata.is_dir() || metadata.file_type().is_symlink()) {
+        return Err(format!(
+            "TAR source 必须是文件、目录或符号链接: {}",
+            source.display()
+        ));
+    }
+    let member_name = source
+        .file_name()
+        .ok_or_else(|| "第一版 TAR 不支持把文件系统根目录作为 source".to_string())?
+        .to_os_string();
+    let source_parent = source
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    ensure_gnu_tar()?;
+
+    let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    prepare_stream_overwrite(&mut tape, "TAR")?;
+
+    let block_size = options.block_size;
+    let queue_depth = (DEFAULT_WRITE_BUFFER_BYTES / block_size).max(1);
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(queue_depth);
+    let producer = std::thread::spawn(move || -> Result<(u64, String), String> {
+        let mut child = Command::new("tar")
+            .args(["--create", "--format=posix", "--sparse", "--file=-"])
+            .arg("--directory")
+            .arg(&source_parent)
+            .arg("--")
+            .arg(&member_name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| format!("启动 GNU tar encoder 失败: {error}"))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "GNU tar stdout 不可用".to_string())?;
+        let mut bytes = 0u64;
+        let mut hasher = Sha256::new();
+        loop {
+            let mut buffer = vec![0u8; block_size];
+            let filled = read_full_source_block(&mut stdout, &mut buffer)
+                .map_err(|error| format!("读取 GNU tar stream 失败: {error}"))?;
+            if filled == 0 {
+                break;
+            }
+            buffer.truncate(filled);
+            bytes += filled as u64;
+            hasher.update(&buffer);
+            if sender.send(buffer).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("tape writer 已关闭 TAR pipeline".into());
+            }
+        }
+        let status = child
+            .wait()
+            .map_err(|error| format!("等待 GNU tar encoder 失败: {error}"))?;
+        if !status.success() {
+            return Err(format!("GNU tar encoder 失败: {status}"));
+        }
+        Ok((bytes, format!("{:x}", hasher.finalize())))
+    });
+
+    let mut bytes_written = 0u64;
+    let mut records_written = 0u64;
+    while let Ok(data) = receiver.recv() {
+        tape.write_record(&data)
+            .map_err(|error| error.to_string())?;
+        bytes_written += data.len() as u64;
+        records_written += 1;
+        observer(bytes_written);
+    }
+    let (generated_bytes, sha256) = producer
+        .join()
+        .map_err(|_| "GNU tar pipeline thread panic".to_string())??;
+    if generated_bytes != bytes_written {
+        return Err(format!(
+            "TAR pipeline 大小不一致: generated={generated_bytes}, written={bytes_written}"
+        ));
+    }
+    finish_stream_write(&mut tape)?;
+    let verified = if options.verify {
+        verify_stream(&mut tape, bytes_written, &sha256, true)?;
+        true
+    } else {
+        false
+    };
+    Ok(TarWriteResult {
+        bytes_written,
+        records_written,
+        sha256,
+        verified,
+    })
+}
+
+fn ensure_gnu_tar() -> Result<(), String> {
+    let output = Command::new("tar")
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("GNU tar 不可用: {error}"))?;
+    if !output.status.success() || !String::from_utf8_lossy(&output.stdout).contains("GNU tar") {
+        return Err("tar-write 第一版要求 GNU tar，且必须在破坏磁带前通过版本检查".into());
+    }
+    Ok(())
+}
+
+fn write_stream_mam(tape: &mut TapeSession, stream_format: &str) -> Result<(), String> {
+    fn padded(value: &str, length: usize) -> Vec<u8> {
+        let mut output = vec![b' '; length];
+        let bytes = value.as_bytes();
+        output[..bytes.len().min(length)].copy_from_slice(&bytes[..bytes.len().min(length)]);
+        output
+    }
+    for (id, format, value) in [
+        (
+            mam::APPLICATION_VENDOR,
+            MamAttributeFormat::Ascii,
+            padded("tapecpy", 8),
+        ),
+        (
+            mam::APPLICATION_NAME,
+            MamAttributeFormat::Ascii,
+            padded(&format!("tapecpy {stream_format}"), 32),
+        ),
+        (
+            mam::APPLICATION_VERSION,
+            MamAttributeFormat::Ascii,
+            padded(env!("CARGO_PKG_VERSION"), 8),
+        ),
+        (
+            mam::APPLICATION_FORMAT_VERSION,
+            MamAttributeFormat::Ascii,
+            padded(stream_format, 16),
+        ),
+        (
+            mam::VOLUME_COHERENCY_INFORMATION,
+            MamAttributeFormat::Binary,
+            vec![0; 70],
+        ),
+    ] {
+        tape.write_mam_attribute(0, id, format, &value)
+            .map_err(|error| format!("清除 LTFS/写入 RAW MAM 0x{id:04x} 失败: {error}"))?;
+    }
+    Ok(())
+}
+
+fn verify_stream(
+    tape: &mut TapeSession,
+    expected_size: u64,
+    expected_sha256: &str,
+    validate_tar: bool,
+) -> Result<(), String> {
+    tape.rewind().map_err(|error| error.to_string())?;
+    let mut tar = validate_tar.then(spawn_gnu_tar_reader).transpose()?;
+    let mut bytes = 0u64;
+    let mut hasher = Sha256::new();
+    loop {
+        match tape.read_record().map_err(|error| error.to_string())? {
+            ReadRecord::Data(data) => {
+                bytes += data.len() as u64;
+                hasher.update(&data);
+                if let Some(child) = tar.as_mut() {
+                    child
+                        .stdin
+                        .as_mut()
+                        .ok_or_else(|| "GNU tar stdin 不可用".to_string())?
+                        .write_all(&data)
+                        .map_err(|error| format!("向 GNU tar verifier 写入失败: {error}"))?;
+                }
+            }
+            ReadRecord::Filemark => break,
+            ReadRecord::Eod => return Err("RAW verify 在 filemark 前遇到 EOD".into()),
+        }
+    }
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    if bytes != expected_size || actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "RAW verify 不匹配: bytes {bytes}/{expected_size}, sha256 {actual_sha256}/{expected_sha256}"
+        ));
+    }
+    if let Some(mut child) = tar {
+        drop(child.stdin.take());
+        let status = child
+            .wait()
+            .map_err(|error| format!("等待 GNU tar verifier 失败: {error}"))?;
+        if !status.success() {
+            return Err(format!("GNU tar 无法解析磁带读回流: {status}"));
+        }
+    }
+    Ok(())
+}
+
+fn spawn_gnu_tar_reader() -> Result<std::process::Child, String> {
+    Command::new("tar")
+        .args(["--list", "--file=-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("启动 GNU tar verifier 失败: {error}"))
 }
 
 impl<'a> EraseSession<'a> {
@@ -6136,6 +6587,64 @@ mod tests {
             classify_preview_consistency(Some(uuid), Some(&index), &divergent),
             (VolumeConsistency::DivergentVci, false)
         );
+    }
+
+    #[test]
+    fn raw_mam_evidence_detects_ltfs_and_ignores_stream_markers() {
+        use crate::device::tape::MamAttributeRecord;
+
+        let ltfs = vec![
+            MamAttributeRecord {
+                id: mam::APPLICATION_NAME,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"LTFS tapecpy                    ".to_vec(),
+            },
+            MamAttributeRecord {
+                id: mam::APPLICATION_FORMAT_VERSION,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"2.4.0           ".to_vec(),
+            },
+        ];
+        let mut evidence = Vec::new();
+        collect_ltfs_mam_evidence(0, &ltfs, &mut evidence);
+        assert_eq!(evidence.len(), 2);
+
+        let raw = vec![
+            MamAttributeRecord {
+                id: mam::APPLICATION_NAME,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"tapecpy RAW                     ".to_vec(),
+            },
+            MamAttributeRecord {
+                id: mam::APPLICATION_FORMAT_VERSION,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"RAW             ".to_vec(),
+            },
+            MamAttributeRecord {
+                id: mam::VOLUME_COHERENCY_INFORMATION,
+                format: MamAttributeFormat::Binary as u8,
+                value: vec![0; 70],
+            },
+        ];
+        evidence.clear();
+        collect_ltfs_mam_evidence(0, &raw, &mut evidence);
+        assert!(evidence.is_empty());
+
+        let tar = vec![
+            MamAttributeRecord {
+                id: mam::APPLICATION_NAME,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"tapecpy TAR                     ".to_vec(),
+            },
+            MamAttributeRecord {
+                id: mam::APPLICATION_FORMAT_VERSION,
+                format: MamAttributeFormat::Ascii as u8,
+                value: b"TAR             ".to_vec(),
+            },
+        ];
+        evidence.clear();
+        collect_ltfs_mam_evidence(0, &tar, &mut evidence);
+        assert!(evidence.is_empty());
     }
 
     #[test]
