@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 use crate::app::{CancellationToken, WriteEvent, WritePhase};
 
 pub const PROTOCOL_VERSION: u16 = 1;
+
+fn default_sequential_block_size() -> usize {
+    512 * 1024
+}
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,6 +74,28 @@ impl std::fmt::Display for JobId {
 pub enum OperationKind {
     Read,
     Write,
+    RawWrite,
+    TarWrite,
+    RawRead,
+    TarRead,
+}
+
+impl OperationKind {
+    fn is_sequential_read(self) -> bool {
+        matches!(self, Self::RawRead | Self::TarRead)
+    }
+
+    fn is_sequential_write(self) -> bool {
+        matches!(self, Self::RawWrite | Self::TarWrite)
+    }
+
+    pub fn is_read(self) -> bool {
+        self == Self::Read || self.is_sequential_read()
+    }
+
+    pub fn is_write(self) -> bool {
+        self == Self::Write || self.is_sequential_write()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +191,12 @@ pub struct JobSpec {
     pub write_preflight: Option<WritePreflight>,
     #[serde(default)]
     pub read_preflight: Option<ReadPreflight>,
+    #[serde(default)]
+    pub overwrite_ltfs_acknowledged: bool,
+    #[serde(default)]
+    pub overwrite_unknown_mam_acknowledged: bool,
+    #[serde(default = "default_sequential_block_size")]
+    pub sequential_block_size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,7 +287,23 @@ impl JobSpec {
             created_at: timestamp_now(),
             write_preflight: None,
             read_preflight: None,
+            overwrite_ltfs_acknowledged: false,
+            overwrite_unknown_mam_acknowledged: false,
+            sequential_block_size: default_sequential_block_size(),
         }
+    }
+
+    pub fn with_sequential_options(
+        mut self,
+        overwrite_ltfs: bool,
+        overwrite_unknown_mam: bool,
+        block_size: usize,
+    ) -> Result<Self, String> {
+        self.overwrite_ltfs_acknowledged = overwrite_ltfs;
+        self.overwrite_unknown_mam_acknowledged = overwrite_unknown_mam;
+        self.sequential_block_size = block_size;
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn with_completion(
@@ -379,6 +427,11 @@ impl JobSpec {
         if self.source.path.is_empty() || self.destination.path.is_empty() {
             return Err("job source/destination 不能为空".into());
         }
+        if (self.operation.is_sequential_read() || self.operation.is_sequential_write())
+            && !(1..=1024 * 1024).contains(&self.sequential_block_size)
+        {
+            return Err("RAW/TAR job block size 必须在 1..=1048576 bytes 范围内".into());
+        }
         if self.operation == OperationKind::Read && self.destination.path == "-" {
             return Err("脱离式 Read 不能使用 stdout，必须指定输出文件或目录".into());
         }
@@ -386,6 +439,21 @@ impl JobSpec {
             && (self.read_back_verify || self.completion_action != CompletionAction::KeepLoaded)
         {
             return Err("Read job 不能使用 Write read-back verify 或提交后 eject 策略".into());
+        }
+        if self.operation.is_sequential_read()
+            && (self.read_back_verify || self.completion_action != CompletionAction::KeepLoaded)
+        {
+            return Err("RAW/TAR recovery 不能使用 write verify 或 completion action".into());
+        }
+        if self.operation.is_sequential_write()
+            && self.completion_action != CompletionAction::KeepLoaded
+        {
+            return Err("RAW/TAR write 尚不支持 completion action".into());
+        }
+        if (self.operation.is_sequential_read() || self.operation.is_sequential_write())
+            && (self.read_preflight.is_some() || self.write_preflight.is_some())
+        {
+            return Err("RAW/TAR job 不能携带 LTFS preflight".into());
         }
         if let Some(preflight) = &self.read_preflight {
             if self.operation != OperationKind::Read {
@@ -1075,7 +1143,7 @@ fn reconcile_unreachable(
         state.updated_at = timestamp_now();
         state.message = "runner 已消失；禁止自动续写，必须检查 operation 结果".into();
         state.error = Some("detached operation runner terminated unexpectedly".into());
-        state.requires_diagnosis = state.spec.operation == OperationKind::Write;
+        state.requires_diagnosis = state.spec.operation.is_write();
     }
     state
 }
@@ -1184,7 +1252,7 @@ pub fn run_detached(root: &Path, id: &JobId) -> Result<(), String> {
                 "operation runner 失败".into()
             };
             state.error = Some(error.replace("[cancelled]", ""));
-            if state.spec.operation == OperationKind::Write && state.progress.bytes_completed > 0 {
+            if state.spec.operation.is_write() && state.progress.bytes_completed > 0 {
                 state.requires_diagnosis = true;
             }
         })?;
@@ -1220,6 +1288,8 @@ fn run_operation(
             }
         }
         OperationKind::Read => validate_host_mount(&spec.destination)?,
+        OperationKind::RawWrite | OperationKind::TarWrite => validate_host_mount(&spec.source)?,
+        OperationKind::RawRead | OperationKind::TarRead => validate_host_mount(&spec.destination)?,
     }
     if let Some(preflight) = spec.write_preflight.as_ref() {
         let media = crate::app::inspect_media(drive).map_err(|error| error.to_string())?;
@@ -1445,8 +1515,201 @@ fn run_operation(
                 state.progress.bytes_total = state.progress.bytes_completed;
             })?;
         }
+        OperationKind::RawWrite | OperationKind::TarWrite => {
+            control.update(|state| {
+                state.revision += 1;
+                state.updated_at = timestamp_now();
+                state.message = "Reading MAM overwrite state".into();
+                state.progress.tape_bytes_per_second = None;
+            })?;
+            let assessment = crate::app::assess_raw_overwrite(drive)?;
+            match assessment.status {
+                crate::app::RawMamStatus::LtfsDetected if !spec.overwrite_ltfs_acknowledged => {
+                    return Err("runner 检测到 LTFS，但 job 未确认覆盖".into());
+                }
+                crate::app::RawMamStatus::Unknown if !spec.overwrite_unknown_mam_acknowledged => {
+                    return Err("runner 无法确认 MAM，且 job 未确认 unknown-MAM 风险".into());
+                }
+                _ => {}
+            }
+            let mut last_persist = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            let mut sequential_observer = |event: &crate::app::SequentialWriteEvent| {
+                let durable = event.telemetry.is_some()
+                    || event.performance.is_some()
+                    || !matches!(
+                        event.phase,
+                        crate::app::SequentialWritePhase::WritingRecords
+                    );
+                if durable || last_persist.elapsed() >= Duration::from_millis(250) {
+                    last_persist = std::time::Instant::now();
+                    let _ = control.update(|state| {
+                        state.revision += 1;
+                        state.updated_at = timestamp_now();
+                        state.message = sequential_write_phase_message(event.phase).into();
+                        state.phase = match event.phase {
+                            crate::app::SequentialWritePhase::Finalizing => JobPhase::Finalizing,
+                            crate::app::SequentialWritePhase::Verifying => JobPhase::Verifying,
+                            _ => JobPhase::Running,
+                        };
+                        state.progress.bytes_completed = event.bytes_written;
+                        state.progress.bytes_total = event.bytes_total;
+                        state.progress.logical_block = Some(event.records_written);
+                        state.progress.partition = Some(0);
+                        if !matches!(
+                            event.phase,
+                            crate::app::SequentialWritePhase::WritingRecords
+                        ) {
+                            state.progress.tape_bytes_per_second = None;
+                            state.progress.source_bytes_per_second = None;
+                            state.progress.buffer_used_bytes = None;
+                            state.progress.buffer_capacity_bytes = None;
+                            state.progress.reader_waiting = false;
+                            state.progress.writer_waiting = false;
+                        }
+                        if let Some(sample) = &event.performance {
+                            apply_sequential_performance(&mut state.progress, sample);
+                        }
+                        if let Some(sample) = &event.telemetry {
+                            apply_sequential_telemetry(&mut state.progress, sample);
+                        }
+                    });
+                }
+            };
+            let options = crate::app::RawWriteOptions {
+                block_size: spec.sequential_block_size,
+                verify: spec.read_back_verify,
+            };
+            let result = match spec.operation {
+                OperationKind::RawWrite => {
+                    let size = std::fs::metadata(&spec.source.path)
+                        .map_err(|error| format!("读取 RAW source 失败: {error}"))?
+                        .len();
+                    crate::app::write_raw_file_confirmed_detailed_with_cancellation(
+                        drive,
+                        Path::new(&spec.source.path),
+                        options,
+                        size,
+                        cancellation,
+                        &mut sequential_observer,
+                    )?
+                }
+                OperationKind::TarWrite => {
+                    crate::app::write_tar_source_confirmed_detailed_with_cancellation(
+                        drive,
+                        Path::new(&spec.source.path),
+                        options,
+                        cancellation,
+                        &mut sequential_observer,
+                    )?
+                }
+                _ => unreachable!(),
+            };
+            control.update(|state| {
+                state.revision += 1;
+                state.phase = JobPhase::Completed;
+                state.updated_at = timestamp_now();
+                state.message = format!("{:?} operation 已完成", spec.operation);
+                state.progress.bytes_completed = result.bytes_written;
+                state.progress.bytes_total = result.bytes_written;
+                state.completion.verification = if result.verified {
+                    VerificationStatus::Passed
+                } else {
+                    VerificationStatus::NotRequested
+                };
+            })?;
+        }
+        OperationKind::RawRead | OperationKind::TarRead => {
+            let mut last_persist = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            let mut observer = |bytes: u64| {
+                if last_persist.elapsed() >= Duration::from_millis(250) {
+                    last_persist = std::time::Instant::now();
+                    let _ = control.update(|state| {
+                        state.revision += 1;
+                        state.updated_at = timestamp_now();
+                        state.progress.bytes_completed = bytes;
+                    });
+                }
+            };
+            let result = crate::app::read_raw_image_with_cancellation(
+                drive,
+                Path::new(&spec.destination.path),
+                cancellation,
+                &mut observer,
+            )?;
+            control.update(|state| {
+                state.revision += 1;
+                state.phase = JobPhase::Completed;
+                state.updated_at = timestamp_now();
+                state.message = format!("{:?} image recovery 已完成", spec.operation);
+                state.progress.bytes_completed = result.bytes_read;
+                state.progress.bytes_total = result.bytes_read;
+            })?;
+        }
     }
     Ok(())
+}
+
+fn sequential_write_phase_message(phase: crate::app::SequentialWritePhase) -> &'static str {
+    use crate::app::SequentialWritePhase::*;
+    match phase {
+        Preparing => "Opening tape device",
+        RemovingPartitions => "Removing existing tape partitions",
+        Rethreading => "Unthreading and threading tape after partition change",
+        ShortErasing => "Performing short erase",
+        UpdatingMam => "Updating RAW/TAR MAM attributes",
+        Rewinding => "Rewinding to beginning of tape",
+        WritingRecords => "Writing tape records",
+        Finalizing => "Writing filemark and flushing tape",
+        Verifying => "Reading back and verifying SHA-256",
+    }
+}
+
+fn apply_sequential_performance(
+    progress: &mut JobProgress,
+    sample: &crate::app::WritePerformanceSample,
+) {
+    progress.tape_bytes_per_second = Some(sample.tape_bytes_per_second);
+    progress.source_bytes_per_second = Some(sample.source_bytes_per_second);
+    progress.buffer_used_bytes = Some(sample.buffer_used_bytes);
+    progress.buffer_capacity_bytes = Some(sample.buffer_capacity_bytes);
+    progress.reader_waiting = sample.reader_waiting;
+    progress.writer_waiting = sample.writer_waiting;
+    progress.performance_updated_at = Some(sample.timestamp.clone());
+    progress.throughput_history.push(JobThroughputSample {
+        timestamp: sample.timestamp.clone(),
+        bytes_per_second: sample.tape_bytes_per_second,
+    });
+    if progress.throughput_history.len() > crate::app::PERFORMANCE_HISTORY_CAPACITY {
+        let excess = progress.throughput_history.len() - crate::app::PERFORMANCE_HISTORY_CAPACITY;
+        progress.throughput_history.drain(..excess);
+    }
+}
+
+fn apply_sequential_telemetry(
+    progress: &mut JobProgress,
+    sample: &crate::app::ChannelTelemetrySample,
+) {
+    progress.worst_channel_rate = sample.worst_rate;
+    progress.channel_rates = sample.channel_rates.clone();
+    progress.telemetry_updated_at = Some(sample.timestamp.clone());
+    if let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0)
+        && progress
+            .session_worst_channel_rate
+            .is_none_or(|current| rate > current)
+        && let Some(channel) = sample.channel_rates.iter().find_map(|channel| {
+            channel
+                .log10_bit_error_rate
+                .filter(|value| value.total_cmp(&rate).is_eq())
+                .map(|_| channel.channel)
+        })
+    {
+        progress.session_worst_channel = Some(channel);
+        progress.session_worst_channel_rate = Some(rate);
+    }
 }
 
 fn validate_host_mount(endpoint: &Endpoint) -> Result<(), String> {
@@ -1609,6 +1872,9 @@ mod tests {
             created_at: "2026-08-10T00:00:00Z".into(),
             write_preflight: None,
             read_preflight: None,
+            overwrite_ltfs_acknowledged: false,
+            overwrite_unknown_mam_acknowledged: false,
+            sequential_block_size: default_sequential_block_size(),
         }
     }
 
@@ -1769,6 +2035,34 @@ mod tests {
         assert_eq!(decoded.completion_action, CompletionAction::KeepLoaded);
         assert!(decoded.volume_barcode.is_none());
         assert!(decoded.volume_name.is_none());
+    }
+
+    #[test]
+    fn legacy_job_spec_defaults_sequential_safety_fields() {
+        let value = serde_json::to_value(spec(OperationKind::Write)).unwrap();
+        let mut object = value.as_object().unwrap().clone();
+        object.remove("overwrite_ltfs_acknowledged");
+        object.remove("overwrite_unknown_mam_acknowledged");
+        object.remove("sequential_block_size");
+        let decoded: JobSpec = serde_json::from_value(object.into()).unwrap();
+        assert!(!decoded.overwrite_ltfs_acknowledged);
+        assert!(!decoded.overwrite_unknown_mam_acknowledged);
+        assert_eq!(decoded.sequential_block_size, 512 * 1024);
+    }
+
+    #[test]
+    fn sequential_job_validation_rejects_invalid_cross_mode_options() {
+        let mut recovery = spec(OperationKind::TarRead);
+        recovery.read_back_verify = true;
+        assert!(recovery.validate().unwrap_err().contains("recovery"));
+
+        let mut writer = spec(OperationKind::RawWrite);
+        writer.completion_action = CompletionAction::EjectAfterCommit;
+        assert!(writer.validate().unwrap_err().contains("completion action"));
+
+        let mut invalid_block = spec(OperationKind::TarWrite);
+        invalid_block.sequential_block_size = 0;
+        assert!(invalid_block.validate().unwrap_err().contains("block size"));
     }
 
     #[test]
@@ -1982,6 +2276,63 @@ mod tests {
         assert_eq!(state.progress.throughput_history[0].bytes_per_second, 2.0);
         assert_eq!(state.progress.source_bytes_per_second, Some(602.0));
         assert_eq!(state.progress.buffer_used_bytes, Some(4));
+    }
+
+    #[test]
+    fn sequential_write_metrics_populate_job_progress() {
+        let mut progress = JobProgress::default();
+        apply_sequential_performance(
+            &mut progress,
+            &crate::app::WritePerformanceSample {
+                timestamp: "sample".into(),
+                source_bytes_per_second: 150.0,
+                tape_bytes_per_second: 140.0,
+                buffer_used_bytes: 1024,
+                buffer_capacity_bytes: 2048,
+                reader_waiting: false,
+                writer_waiting: true,
+            },
+        );
+        apply_sequential_telemetry(
+            &mut progress,
+            &crate::app::ChannelTelemetrySample {
+                elapsed_millis: 5000,
+                timestamp: "sample".into(),
+                partition: 0,
+                logical_block: 10,
+                throughput_bytes_per_second: 140.0,
+                channel_rates: vec![crate::device::channel_error::ChannelRate {
+                    channel: 3,
+                    log10_bit_error_rate: Some(-5.5),
+                    ccp_advanced: true,
+                }],
+                worst_rate: Some(-5.5),
+            },
+        );
+        assert_eq!(progress.tape_bytes_per_second, Some(140.0));
+        assert_eq!(progress.source_bytes_per_second, Some(150.0));
+        assert_eq!(progress.buffer_used_bytes, Some(1024));
+        assert!(progress.writer_waiting);
+        assert_eq!(progress.channel_rates[0].channel, 3);
+        assert_eq!(progress.session_worst_channel, Some(3));
+    }
+
+    #[test]
+    fn sequential_preparation_phases_have_explicit_messages() {
+        use crate::app::SequentialWritePhase::*;
+        for phase in [
+            Preparing,
+            RemovingPartitions,
+            Rethreading,
+            ShortErasing,
+            UpdatingMam,
+            Rewinding,
+            WritingRecords,
+            Finalizing,
+            Verifying,
+        ] {
+            assert!(!sequential_write_phase_message(phase).is_empty());
+        }
     }
 
     #[test]

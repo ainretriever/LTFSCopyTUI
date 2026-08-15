@@ -572,6 +572,18 @@ Overview 的 telemetry 状态只显示 `HH:MM:SS`，不显示日期、秒的小�
 或有效 label 时第三界面显示明确错误、禁用 Read/Write，但必须保留 Format 入口。
 第三界面集中排列 `[1] Read LTFS…`、`[2] Write LTFS…` 和 `[3] Format LTFS…`。
 
+`[7] Sequential Operations…` 是 RAW/TAR 的独立入口，不触发 LTFS label/index probe。
+页面提供 RAW Write、TAR Write、RAW Image Recovery 和 TAR Image Recovery。四项操作只在
+用户完成 source/destination 浏览与确认后创建 detached job；退出 TUI 或 SSH 断开不得
+终止任务。RAW/TAR Write 的确认页必须显示 MAM 的 LTFS/no-LTFS/unknown 判定，并把对应
+风险确认固化到 job spec，runner 接管设备后再次读取 MAM。RAW/TAR recovery 只恢复完整
+镜像，不提供磁带端 TAR list；确认页必须显示按 LTO 代际计算的最大原生容量门槛和目标
+文件系统可用空间，runner 启动时再次复核。
+RAW/TAR Write 的 job state 必须逐项报告读取 MAM、移除分区、重新穿带、short erase、
+更新 MAM、rewind、写 records、finalize 和 verify，避免长时间设备命令表现为界面卡死。
+进入 record 写入阶段后，Jobs 页面显示实时磁带吞吐和 16 通道 Write Error Rate；
+准备、finalize 和 verify 阶段不得显示伪造或残留的 `0 B/s`。
+
 Read 文件树允许选择多个文件或目录。确认前展开目录、显示文件数与逻辑总字节数，
 同时冻结 volume UUID 和 index generation。用户看到的目录结构与实际磁带读取顺序
 彼此独立：runner 按所有 extent 的 `(partition, start_block)` 全局顺序读取，并依据

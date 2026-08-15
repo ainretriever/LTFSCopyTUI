@@ -31,6 +31,7 @@ const MIN_HEIGHT: u16 = 35;
 enum Page {
     Overview,
     Ltfs,
+    Sequential,
     Health,
     Jobs,
     JobCompletion,
@@ -95,6 +96,33 @@ enum ReadView {
     Confirm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequentialMode {
+    RawWrite,
+    TarWrite,
+    RawRead,
+    TarRead,
+}
+
+impl SequentialMode {
+    fn is_write(self) -> bool {
+        matches!(self, Self::RawWrite | Self::TarWrite)
+    }
+
+    fn extension(self) -> &'static str {
+        if self == Self::TarRead { "tar" } else { "raw" }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequentialView {
+    Menu,
+    Mounts,
+    Directory,
+    Filename,
+    Confirm,
+}
+
 #[derive(Debug, Clone)]
 struct TapeBrowserEntry {
     name: String,
@@ -114,6 +142,7 @@ enum WorkerCommand {
     Unload,
     Format(app::FormatOptions),
     Erase(app::EraseMode),
+    AssessSequential(Option<PathBuf>),
     Suspend(Sender<()>),
     Resume,
     Stop,
@@ -145,6 +174,7 @@ enum WorkerEvent {
     EraseProgress(app::EraseEvent),
     EraseCompleted(app::EraseResult, Box<DeviceSnapshot>, ChannelTelemetryFrame),
     EraseFailed(String, Box<DeviceSnapshot>, ChannelTelemetryFrame),
+    SequentialAssessment(app::RawMamAssessment, Option<app::RecoverySpaceAssessment>),
     Status(String),
     Error(String),
 }
@@ -217,6 +247,13 @@ struct UiState {
     erase_message: String,
     erase_progress: Option<u16>,
     erase_result: Option<app::EraseResult>,
+    sequential_view: SequentialView,
+    sequential_mode: Option<SequentialMode>,
+    sequential_path: Option<PathBuf>,
+    sequential_filename: String,
+    sequential_overwrite_ack: bool,
+    sequential_mam: Option<app::RawMamAssessment>,
+    sequential_space: Option<app::RecoverySpaceAssessment>,
     quit: bool,
 }
 
@@ -271,6 +308,13 @@ impl Default for UiState {
             erase_message: String::new(),
             erase_progress: None,
             erase_result: None,
+            sequential_view: SequentialView::Menu,
+            sequential_mode: None,
+            sequential_path: None,
+            sequential_filename: String::new(),
+            sequential_overwrite_ack: false,
+            sequential_mam: None,
+            sequential_space: None,
             quit: false,
         }
     }
@@ -393,6 +437,31 @@ fn file_worker(commands: Receiver<FileCommand>, events: Sender<FileEvent>) {
 }
 
 fn apply_file_event(state: &mut UiState, event: FileEvent) {
+    if state.page == Page::Sequential {
+        state.file_busy = false;
+        match event {
+            FileEvent::Mounts(mounts) => {
+                state.mounts = mounts;
+                state.browser_index = 0;
+                state.sequential_view = SequentialView::Mounts;
+                state.status = "Select a mounted filesystem".into();
+            }
+            FileEvent::Directory(path, entries) => {
+                state.browser_path = Some(path);
+                state.browser_entries = entries;
+                state.browser_index = 0;
+                state.sequential_view = SequentialView::Directory;
+                state.status = if state.sequential_mode.is_some_and(SequentialMode::is_write) {
+                    "Select one source with Space".into()
+                } else {
+                    "Press S to use this directory for the recovery image".into()
+                };
+            }
+            FileEvent::Error(error) => state.status = error,
+            FileEvent::Plan(_, _) => state.status = "Unexpected source scan result".into(),
+        }
+        return;
+    }
     state.file_busy = false;
     if state.page == Page::ReadRestore {
         match event {
@@ -697,6 +766,28 @@ fn device_worker(commands: Receiver<WorkerCommand>, events: Sender<WorkerEvent>)
                     reject_suspended_command(&events, "Erase");
                 }
             }
+            Ok(WorkerCommand::AssessSequential(destination)) => {
+                if ownership.allows_device_access()
+                    && let Some(drive) = selected.as_ref()
+                {
+                    let _ = events.send(WorkerEvent::Busy("Reading MAM and checking destination"));
+                    let result = app::assess_raw_overwrite(drive).and_then(|mam| {
+                        let space = destination
+                            .as_deref()
+                            .map(|path| app::assess_recovery_space(drive, path))
+                            .transpose()?;
+                        Ok((mam, space))
+                    });
+                    match result {
+                        Ok((mam, space)) => {
+                            let _ = events.send(WorkerEvent::SequentialAssessment(mam, space));
+                        }
+                        Err(error) => {
+                            let _ = events.send(WorkerEvent::Error(error));
+                        }
+                    }
+                }
+            }
             Ok(WorkerCommand::Suspend(acknowledge)) => {
                 ownership = WorkerOwnershipState::Suspending;
                 debug_assert_eq!(ownership, WorkerOwnershipState::Suspending);
@@ -982,6 +1073,13 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.status = state.erase_message.clone();
             state.busy = None;
         }
+        WorkerEvent::SequentialAssessment(mam, space) => {
+            state.sequential_mam = Some(mam);
+            state.sequential_space = space;
+            state.sequential_view = SequentialView::Confirm;
+            state.status = "Review MAM, capacity and operation risk before starting".into();
+            state.busy = None;
+        }
         WorkerEvent::Status(message) => {
             state.status = message;
             state.busy = None;
@@ -1057,6 +1155,10 @@ fn handle_key(
     }
     if state.page == Page::ReadRestore {
         handle_read_key(state, code, file_commands, commands);
+        return;
+    }
+    if state.page == Page::Sequential {
+        handle_sequential_key(state, code, file_commands, commands);
         return;
     }
     if state.page == Page::Jobs {
@@ -1193,6 +1295,18 @@ fn handle_key(
                 }
             } else {
                 state.status = "LTFS Operations requires Load & Thread first".into();
+            }
+        }
+        KeyCode::Char('7') if state.page == Page::Overview => {
+            if state
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.lifecycle == MediaLifecycle::LoadedThreaded)
+            {
+                state.page = Page::Sequential;
+                state.status = "Select a RAW/TAR sequential workflow".into();
+            } else {
+                state.status = "Sequential Operations requires Load & Thread first".into();
             }
         }
         KeyCode::Char('1') if state.page == Page::Ltfs => {
@@ -1705,6 +1819,278 @@ fn handle_source_key(
             state.tape_target = None;
         }
         _ => {}
+    }
+}
+
+fn handle_sequential_key(
+    state: &mut UiState,
+    code: KeyCode,
+    files: &Sender<FileCommand>,
+    device_commands: &Sender<WorkerCommand>,
+) {
+    if state.file_busy {
+        return;
+    }
+    match state.sequential_view {
+        SequentialView::Menu => match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => state.page = Page::Overview,
+            KeyCode::Char(key @ ('1' | '2' | '3' | '4')) => {
+                state.sequential_mode = Some(match key {
+                    '1' => SequentialMode::RawWrite,
+                    '2' => SequentialMode::TarWrite,
+                    '3' => SequentialMode::RawRead,
+                    _ => SequentialMode::TarRead,
+                });
+                state.sequential_path = None;
+                state.sequential_overwrite_ack = false;
+                state.read_back_verify = false;
+                state.file_busy = true;
+                let _ = files.send(FileCommand::ListMounts);
+            }
+            _ => {}
+        },
+        SequentialView::Mounts => match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.browser_index = state.browser_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.browser_index =
+                    (state.browser_index + 1).min(state.mounts.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if let Some(mount) = state.mounts.get(state.browser_index) {
+                    state.file_busy = true;
+                    let _ = files.send(FileCommand::Browse(mount.mount_point.clone()));
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                state.sequential_view = SequentialView::Menu
+            }
+            _ => {}
+        },
+        SequentialView::Directory => match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.browser_index = state.browser_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.browser_index =
+                    (state.browser_index + 1).min(state.browser_entries.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = state.browser_entries.get(state.browser_index)
+                    && entry.kind == app::BrowserEntryKind::Directory
+                {
+                    state.file_busy = true;
+                    let _ = files.send(FileCommand::Browse(entry.path.clone()));
+                }
+            }
+            KeyCode::Char(' ') if state.sequential_mode.is_some_and(SequentialMode::is_write) => {
+                if let Some(entry) = state.browser_entries.get(state.browser_index) {
+                    let allowed = match state.sequential_mode {
+                        Some(SequentialMode::RawWrite) => entry.kind == app::BrowserEntryKind::File,
+                        Some(SequentialMode::TarWrite) => matches!(
+                            entry.kind,
+                            app::BrowserEntryKind::File
+                                | app::BrowserEntryKind::Directory
+                                | app::BrowserEntryKind::Symlink
+                        ),
+                        _ => false,
+                    };
+                    if allowed {
+                        state.sequential_path = Some(entry.path.clone());
+                        state.sequential_mam = None;
+                        state.sequential_space = None;
+                        state.busy = Some("Reading MAM and checking destination");
+                        let _ = device_commands.send(WorkerCommand::AssessSequential(None));
+                    } else {
+                        state.status =
+                            "This source type is unavailable for the selected mode".into();
+                    }
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Char('S')
+                if state.sequential_mode.is_some_and(|mode| !mode.is_write()) =>
+            {
+                if let Some(directory) = state.browser_path.clone() {
+                    state.sequential_path = Some(directory);
+                    let mode = state.sequential_mode.expect("sequential mode exists");
+                    state.sequential_filename = format!("tapecpy-recovery.{}", mode.extension());
+                    state.sequential_view = SequentialView::Filename;
+                }
+            }
+            KeyCode::Backspace | KeyCode::Esc => {
+                if let Some(current) = state.browser_path.as_ref()
+                    && let Some(parent) = current.parent()
+                    && !state
+                        .mounts
+                        .iter()
+                        .any(|mount| mount.mount_point == *current)
+                {
+                    state.file_busy = true;
+                    let _ = files.send(FileCommand::Browse(parent.to_path_buf()));
+                } else {
+                    state.sequential_view = SequentialView::Mounts;
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                state.sequential_view = SequentialView::Mounts
+            }
+            _ => {}
+        },
+        SequentialView::Filename => match code {
+            KeyCode::Backspace => {
+                state.sequential_filename.pop();
+            }
+            KeyCode::Char(character) if !character.is_control() && character != '/' => {
+                state.sequential_filename.push(character)
+            }
+            KeyCode::Enter if !state.sequential_filename.is_empty() => {
+                if let Some(directory) = state.sequential_path.as_ref() {
+                    let output = directory.join(&state.sequential_filename);
+                    if output.exists() {
+                        state.status = format!("Destination already exists: {}", output.display());
+                    } else {
+                        state.sequential_path = Some(output);
+                        state.sequential_mam = None;
+                        state.sequential_space = None;
+                        state.busy = Some("Reading MAM and checking destination");
+                        let _ = device_commands.send(WorkerCommand::AssessSequential(
+                            state
+                                .sequential_path
+                                .as_ref()
+                                .and_then(|path| path.parent())
+                                .map(|parent| parent.to_path_buf()),
+                        ));
+                    }
+                }
+            }
+            KeyCode::Esc => state.sequential_view = SequentialView::Directory,
+            _ => {}
+        },
+        SequentialView::Confirm => match code {
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if state.sequential_mode.is_some_and(SequentialMode::is_write) =>
+            {
+                state.sequential_overwrite_ack = !state.sequential_overwrite_ack
+            }
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if state.sequential_mode.is_some_and(SequentialMode::is_write) =>
+            {
+                state.read_back_verify = !state.read_back_verify
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => start_sequential_job(state, device_commands),
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                state.sequential_view = SequentialView::Menu;
+                state.sequential_path = None;
+            }
+            _ => {}
+        },
+    }
+}
+
+fn start_sequential_job(state: &mut UiState, device_commands: &Sender<WorkerCommand>) {
+    let (Some(snapshot), Some(mode), Some(path)) = (
+        state.snapshot.as_ref(),
+        state.sequential_mode,
+        state.sequential_path.as_ref(),
+    ) else {
+        state.status = "Sequential operation is incomplete".into();
+        return;
+    };
+    if mode.is_write() {
+        let requires_ack = state.sequential_mam.as_ref().is_none_or(|mam| {
+            matches!(
+                mam.status,
+                app::RawMamStatus::LtfsDetected | app::RawMamStatus::Unknown
+            )
+        });
+        if requires_ack && !state.sequential_overwrite_ack {
+            state.status = "Press A to acknowledge the reported MAM overwrite risk first".into();
+            return;
+        }
+    } else if state
+        .sequential_space
+        .as_ref()
+        .is_none_or(|space| !space.sufficient)
+    {
+        state.status = "Recovery blocked: destination capacity requirement is not satisfied".into();
+        return;
+    }
+    let mount = state
+        .mounts
+        .iter()
+        .filter(|mount| path.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.components().count());
+    let host = job::Endpoint {
+        path: path.display().to_string(),
+        filesystem_type: mount.map(|mount| mount.filesystem_type.clone()),
+        mount_source: mount.map(|mount| mount.source.clone()),
+    };
+    let tape = job::Endpoint {
+        path: "tape://partition-0".into(),
+        filesystem_type: None,
+        mount_source: None,
+    };
+    let operation = match mode {
+        SequentialMode::RawWrite => job::OperationKind::RawWrite,
+        SequentialMode::TarWrite => job::OperationKind::TarWrite,
+        SequentialMode::RawRead => job::OperationKind::RawRead,
+        SequentialMode::TarRead => job::OperationKind::TarRead,
+    };
+    let (source, destination) = if mode.is_write() {
+        (host, tape)
+    } else {
+        (tape, host)
+    };
+    let spec = match job::JobSpec::new(
+        operation,
+        snapshot.drive.sg_path.display().to_string(),
+        snapshot.drive.serial.clone(),
+        source,
+        destination,
+        mode.is_write() && state.read_back_verify,
+    )
+    .with_sequential_options(
+        state.sequential_overwrite_ack,
+        state.sequential_overwrite_ack,
+        512 * 1024,
+    ) {
+        Ok(spec) => spec,
+        Err(error) => {
+            state.status = error;
+            return;
+        }
+    };
+    let root = match job::default_job_root() {
+        Ok(root) => root,
+        Err(error) => {
+            state.status = error;
+            return;
+        }
+    };
+    let (acknowledge, acknowledged) = mpsc::channel();
+    if device_commands
+        .send(WorkerCommand::Suspend(acknowledge))
+        .is_err()
+        || acknowledged.recv_timeout(Duration::from_secs(10)).is_err()
+    {
+        let _ = device_commands.send(WorkerCommand::Resume);
+        state.status = "Device worker did not confirm ownership handoff".into();
+        return;
+    }
+    match job::spawn_detached(spec, &root) {
+        Ok(job_state) => {
+            state.jobs.insert(0, job_state);
+            state.job_index = 0;
+            state.page = Page::Jobs;
+            state.sequential_view = SequentialView::Menu;
+            state.status =
+                "Detached RAW/TAR operation started; closing TUI will not stop it".into();
+        }
+        Err(error) => {
+            let _ = device_commands.send(WorkerCommand::Resume);
+            state.status = format!("Failed to start detached operation: {error}");
+        }
     }
 }
 
@@ -2289,9 +2675,10 @@ fn handle_job_key(state: &mut UiState, code: KeyCode, commands: &Sender<JobComma
             state.cancel_confirm = true;
         }
         KeyCode::Enter
-            if state.jobs.get(state.job_index).is_some_and(|job| {
-                job.phase.is_terminal() && job.spec.operation == job::OperationKind::Write
-            }) =>
+            if state
+                .jobs
+                .get(state.job_index)
+                .is_some_and(|job| job.phase.is_terminal() && job.spec.operation.is_write()) =>
         {
             state.page = Page::JobCompletion;
         }
@@ -2353,6 +2740,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     match state.page {
         Page::Overview => render_overview(frame, layout[1], state),
         Page::Ltfs => render_ltfs(frame, layout[1], state),
+        Page::Sequential => render_sequential(frame, layout[1], state),
         Page::Health => render_health(frame, layout[1], state),
         Page::Jobs | Page::JobCompletion => unreachable!(),
         Page::ErrorDetails => render_error(frame, layout[1], state),
@@ -3609,7 +3997,7 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
         .map(|sample| sample.bytes_per_second)
         .collect();
     let mut lines = braille_area_graph(&samples, inner_width, inner_height);
-    let direction = if job.spec.operation == job::OperationKind::Read {
+    let direction = if job.spec.operation.is_read() {
         let buffer = job
             .progress
             .buffer_used_bytes
@@ -3721,7 +4109,7 @@ fn render_job_channels(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobStat
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
             " Channel {} Error Rate — log10(BER) ",
-            if job.spec.operation == job::OperationKind::Read {
+            if job.spec.operation.is_read() {
                 "Read"
             } else {
                 "Write"
@@ -4060,6 +4448,7 @@ fn render_cartridge_operations(
             operation("4", "Eject", "Eject directly", present),
             operation("5", "Erase…", "Erase options", threaded && !write_protected),
             operation("6", "LTFS Operations…", "Open workflows", threaded),
+            operation("7", "Sequential Operations…", "RAW / TAR", threaded),
             navigation_hint_line("F1", "Overview"),
             navigation_hint_line("F3", "Health"),
             navigation_hint_line("F4", "Jobs"),
@@ -4077,6 +4466,152 @@ fn render_cartridge_operations(
         ),
         area,
     );
+}
+
+fn render_sequential(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
+    let locked = selected_device_claimed(state);
+    let writable = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.media.as_ref())
+        .and_then(|media| media.tape_status)
+        .is_none_or(|status| !status.is_write_protected());
+    let content = match state.sequential_view {
+        SequentialView::Menu => vec![
+            ltfs_operation_line("1", "Write RAW image…", writable && !locked),
+            ltfs_operation_line("2", "Write TAR archive…", writable && !locked),
+            ltfs_operation_line("3", "Recover RAW image…", !locked),
+            ltfs_operation_line("4", "Recover TAR image…", !locked),
+            Line::from(""),
+            Line::from("Operations create detached jobs after path and risk confirmation."),
+            Line::from(
+                "TAR recovery writes a complete .tar image; tape-side listing is unavailable.",
+            ),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Status  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(&state.status),
+            ]),
+            Line::from(""),
+            navigation_hint_line("Q", "Back to Overview"),
+            navigation_hint_line("F4", "Jobs"),
+        ],
+        SequentialView::Mounts => state
+            .mounts
+            .iter()
+            .enumerate()
+            .map(|(index, mount)| {
+                Line::from(format!(
+                    "{} {:<8} {:<10} {}",
+                    if index == state.browser_index {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    if mount.network { "Network" } else { "Local" },
+                    mount.filesystem_type,
+                    mount.mount_point.display()
+                ))
+            })
+            .chain(std::iter::once(Line::from("Enter Browse  Q Back")))
+            .collect(),
+        SequentialView::Directory => state
+            .browser_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                Line::from(format!(
+                    "{} {:<8} {}",
+                    if index == state.browser_index {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    format!("{:?}", entry.kind),
+                    entry.name
+                ))
+            })
+            .chain(std::iter::once(Line::from(
+                if state.sequential_mode.is_some_and(SequentialMode::is_write) {
+                    "Enter Open directory  Space Select source  Esc Parent"
+                } else {
+                    "Enter Open directory  S Use current directory  Esc Parent"
+                },
+            )))
+            .collect(),
+        SequentialView::Filename => vec![
+            Line::from("Recovery image filename"),
+            Line::from(format!("> {}", state.sequential_filename)),
+            Line::from("Enter Continue  Esc Back"),
+        ],
+        SequentialView::Confirm => {
+            let mode = state.sequential_mode.expect("mode exists");
+            let mut lines = vec![
+                Line::from(format!("Operation  {:?}", mode)),
+                Line::from(format!(
+                    "Path       {}",
+                    state
+                        .sequential_path
+                        .as_ref()
+                        .map_or_else(|| "—".into(), |path| path.display().to_string())
+                )),
+                Line::from(format!(
+                    "MAM format  {} / {:?}",
+                    state
+                        .sequential_mam
+                        .as_ref()
+                        .and_then(|mam| mam.application_format.as_deref())
+                        .unwrap_or("Unknown"),
+                    state.sequential_mam.as_ref().map(|mam| mam.status)
+                )),
+                Line::from(format!(
+                    "Destination space  {}",
+                    state.sequential_space.as_ref().map_or_else(
+                        || "N/A".into(),
+                        |space| format!(
+                            "{} available / must be > {} ({})",
+                            human_bytes(space.available_free_bytes),
+                            human_bytes(space.required_free_bytes),
+                            if space.sufficient { "Ready" } else { "Blocked" }
+                        )
+                    )
+                )),
+            ];
+            if mode.is_write() {
+                lines.push(Line::from(format!(
+                    "MAM overwrite risk acknowledged  {}",
+                    if state.sequential_overwrite_ack {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                )));
+                lines.push(Line::from(format!(
+                    "Read-back SHA-256 verification   {}",
+                    if state.read_back_verify { "Yes" } else { "No" }
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    "A Toggle destructive acknowledgement  V Toggle verification",
+                ));
+            } else {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from("Y Start detached job  Q Back"));
+            lines
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(content).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Sequential RAW / TAR Operations "),
+        ),
+        area,
+    );
+    if state.file_busy {
+        render_busy(frame, area, "Waiting for filesystem / network mount");
+    }
 }
 
 fn navigation_hint_line<'a>(key: &'a str, label: &'a str) -> Line<'a> {
@@ -4476,10 +5011,10 @@ fn counter(value: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EraseView, FormatField, FormatView, Page, ReadView, SourceView, UiState, WorkerCommand,
-        WorkerOwnershipState, back_read_level, back_write_level, braille_area_graph,
-        cartridge_operation_line, display_clock, handle_erase_key, handle_format_key,
-        ltfs_operation_line,
+        EraseView, FileCommand, FormatField, FormatView, Page, ReadView, SequentialMode,
+        SequentialView, SourceView, UiState, WorkerCommand, WorkerOwnershipState, back_read_level,
+        back_write_level, braille_area_graph, cartridge_operation_line, display_clock,
+        handle_erase_key, handle_format_key, handle_sequential_key, ltfs_operation_line,
     };
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
@@ -4648,6 +5183,48 @@ mod tests {
         assert_eq!(state.format_view, FormatView::Editing);
         handle_format_key(&mut state, KeyCode::Char('q'), &commands);
         assert_eq!(state.page, Page::Ltfs);
+    }
+
+    #[test]
+    fn sequential_menu_reuses_mount_browser_and_returns_one_level() {
+        let (file_commands, file_receiver) = mpsc::channel();
+        let (device_commands, _device_receiver) = mpsc::channel();
+        let mut state = UiState {
+            page: Page::Sequential,
+            sequential_view: SequentialView::Menu,
+            ..UiState::default()
+        };
+
+        handle_sequential_key(
+            &mut state,
+            KeyCode::Char('2'),
+            &file_commands,
+            &device_commands,
+        );
+        assert_eq!(state.sequential_mode, Some(SequentialMode::TarWrite));
+        assert!(state.file_busy);
+        assert!(matches!(
+            file_receiver.try_recv(),
+            Ok(FileCommand::ListMounts)
+        ));
+
+        state.file_busy = false;
+        state.sequential_view = SequentialView::Mounts;
+        handle_sequential_key(
+            &mut state,
+            KeyCode::Char('q'),
+            &file_commands,
+            &device_commands,
+        );
+        assert_eq!(state.page, Page::Sequential);
+        assert_eq!(state.sequential_view, SequentialView::Menu);
+        handle_sequential_key(
+            &mut state,
+            KeyCode::Char('q'),
+            &file_commands,
+            &device_commands,
+        );
+        assert_eq!(state.page, Page::Overview);
     }
 
     #[test]

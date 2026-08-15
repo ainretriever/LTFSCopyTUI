@@ -867,6 +867,29 @@ pub struct RawWriteResult {
 pub type TarWriteResult = RawWriteResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequentialWritePhase {
+    Preparing,
+    RemovingPartitions,
+    Rethreading,
+    ShortErasing,
+    UpdatingMam,
+    Rewinding,
+    WritingRecords,
+    Finalizing,
+    Verifying,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequentialWriteEvent {
+    pub phase: SequentialWritePhase,
+    pub bytes_written: u64,
+    pub bytes_total: u64,
+    pub records_written: u64,
+    pub telemetry: Option<ChannelTelemetrySample>,
+    pub performance: Option<WritePerformanceSample>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequentialTerminator {
     Filemark,
     EndOfData,
@@ -882,9 +905,45 @@ pub struct SequentialReadResult {
     pub available_free_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverySpaceAssessment {
+    pub density_code: u8,
+    pub required_free_bytes: u64,
+    pub available_free_bytes: u64,
+    pub sufficient: bool,
+}
+
+pub fn assess_recovery_space(
+    drive: &TapeDrive,
+    destination_directory: &Path,
+) -> Result<RecoverySpaceAssessment, String> {
+    let media = device::inspect_media(drive).map_err(|error| error.to_string())?;
+    let density_code = media
+        .density_code
+        .ok_or_else(|| "无法识别介质代际，拒绝启动 RAW recovery".to_string())?;
+    let required_free_bytes = device::density::lto_native_capacity_bytes(density_code)
+        .ok_or_else(|| format!("密度代码 0x{density_code:02x} 没有已知 LTO 原生容量上限"))?;
+    let available_free_bytes = filesystem_available_bytes(destination_directory)?;
+    Ok(RecoverySpaceAssessment {
+        density_code,
+        required_free_bytes,
+        available_free_bytes,
+        sufficient: available_free_bytes > required_free_bytes,
+    })
+}
+
 pub fn read_raw_image(
     drive: &TapeDrive,
     destination: &Path,
+    observer: &mut dyn FnMut(u64),
+) -> Result<SequentialReadResult, String> {
+    read_raw_image_with_cancellation(drive, destination, &CancellationToken::default(), observer)
+}
+
+pub fn read_raw_image_with_cancellation(
+    drive: &TapeDrive,
+    destination: &Path,
+    cancellation: &CancellationToken,
     observer: &mut dyn FnMut(u64),
 ) -> Result<SequentialReadResult, String> {
     if destination.exists() {
@@ -903,16 +962,11 @@ pub fn read_raw_image(
             parent.display()
         ));
     }
-    let media = device::inspect_media(drive).map_err(|error| error.to_string())?;
-    let density = media
-        .density_code
-        .ok_or_else(|| "无法识别介质代际，拒绝启动 RAW recovery".to_string())?;
-    let required_free_bytes = device::density::lto_native_capacity_bytes(density)
-        .ok_or_else(|| format!("密度代码 0x{density:02x} 没有已知 LTO 原生容量上限"))?;
-    let available_free_bytes = filesystem_available_bytes(parent)?;
-    if available_free_bytes <= required_free_bytes {
+    let space = assess_recovery_space(drive, parent)?;
+    if !space.sufficient {
         return Err(format!(
-            "RAW recovery 空间不足: available={available_free_bytes}, required greater than {required_free_bytes} bytes"
+            "RAW recovery 空间不足: available={}, required greater than {} bytes",
+            space.available_free_bytes, space.required_free_bytes
         ));
     }
 
@@ -949,6 +1003,9 @@ pub fn read_raw_image(
         let mut records = 0u64;
         let mut hasher = Sha256::new();
         let terminator = loop {
+            if cancellation.is_cancelled() {
+                return Err("[cancelled]RAW recovery 在 record 边界停止".into());
+            }
             match tape.read_record().map_err(|error| error.to_string())? {
                 ReadRecord::Data(data) => {
                     bytes += data.len() as u64;
@@ -980,8 +1037,8 @@ pub fn read_raw_image(
             records_read,
             sha256,
             terminator,
-            required_free_bytes,
-            available_free_bytes,
+            required_free_bytes: space.required_free_bytes,
+            available_free_bytes: space.available_free_bytes,
         }),
         (Err(error), _) => Err(format!(
             "{error}; partial output remains at {}",
@@ -1136,11 +1193,64 @@ pub fn write_raw_file_confirmed(
     expected_size: u64,
     observer: &mut dyn FnMut(u64, u64),
 ) -> Result<RawWriteResult, String> {
+    write_raw_file_confirmed_with_cancellation(
+        drive,
+        source,
+        options,
+        expected_size,
+        &CancellationToken::default(),
+        observer,
+    )
+}
+
+pub fn write_raw_file_confirmed_with_cancellation(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    expected_size: u64,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(u64, u64),
+) -> Result<RawWriteResult, String> {
+    write_raw_file_confirmed_detailed_with_cancellation(
+        drive,
+        source,
+        options,
+        expected_size,
+        cancellation,
+        &mut |event| {
+            if event.phase == SequentialWritePhase::WritingRecords {
+                observer(event.bytes_written, event.bytes_total);
+            }
+        },
+    )
+}
+
+pub fn write_raw_file_confirmed_detailed_with_cancellation(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    expected_size: u64,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&SequentialWriteEvent),
+) -> Result<RawWriteResult, String> {
     if !(1..=1024 * 1024).contains(&options.block_size) {
         return Err("RAW block size 必须在 1..=1048576 bytes 范围内".into());
     }
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Preparing,
+        0,
+        expected_size,
+        0,
+        None,
+        None,
+    );
     let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
-    prepare_stream_overwrite(&mut tape, "RAW")?;
+    prepare_stream_overwrite(&mut tape, "RAW", observer, expected_size)?;
+    let baseline = read_channel_counters(&mut tape, device::channel_error::PageKind::Write).ok();
+    let mut telemetry =
+        ChannelTelemetryState::new(device::channel_error::PageKind::Write, baseline);
+    telemetry.begin_data();
 
     let pipeline = SourcePipeline::spawn(
         vec![PlannedFile {
@@ -1150,20 +1260,37 @@ pub fn write_raw_file_confirmed(
         }],
         options.block_size,
         DEFAULT_WRITE_BUFFER_BYTES,
-        CancellationToken::default(),
+        cancellation.clone(),
     )?;
     let mut bytes_written = 0u64;
     let mut records_written = 0u64;
+    let mut performance = WritePerformanceState::new();
     let sha256 = loop {
         match pipeline.recv_timeout(std::time::Duration::from_millis(250))? {
             Some(SourcePipelineMessage::FileStart { .. }) => {}
             Some(SourcePipelineMessage::Data(data)) => {
+                if cancellation.is_cancelled() {
+                    return Err("[cancelled]RAW write 在 record 边界停止".into());
+                }
                 tape.write_record(&data)
                     .map_err(|error| error.to_string())?;
                 bytes_written += data.len() as u64;
                 records_written += 1;
                 pipeline.recycle(data);
-                observer(bytes_written, expected_size);
+                let pipeline_snapshot = pipeline.snapshot();
+                let performance_sample =
+                    performance.sample_if_due(pipeline_snapshot, bytes_written);
+                let telemetry_sample =
+                    telemetry.sample_if_due(&mut tape, 0, records_written, bytes_written);
+                emit_sequential_write(
+                    observer,
+                    SequentialWritePhase::WritingRecords,
+                    bytes_written,
+                    expected_size,
+                    records_written,
+                    telemetry_sample,
+                    performance_sample,
+                );
             }
             Some(SourcePipelineMessage::FileEnd {
                 actual_size,
@@ -1177,12 +1304,43 @@ pub fn write_raw_file_confirmed(
                 break digest;
             }
             Some(SourcePipelineMessage::Error(error)) => return Err(error),
-            None => observer(bytes_written, expected_size),
+            None => {
+                if let Some(sample) = performance.sample_if_due(pipeline.snapshot(), bytes_written)
+                {
+                    emit_sequential_write(
+                        observer,
+                        SequentialWritePhase::WritingRecords,
+                        bytes_written,
+                        expected_size,
+                        records_written,
+                        None,
+                        Some(sample),
+                    );
+                }
+            }
         }
     };
     pipeline.join()?;
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Finalizing,
+        bytes_written,
+        expected_size,
+        records_written,
+        None,
+        None,
+    );
     finish_stream_write(&mut tape)?;
     let verified = if options.verify {
+        emit_sequential_write(
+            observer,
+            SequentialWritePhase::Verifying,
+            bytes_written,
+            expected_size,
+            records_written,
+            None,
+            None,
+        );
         verify_stream(&mut tape, bytes_written, &sha256, false)?;
         true
     } else {
@@ -1196,24 +1354,94 @@ pub fn write_raw_file_confirmed(
     })
 }
 
-fn prepare_stream_overwrite(tape: &mut TapeSession, format: &str) -> Result<(), String> {
+fn prepare_stream_overwrite(
+    tape: &mut TapeSession,
+    format: &str,
+    observer: &mut dyn FnMut(&SequentialWriteEvent),
+    bytes_total: u64,
+) -> Result<(), String> {
     // FORMAT MEDIUM is position-sensitive on the tested LTO-5 drive.  An LTFS
     // inspection commonly leaves the tape on partition 1, so explicitly return
     // to partition 0 BOT before replacing the partition layout.
     tape.load().map_err(|error| error.to_string())?;
     tape.locate(0, 0).map_err(|error| error.to_string())?;
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::RemovingPartitions,
+        0,
+        bytes_total,
+        0,
+        None,
+        None,
+    );
     tape.remove_partitions()
         .map_err(|error| error.to_string())?;
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Rethreading,
+        0,
+        bytes_total,
+        0,
+        None,
+        None,
+    );
     tape.rethread().map_err(|error| error.to_string())?;
     tape.set_variable_block()
         .map_err(|error| error.to_string())?;
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::ShortErasing,
+        0,
+        bytes_total,
+        0,
+        None,
+        None,
+    );
     tape.short_erase().map_err(|error| error.to_string())?;
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::UpdatingMam,
+        0,
+        bytes_total,
+        0,
+        None,
+        None,
+    );
     write_stream_mam(tape, format)?;
     // ERASE completion does not guarantee that the logical position exposed to
     // the following WRITE remains BOT.  WRITE ATTRIBUTE is position-independent,
     // then an explicit rewind establishes the RAW stream's first record at BOT.
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Rewinding,
+        0,
+        bytes_total,
+        0,
+        None,
+        None,
+    );
     tape.rewind().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_sequential_write(
+    observer: &mut dyn FnMut(&SequentialWriteEvent),
+    phase: SequentialWritePhase,
+    bytes_written: u64,
+    bytes_total: u64,
+    records_written: u64,
+    telemetry: Option<ChannelTelemetrySample>,
+    performance: Option<WritePerformanceSample>,
+) {
+    observer(&SequentialWriteEvent {
+        phase,
+        bytes_written,
+        bytes_total,
+        records_written,
+        telemetry,
+        performance,
+    });
 }
 
 fn finish_stream_write(tape: &mut TapeSession) -> Result<(), String> {
@@ -1227,6 +1455,42 @@ pub fn write_tar_source_confirmed(
     source: &Path,
     options: RawWriteOptions,
     observer: &mut dyn FnMut(u64),
+) -> Result<TarWriteResult, String> {
+    write_tar_source_confirmed_with_cancellation(
+        drive,
+        source,
+        options,
+        &CancellationToken::default(),
+        observer,
+    )
+}
+
+pub fn write_tar_source_confirmed_with_cancellation(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(u64),
+) -> Result<TarWriteResult, String> {
+    write_tar_source_confirmed_detailed_with_cancellation(
+        drive,
+        source,
+        options,
+        cancellation,
+        &mut |event| {
+            if event.phase == SequentialWritePhase::WritingRecords {
+                observer(event.bytes_written);
+            }
+        },
+    )
+}
+
+pub fn write_tar_source_confirmed_detailed_with_cancellation(
+    drive: &TapeDrive,
+    source: &Path,
+    options: RawWriteOptions,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&SequentialWriteEvent),
 ) -> Result<TarWriteResult, String> {
     if !(1..=1024 * 1024).contains(&options.block_size) {
         return Err("TAR block size 必须在 1..=1048576 bytes 范围内".into());
@@ -1250,8 +1514,21 @@ pub fn write_tar_source_confirmed(
         .to_path_buf();
     ensure_gnu_tar()?;
 
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Preparing,
+        0,
+        0,
+        0,
+        None,
+        None,
+    );
     let mut tape = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
-    prepare_stream_overwrite(&mut tape, "TAR")?;
+    prepare_stream_overwrite(&mut tape, "TAR", observer, 0)?;
+    let baseline = read_channel_counters(&mut tape, device::channel_error::PageKind::Write).ok();
+    let mut telemetry =
+        ChannelTelemetryState::new(device::channel_error::PageKind::Write, baseline);
+    telemetry.begin_data();
 
     let block_size = options.block_size;
     let queue_depth = (DEFAULT_WRITE_BUFFER_BYTES / block_size).max(1);
@@ -1301,12 +1578,46 @@ pub fn write_tar_source_confirmed(
 
     let mut bytes_written = 0u64;
     let mut records_written = 0u64;
+    let mut last_performance_at = std::time::Instant::now();
+    let mut last_performance_bytes = 0u64;
     while let Ok(data) = receiver.recv() {
+        if cancellation.is_cancelled() {
+            return Err("[cancelled]TAR write 在 record 边界停止".into());
+        }
         tape.write_record(&data)
             .map_err(|error| error.to_string())?;
         bytes_written += data.len() as u64;
         records_written += 1;
-        observer(bytes_written);
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(last_performance_at);
+        let performance = (elapsed >= std::time::Duration::from_secs(1)).then(|| {
+            let speed = payload_throughput(
+                bytes_written.saturating_sub(last_performance_bytes),
+                elapsed,
+            );
+            last_performance_at = now;
+            last_performance_bytes = bytes_written;
+            WritePerformanceSample {
+                timestamp: ltfs_time_now(),
+                source_bytes_per_second: speed,
+                tape_bytes_per_second: speed,
+                buffer_used_bytes: 0,
+                buffer_capacity_bytes: DEFAULT_WRITE_BUFFER_BYTES as u64,
+                reader_waiting: false,
+                writer_waiting: false,
+            }
+        });
+        let telemetry_sample =
+            telemetry.sample_if_due(&mut tape, 0, records_written, bytes_written);
+        emit_sequential_write(
+            observer,
+            SequentialWritePhase::WritingRecords,
+            bytes_written,
+            0,
+            records_written,
+            telemetry_sample,
+            performance,
+        );
     }
     let (generated_bytes, sha256) = producer
         .join()
@@ -1316,8 +1627,26 @@ pub fn write_tar_source_confirmed(
             "TAR pipeline 大小不一致: generated={generated_bytes}, written={bytes_written}"
         ));
     }
+    emit_sequential_write(
+        observer,
+        SequentialWritePhase::Finalizing,
+        bytes_written,
+        bytes_written,
+        records_written,
+        None,
+        None,
+    );
     finish_stream_write(&mut tape)?;
     let verified = if options.verify {
+        emit_sequential_write(
+            observer,
+            SequentialWritePhase::Verifying,
+            bytes_written,
+            bytes_written,
+            records_written,
+            None,
+            None,
+        );
         verify_stream(&mut tape, bytes_written, &sha256, true)?;
         true
     } else {
