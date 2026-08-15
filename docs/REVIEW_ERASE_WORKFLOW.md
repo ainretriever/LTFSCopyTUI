@@ -36,7 +36,9 @@ tapecpy erase minimum [选择器] --force
 
 ## 2. 参考实现结论
 
-优先对照了 `references/LTFSCopyGUI/LTFSCopyGUI/LTFSConfigurator.vb`：
+优先对照了可选本地参考源码
+`references/LTFSCopyGUI/LTFSCopyGUI/LTFSConfigurator.vb`（获取方式见
+`references/README.md`）：
 
 - Quick Erase 直接发送 `{19h, 00h, 00h, 00h, 00h, 00h}`；
 - Partial Erase 读取 Medium Partition mode page 0x11；

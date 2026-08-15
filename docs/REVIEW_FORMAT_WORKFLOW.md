@@ -30,8 +30,9 @@ tapecpy format <6位Barcode> <Volume Name> [选择器] --force
 
 ## 2. LTFSCopyGUI 参考结论
 
-优先对照了 `references/LTFSCopyGUI/LTFSCopyGUI/TapeUtils.vb` 中的
-`mkltfs`、`SetMAMAttribute`、`WriteVCI` 和 `Flush`：
+优先对照了可选本地参考源码
+`references/LTFSCopyGUI/LTFSCopyGUI/TapeUtils.vb`（获取方式见
+`references/README.md`）中的 `mkltfs`、`SetMAMAttribute`、`WriteVCI` 和 `Flush`：
 
 - 分区由 Medium Partition mode page、MODE SELECT 和 FORMAT MEDIUM 建立；
 - LTFS MAM attributes 用 WRITE ATTRIBUTE（0x8D）写入，并在 CDB 中指定分区；

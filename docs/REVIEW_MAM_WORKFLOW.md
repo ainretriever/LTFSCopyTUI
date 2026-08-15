@@ -4,8 +4,10 @@
 Information（VCI）提交，以及与 LTFSCopyGUI、OpenLTFS 和 SNIA LTFS 2.4.0
 规范的对照结果。
 
-规范依据为 `docs/SNIA-LTFS-Format-2.4.0-TechPosition.pdf` 第 10 章
-（Medium Auxiliary Memory，规范页 51–56）。
+规范依据为 [SNIA LTFS Format Specification 2.4][ltfs-spec] 第 10 章
+（Medium Auxiliary Memory，规范页 51–56）。规范 PDF 不随本仓库分发。
+
+[ltfs-spec]: https://www.snia.org/sites/default/files/technical-work/ltfs/release/SNIA-LTFS-Format-2.4.0-TechPosition.pdf
 
 ## 1. 分层
 

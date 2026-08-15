@@ -1,4 +1,8 @@
 /target
 
+# SNIA LTFS specification is kept locally for development only. Its terms do
+# not permit redistribution to third parties; link to the official copy instead.
+/docs/SNIA-LTFS-Format-2.4.0-TechPosition.pdf
+
 # 参考实现 LTFSCopyGUI 是带独立 .git 的上游仓库，不纳入 tapecpy 版本控制。
 /references/LTFSCopyGUI/

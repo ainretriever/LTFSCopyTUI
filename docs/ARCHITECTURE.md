@@ -1074,9 +1074,11 @@ unit test 也不能替代真实磁带测试。
 
 LTFSCopyGUI 是 tapecpy 的重要参考实现。
 
-参考源码位于：
+可选的本地参考源码 checkout 位于：
 
 `references/LTFSCopyGUI/`
+
+获取方式及许可证注意事项见 `references/README.md`。该源码不随 tapecpy 分发。
 
 在实现以下能力时，应主动研究其相关实现：
 

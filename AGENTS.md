@@ -35,9 +35,11 @@ tapecpy 是一个面向 Linux 的磁带操作工具，项目名称为 **LTFSCopy
 
 tapecpy 的很多功能需求来源于 LTFSCopyGUI。
 
-本地参考源码位于：
+可选的本地参考源码 checkout 位于：
 
 `references/LTFSCopyGUI/`
+
+获取方式及许可证注意事项见 `references/README.md`。该源码不随 tapecpy 分发。
 
 上游项目：
 
