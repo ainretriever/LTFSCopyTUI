@@ -18,22 +18,95 @@ Linux 的独立架构和设备访问实现。
 - 将文件或目录以 RAW records 或 GNU TAR 字节流写入磁带，并恢复完整 RAW/TAR 镜像；
 - 从 NFS、CIFS 和本地文件系统选择源数据或恢复目标。
 
-## 构建与运行
+## 编译与部署
 
-需要 Linux、Rust 工具链以及能够访问的 SCSI generic 磁带设备（通常为 `/dev/sgX`）。
-TAR 工作流还需要 GNU tar。
+### 1. 准备系统
+
+当前只支持 Linux。编译需要 Git、C 编译工具和支持 Rust 2024 edition 的稳定版 Rust
+（`rustc 1.85` 或更新版本）；TAR 工作流需要 GNU tar。推荐通过
+[rustup](https://rustup.rs/) 安装 Rust。
+
+Fedora：
 
 ```bash
-cargo build --release
-./target/release/tapecpy
+sudo dnf install git gcc tar
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-运行账户必须具有访问对应磁带设备的权限。启动 TUI 后选择磁带机，并从 Overview 页面
-进入介质、LTFS 或 RAW/TAR 操作。CLI 命令可通过以下方式查看：
+Debian/Ubuntu：
+
+```bash
+sudo apt install git build-essential tar curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+重新打开 shell，或按 rustup 的提示加载 Cargo 环境。然后确认 `rustc --version` 和
+`cargo --version` 可以正常运行。
+
+### 2. 编译
+
+```bash
+git clone https://github.com/ainretriever/LTFSCopyTUI.git
+cd LTFSCopyTUI
+cargo build --locked --release
+```
+
+可先在源码目录中运行：
 
 ```bash
 ./target/release/tapecpy --help
+./target/release/tapecpy list
+./target/release/tapecpy
 ```
+
+不带参数启动主 TUI。`list` 应当列出系统识别到的磁带机。
+
+### 3. 安装可执行文件
+
+tapecpy 是单个可执行文件，不需要安装 OpenLTFS、FUSE 或常驻 systemd 服务。安装到当前
+用户目录：
+
+```bash
+install -Dm755 target/release/tapecpy "$HOME/.local/bin/tapecpy"
+```
+
+确保 `$HOME/.local/bin` 位于 `PATH`，之后可以直接运行 `tapecpy`。也可以由管理员安装到
+所有用户可用的位置：
+
+```bash
+sudo install -Dm755 target/release/tapecpy /usr/local/bin/tapecpy
+```
+
+长时间读写任务会在用户确认开始操作时派生可脱离的 runner；关闭 TUI 或断开 SSH 不会
+终止它。任务状态、日志和本机 IPC 默认保存在
+`$XDG_STATE_HOME/tapecpy/jobs`，未设置该变量时保存在
+`$HOME/.local/state/tapecpy/jobs`。安装时不需要另建服务账户或后台服务。
+
+### 4. 配置磁带设备权限
+
+Linux 通常通过 `st` 和 `sg` 内核模块提供 `/dev/nstX` 与 `/dev/sgX`。如果设备节点没有
+出现，可先检查驱动和设备：
+
+```bash
+sudo modprobe st
+sudo modprobe sg
+lsscsi -g
+ls -l /dev/nst* /dev/sg*
+```
+
+`lsscsi` 不是运行依赖，只用于部署诊断，可从发行版的 `lsscsi` 软件包安装。tapecpy 的
+运行用户必须同时具有对应 `/dev/nstX` 和 `/dev/sgX` 的读写权限。请按照发行版的设备
+所有者组或 udev 规则授予权限，并在修改用户组后重新登录；不要长期依赖把设备节点设为
+`777`。设备节点编号可能在重启或重新连接后变化，tapecpy 会通过 sysfs 匹配同一台驱动器
+的两个节点。
+
+如需从 NFS 或 CIFS 读写，挂载点必须在启动 tapecpy 和 detached runner 的同一用户环境
+中持续可见，并且该用户必须具有源目录和目标目录的相应权限。任务运行期间不要卸载或
+替换挂载点。
+
+部署完成后建议先插入允许覆盖的测试带，运行 `tapecpy list`，再从 TUI 检查驱动器身份、
+MAM 和写保护状态。Format、Erase、RAW Write 或 TAR Write 的首次验证不要使用唯一的数据
+副本。
 
 ## 安全提示
 
