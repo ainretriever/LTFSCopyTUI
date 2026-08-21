@@ -977,6 +977,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.drives = drives;
             state.drive_index = state.drive_index.min(state.drives.len().saturating_sub(1));
             state.busy = None;
+            state.last_error = None;
             state.status = format!("{} tape drive(s) discovered", state.drives.len());
         }
         WorkerEvent::Snapshot(snapshot, channels, scope) => {
@@ -990,6 +991,9 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.channels = channels;
             state.selected = true;
             state.busy = None;
+            if ltfs_error.is_none() {
+                state.last_error = None;
+            }
             state.ltfs_read = scope == SnapshotScope::Ltfs;
             if scope == SnapshotScope::Ltfs && state.ltfs_open_pending {
                 state.page = Page::Ltfs;
@@ -1013,6 +1017,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
                 snapshot.health = Some(*health);
             }
             state.channels = channels;
+            state.last_error = None;
             state.status = format!("Telemetry refreshed at {}", display_clock(&timestamp));
         }
         WorkerEvent::TelemetryUnavailable(channels, reason, timestamp) => {
@@ -1034,6 +1039,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.format_message = "LTFS format completed and generation-1 volume verified".into();
             state.status = state.format_message.clone();
             state.busy = None;
+            state.last_error = None;
         }
         WorkerEvent::FormatFailed(error) => {
             state.format_view = FormatView::Complete;
@@ -1061,6 +1067,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
                     .into();
             state.status = state.erase_message.clone();
             state.busy = None;
+            state.last_error = None;
         }
         WorkerEvent::EraseFailed(error, snapshot, channels) => {
             state.snapshot = Some(*snapshot);
@@ -1079,10 +1086,12 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             state.sequential_view = SequentialView::Confirm;
             state.status = "Review MAM, capacity and operation risk before starting".into();
             state.busy = None;
+            state.last_error = None;
         }
         WorkerEvent::Status(message) => {
             state.status = message;
             state.busy = None;
+            state.last_error = None;
         }
         WorkerEvent::Error(error) => {
             state.ltfs_open_pending = false;
@@ -2704,7 +2713,9 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         return;
     }
     if state.page == Page::Jobs {
-        render_jobs(frame, area, state);
+        let layout = Layout::vertical([Constraint::Length(4), Constraint::Min(10)]).split(area);
+        render_header(frame, layout[0], state);
+        render_jobs(frame, layout[1], state);
         if state.cancel_confirm {
             render_cancel_confirmation(frame, area, state);
         }
@@ -2735,7 +2746,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         return;
     }
 
-    let layout = Layout::vertical([Constraint::Length(3), Constraint::Min(10)]).split(area);
+    let layout = Layout::vertical([Constraint::Length(4), Constraint::Min(10)]).split(area);
     render_header(frame, layout[0], state);
     match state.page {
         Page::Overview => render_overview(frame, layout[1], state),
@@ -3692,13 +3703,20 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         .filter(|job| job.phase.is_active())
         .count();
     frame.render_widget(
-        Paragraph::new(format!(
-            "tapecpy Jobs │ {} active │ {} retained │ closing TUI only detaches",
-            active,
-            state.jobs.len()
-        ))
-        .style(Style::default().add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " DETACHED OPERATIONS ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("  active {active}  retained {}", state.jobs.len())),
+            Span::styled(
+                "  |  client detach does not stop runner",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .block(panel_block(" Jobs ")),
         layout[0],
     );
 
@@ -3731,11 +3749,8 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
                 Constraint::Min(20),
             ],
         )
-        .header(
-            Row::new(["Job", "Kind", "Phase", "Bytes", "Updated"])
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-        )
-        .block(Block::default().borders(Borders::ALL).title(" Operations ")),
+        .header(Row::new(["Job", "Kind", "Phase", "Bytes", "Updated"]).style(table_header_style()))
+        .block(panel_block(" Operations ")),
         layout[1],
     );
 
@@ -3809,11 +3824,9 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
             )));
         }
         frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Job Snapshot "),
-            ),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(panel_block(" Job Snapshot ")),
             layout[2],
         );
         render_job_throughput(frame, layout[3], job);
@@ -3823,15 +3836,24 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
             Paragraph::new("No retained Read/Write operations").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Job Snapshot "),
+                    .title(" Job Snapshot ")
+                    .border_style(Style::default().fg(Color::DarkGray)),
             ),
             layout[2],
         );
     }
     frame.render_widget(
-        Paragraph::new(
-            "↑↓ Select    Enter Completion (terminal job)    C Request Cancel    Q/Esc Back",
-        ),
+        Paragraph::new(Line::from(vec![
+            Span::styled("↑↓", shortcut_style()),
+            Span::raw(" Select  "),
+            Span::styled("Enter", shortcut_style()),
+            Span::raw(" Completion  "),
+            Span::styled("C", shortcut_style()),
+            Span::raw(" Cancel  "),
+            Span::styled("Q/Esc", shortcut_style()),
+            Span::raw(" Back"),
+        ]))
+        .style(Style::default().fg(Color::DarkGray)),
         layout[5],
     );
 }
@@ -4184,6 +4206,63 @@ fn job_phase_style(phase: JobPhase) -> Style {
     }
 }
 
+fn panel_block(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(74, 88, 110)))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn table_header_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn shortcut_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn header_status(state: &UiState) -> (&'static str, Style) {
+    if state.last_error.is_some() {
+        return ("ERROR", Style::default().fg(Color::Red));
+    }
+    let device_working = state.busy.is_some()
+        || state.ltfs_open_pending
+        || matches!(state.format_view, FormatView::Running)
+        || matches!(state.erase_view, EraseView::Running)
+        || selected_device_claimed(state);
+    if device_working {
+        return ("WORKING", Style::default().fg(Color::Yellow));
+    }
+    if state.snapshot.as_ref().is_some_and(|snapshot| {
+        !snapshot.warnings.is_empty()
+            || snapshot
+                .diagnosis
+                .as_ref()
+                .is_some_and(|diagnosis| !diagnosis.safe_for_normal_write)
+            || snapshot
+                .health
+                .as_ref()
+                .is_some_and(|health| !health.warnings.is_empty() || !health.tape_alerts.is_empty())
+    }) {
+        return ("WARNING", Style::default().fg(Color::Yellow));
+    }
+    match state.snapshot.as_ref().map(|snapshot| snapshot.lifecycle) {
+        Some(MediaLifecycle::LoadedThreaded) => ("HEALTHY", Style::default().fg(Color::Green)),
+        Some(MediaLifecycle::PresentUnthreaded) => ("READY", Style::default().fg(Color::Cyan)),
+        Some(MediaLifecycle::NoMediaDetected) => ("NO MEDIA", Style::default().fg(Color::Gray)),
+        _ => ("UNKNOWN", Style::default().fg(Color::DarkGray)),
+    }
+}
+
 fn render_cancel_confirmation(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
     let job = state.jobs.get(state.job_index);
     let popup = centered_rect(68, 7, area);
@@ -4216,34 +4295,77 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
         .and_then(|media| media.mam.as_ref())
         .and_then(|mam| mam.medium_serial.as_deref())
         .unwrap_or("—");
-    let title = format!(
-        "tapecpy │ {} {} │ {} │ {} │ {} │ {}",
+    let drive_title = format!(
+        "{} {}  ·  {}  ·  {}",
         drive.map_or("—", |drive| drive.vendor.as_str()),
         drive.map_or("—", |drive| drive.model.as_str()),
         drive.map_or("—", |drive| drive.serial.as_str()),
         drive.map_or_else(|| "—".into(), |drive| drive.nst_path.display().to_string()),
-        barcode,
-        medium_serial
     );
-    let block = Block::default().borders(Borders::ALL);
+    let volume_name = snapshot
+        .and_then(|snapshot| snapshot.volume.as_ref())
+        .and_then(|volume| volume.index.as_ref())
+        .and_then(|index| index.volume_name())
+        .unwrap_or("—");
+    let media_line = format!(
+        "{}  ·  {}  ·  {}  ·  {}",
+        lifecycle_label(snapshot.map_or(MediaLifecycle::Unknown, |snapshot| snapshot.lifecycle)),
+        barcode,
+        volume_name,
+        medium_serial,
+    );
+    let block = panel_block(" tapecpy ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let columns =
-        Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)]).split(inner);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    let status = header_status(state);
+    let temperature = header_temperature(state);
+    let top = Layout::horizontal([
+        Constraint::Min(10),
+        Constraint::Length(temperature.0.len() as u16 + 2),
+        Constraint::Length(status.0.len() as u16 + 2),
+    ])
+    .split(rows[0]);
     frame.render_widget(
-        Paragraph::new(title).style(
+        Paragraph::new(drive_title).style(
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        columns[0],
+        top[0],
     );
     frame.render_widget(
-        Paragraph::new(format!("Status  {}", state.status))
+        Paragraph::new(format!(" {} ", temperature.0))
             .alignment(Alignment::Right)
-            .style(Style::default().fg(Color::DarkGray)),
-        columns[1],
+            .style(temperature.1.add_modifier(Modifier::BOLD)),
+        top[1],
     );
+    frame.render_widget(
+        Paragraph::new(format!(" {} ", status.0))
+            .alignment(Alignment::Right)
+            .style(status.1.add_modifier(Modifier::BOLD)),
+        top[2],
+    );
+    frame.render_widget(
+        Paragraph::new(media_line).style(Style::default().fg(Color::Gray)),
+        rows[1],
+    );
+}
+
+fn header_temperature(state: &UiState) -> (String, Style) {
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        return ("TEMP —".into(), Style::default().fg(Color::DarkGray));
+    };
+    let Some(health) = snapshot.health.as_ref() else {
+        return ("TEMP ?".into(), Style::default().fg(Color::DarkGray));
+    };
+    match health
+        .temperature
+        .and_then(|temperature| temperature.current_celsius)
+    {
+        Some(value) => (format!("{value}°C"), Style::default().fg(Color::Green)),
+        None => ("TEMP N/A".into(), Style::default().fg(Color::Yellow)),
+    }
 }
 
 fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
@@ -4264,7 +4386,7 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
             line("Tape device", snapshot.drive.nst_path.display()),
             line("SCSI device", snapshot.drive.sg_path.display()),
         ])
-        .block(Block::default().borders(Borders::ALL).title(" Drive ")),
+        .block(panel_block(" Drive ")),
         columns[0],
     );
     let media = snapshot.media.as_ref();
@@ -4280,12 +4402,12 @@ fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) 
             line("State", lifecycle_label(snapshot.lifecycle)),
             line("Barcode", barcode),
             line(
-                "Generation",
+                "Media",
                 media.and_then(|media| media.density_name()).unwrap_or("—"),
             ),
             line("Write Protect", write_protect),
         ])
-        .block(Block::default().borders(Borders::ALL).title(" Cartridge ")),
+        .block(panel_block(" Cartridge ")),
         columns[1],
     );
     render_overview_media(frame, rows[1], state, snapshot);
@@ -4349,11 +4471,7 @@ fn render_overview_media(
                 mam_capacity(mam.and_then(|mam| mam.total_read_mib)),
             ),
         ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" MAM Cartridge Data "),
-        ),
+        .block(panel_block(" MAM Cartridge Data ")),
         columns[0],
     );
     let right = Layout::vertical([Constraint::Length(8), Constraint::Min(15)]).split(columns[1]);
@@ -4406,11 +4524,7 @@ fn render_overview_media(
                 ),
             ),
         ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Health (cumulative) "),
-        ),
+        .block(panel_block(" Health (cumulative) ")),
         right[0],
     );
     render_cartridge_operations(frame, right[1], state, snapshot);
@@ -4858,11 +4972,7 @@ fn render_health(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
                 ),
                 line("Snapshot", &snapshot.refreshed_at),
             ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Drive / Media Health "),
-            ),
+            .block(panel_block(" Drive / Media Health ")),
             split[1],
         );
     }
@@ -4925,11 +5035,7 @@ fn render_channels(frame: &mut ratatui::Frame<'_>, area: Rect, channels: &Channe
         )));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Channel Error Rate — log10(BER) "),
-        ),
+        Paragraph::new(lines).block(panel_block(" Channel Error Rate — log10(BER) ")),
         area,
     );
 }
@@ -5012,9 +5118,10 @@ fn counter(value: Option<u64>) -> String {
 mod tests {
     use super::{
         EraseView, FileCommand, FormatField, FormatView, Page, ReadView, SequentialMode,
-        SequentialView, SourceView, UiState, WorkerCommand, WorkerOwnershipState, back_read_level,
-        back_write_level, braille_area_graph, cartridge_operation_line, display_clock,
-        handle_erase_key, handle_format_key, handle_sequential_key, ltfs_operation_line,
+        SequentialView, SourceView, UiState, WorkerCommand, WorkerEvent, WorkerOwnershipState,
+        apply_worker_event, back_read_level, back_write_level, braille_area_graph,
+        cartridge_operation_line, display_clock, handle_erase_key, handle_format_key,
+        handle_sequential_key, header_status, ltfs_operation_line,
     };
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
@@ -5031,6 +5138,18 @@ mod tests {
     fn telemetry_timestamp_is_displayed_to_whole_seconds_only() {
         assert_eq!(display_clock("2026-08-14T12:10:35.114344947Z"), "12:10:35");
         assert_eq!(display_clock("unknown"), "unknown");
+    }
+
+    #[test]
+    fn successful_device_event_clears_current_error_status() {
+        let mut state = UiState {
+            last_error: Some("temporary device error".into()),
+            ..UiState::default()
+        };
+        assert_eq!(header_status(&state).0, "ERROR");
+        apply_worker_event(&mut state, WorkerEvent::Drives(Vec::new()));
+        assert!(state.last_error.is_none());
+        assert_ne!(header_status(&state).0, "ERROR");
     }
 
     #[test]

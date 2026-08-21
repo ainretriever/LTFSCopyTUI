@@ -22,7 +22,9 @@ Linux 的独立架构和设备访问实现。
 
 ### 1. 准备系统
 
-当前只支持 Linux。编译需要 Git、C 编译工具和支持 Rust 2024 edition 的稳定版 Rust
+当前只支持 Linux，运行 Read 的文件输出路径要求 Linux kernel 5.6 或更新版本，
+因为安全路径解析使用 `openat2`。旧内核不会降级到可能跟随 symlink 的不安全路径 API，
+目标文件读取会被拒绝。编译需要 Git、C 编译工具和支持 Rust 2024 edition 的稳定版 Rust
 （`rustc 1.85` 或更新版本）；TAR 工作流需要 GNU tar。推荐通过
 [rustup](https://rustup.rs/) 安装 Rust。
 

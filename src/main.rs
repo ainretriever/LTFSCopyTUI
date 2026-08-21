@@ -802,9 +802,14 @@ fn cmd_read(args: &[String]) -> Result<(), String> {
 
     match out_path {
         Some(out) => {
-            let mut file =
-                std::fs::File::create(out).map_err(|e| format!("创建 {} 失败: {e}", out))?;
-            let n = app::read_file(&drive, path, &mut file)?;
+            let mut observer = |_: &app::ReadEvent| {};
+            let n = app::read_file_to_path_with_observer(
+                &drive,
+                path,
+                std::path::Path::new(out),
+                &app::CancellationToken::default(),
+                &mut observer,
+            )?;
             eprintln!("已读取 {n} 字节 -> {out}");
         }
         None => {

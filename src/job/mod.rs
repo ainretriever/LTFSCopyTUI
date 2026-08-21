@@ -4,13 +4,13 @@
 //! 使用这里的状态文件和 Unix socket，让后续客户端 attach、查询或请求安全取消。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,7 +24,13 @@ pub const PROTOCOL_VERSION: u16 = 1;
 fn default_sequential_block_size() -> usize {
     512 * 1024
 }
-const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const IPC_WORKER_COUNT: usize = 8;
+const IPC_QUEUE_CAPACITY: usize = 16;
+const IPC_MAX_WATCHES: usize = 4;
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const _: () = assert!(IPC_MAX_WATCHES < IPC_WORKER_COUNT);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -520,6 +526,7 @@ fn validate_read_preflight(plan: &ReadPreflight) -> Result<(), String> {
         return Err("read preflight payload 与文件长度总和不一致".into());
     }
     let mut previous = None;
+    let mut file_ranges = vec![Vec::new(); plan.files.len()];
     for extent in &plan.extents {
         let file = plan
             .files
@@ -532,11 +539,28 @@ fn validate_read_preflight(plan: &ReadPreflight) -> Result<(), String> {
         {
             return Err("read preflight extent 超出文件边界".into());
         }
+        if extent.byte_count != 0 {
+            file_ranges[extent.file_index]
+                .push((extent.file_offset, extent.file_offset + extent.byte_count));
+        }
         let position = (extent.partition, extent.start_block);
         if previous.is_some_and(|previous| previous > position) {
             return Err("read preflight extents 未按磁带位置排序".into());
         }
         previous = Some(position);
+    }
+    for (file_index, mut ranges) in file_ranges.into_iter().enumerate() {
+        ranges.sort_unstable_by_key(|(start, _)| *start);
+        let mut previous_end = None;
+        for (start, end) in ranges {
+            if previous_end.is_some_and(|previous_end| start < previous_end) {
+                return Err(format!(
+                    "read preflight extent 区间重叠: {}",
+                    plan.files[file_index].tape_path
+                ));
+            }
+            previous_end = Some(end);
+        }
     }
     Ok(())
 }
@@ -982,8 +1006,51 @@ impl JobControl {
 
 pub struct IpcServer {
     stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
+    accept_thread: Option<thread::JoinHandle<()>>,
+    workers: Vec<thread::JoinHandle<()>>,
     socket: PathBuf,
+}
+
+struct WatchSlots {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+impl WatchSlots {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(&self) -> Option<WatchPermit<'_>> {
+        let mut active = self.active.load(Ordering::Acquire);
+        loop {
+            if active >= self.limit {
+                return None;
+            }
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(WatchPermit { slots: self }),
+                Err(current) => active = current,
+            }
+        }
+    }
+}
+
+struct WatchPermit<'a> {
+    slots: &'a WatchSlots,
+}
+
+impl Drop for WatchPermit<'_> {
+    fn drop(&mut self) {
+        self.slots.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl IpcServer {
@@ -999,18 +1066,62 @@ impl IpcServer {
         listener
             .set_nonblocking(true)
             .map_err(|error| format!("设置 IPC socket nonblocking 失败: {error}"))?;
+
+        let (connections, connection_rx) =
+            std::sync::mpsc::sync_channel::<UnixStream>(IPC_QUEUE_CAPACITY);
+        let connection_rx = Arc::new(Mutex::new(connection_rx));
+        let watch_slots = Arc::new(WatchSlots::new(IPC_MAX_WATCHES));
+        let mut workers = Vec::with_capacity(IPC_WORKER_COUNT);
+        for index in 0..IPC_WORKER_COUNT {
+            let worker_rx = connection_rx.clone();
+            let worker_control = control.clone();
+            let worker_watch_slots = watch_slots.clone();
+            match thread::Builder::new()
+                .name(format!("tapecpy-job-ipc-worker-{index}"))
+                .spawn(move || ipc_worker(worker_rx, worker_control, worker_watch_slots))
+            {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    drop(connections);
+                    for worker in workers {
+                        let _ = worker.join();
+                    }
+                    let _ = fs::remove_file(&socket);
+                    return Err(format!("启动 IPC worker pool 失败: {error}"));
+                }
+            }
+        }
+
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
-        let thread = thread::Builder::new()
-            .name("tapecpy-job-ipc".into())
+        let accept_thread = thread::Builder::new()
+            .name("tapecpy-job-ipc-accept".into())
             .spawn(move || {
                 while !thread_stop.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _)) => {
-                            let connection_control = control.clone();
-                            let _ = thread::Builder::new()
-                                .name("tapecpy-job-ipc-client".into())
-                                .spawn(move || handle_connection(stream, &connection_control));
+                        Ok((mut stream, _)) => {
+                            if let Err(error) = configure_ipc_stream(&stream) {
+                                let _ = write_response(
+                                    &mut stream,
+                                    &Response::Error {
+                                        message: format!("配置 IPC connection 失败: {error}"),
+                                    },
+                                );
+                                continue;
+                            }
+                            match connections.try_send(stream) {
+                                Ok(()) => {}
+                                Err(std::sync::mpsc::TrySendError::Full(mut stream)) => {
+                                    let _ = write_response(
+                                        &mut stream,
+                                        &Response::Error {
+                                            message: "job IPC busy: connection queue is full"
+                                                .into(),
+                                        },
+                                    );
+                                }
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => break,
+                            }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(20));
@@ -1018,11 +1129,22 @@ impl IpcServer {
                         Err(_) => break,
                     }
                 }
-            })
-            .map_err(|error| format!("启动 IPC thread 失败: {error}"))?;
+            });
+        let accept_thread = match accept_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                stop.store(true, Ordering::Release);
+                for worker in workers {
+                    let _ = worker.join();
+                }
+                let _ = fs::remove_file(&socket);
+                return Err(format!("启动 IPC accept thread 失败: {error}"));
+            }
+        };
         Ok(Self {
             stop,
-            thread: Some(thread),
+            accept_thread: Some(accept_thread),
+            workers,
             socket,
         })
     }
@@ -1031,23 +1153,47 @@ impl IpcServer {
 impl Drop for IpcServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        if let Some(thread) = self.accept_thread.take() {
             let _ = thread.join();
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
         }
         let _ = fs::remove_file(&self.socket);
     }
 }
 
-fn handle_connection(mut stream: UnixStream, control: &JobControl) {
-    let response = match read_request(&stream) {
-        Ok(request) => handle_request(request, control),
-        Err(message) => Response::Error { message },
-    };
-    let _ = serde_json::to_writer(&mut stream, &response);
-    let _ = stream.write_all(b"\n");
+fn configure_ipc_stream(stream: &UnixStream) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(IPC_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IPC_IO_TIMEOUT))
 }
 
-fn handle_request(request: Request, control: &JobControl) -> Response {
+fn ipc_worker(
+    connections: Arc<Mutex<std::sync::mpsc::Receiver<UnixStream>>>,
+    control: JobControl,
+    watch_slots: Arc<WatchSlots>,
+) {
+    loop {
+        let stream = match connections.lock() {
+            Ok(receiver) => receiver.recv(),
+            Err(_) => return,
+        };
+        let Ok(stream) = stream else {
+            return;
+        };
+        handle_connection(stream, &control, &watch_slots);
+    }
+}
+
+fn handle_connection(mut stream: UnixStream, control: &JobControl, watch_slots: &WatchSlots) {
+    let response = match read_request(&stream) {
+        Ok(request) => handle_request(request, control, watch_slots),
+        Err(message) => Response::Error { message },
+    };
+    let _ = write_response(&mut stream, &response);
+}
+
+fn handle_request(request: Request, control: &JobControl, watch_slots: &WatchSlots) -> Response {
     match request {
         request if request.version() != PROTOCOL_VERSION => Response::Error {
             message: format!(
@@ -1062,11 +1208,16 @@ fn handle_request(request: Request, control: &JobControl) -> Response {
             after_revision,
             timeout_ms,
             ..
-        } => Response::State {
-            state: Box::new(control.watch(
-                after_revision,
-                Duration::from_millis(timeout_ms.min(30_000)),
-            )),
+        } => match watch_slots.try_acquire() {
+            Some(_permit) => Response::State {
+                state: Box::new(control.watch(
+                    after_revision,
+                    Duration::from_millis(timeout_ms.min(30_000)),
+                )),
+            },
+            None => Response::Error {
+                message: "job IPC busy: concurrent Watch limit reached".into(),
+            },
         },
         Request::Cancel { .. } => match control.request_cancel(timestamp_now()) {
             Ok(state) if state.phase == JobPhase::CancellationRequested => {
@@ -1083,40 +1234,136 @@ fn handle_request(request: Request, control: &JobControl) -> Response {
 }
 
 fn read_request(stream: &UnixStream) -> Result<Request, String> {
-    let mut reader = BufReader::new(stream);
-    let mut message = Vec::new();
-    reader
-        .by_ref()
-        .take(MAX_MESSAGE_BYTES as u64 + 1)
-        .read_until(b'\n', &mut message)
-        .map_err(|error| format!("读取 IPC request 失败: {error}"))?;
-    if message.len() > MAX_MESSAGE_BYTES {
-        return Err("IPC request 超过大小限制".into());
-    }
+    let message = read_message(stream, MAX_REQUEST_BYTES, IPC_IO_TIMEOUT, "IPC request")?;
     serde_json::from_slice(&message).map_err(|error| format!("解析 IPC request 失败: {error}"))
 }
 
+fn read_message(
+    mut stream: &UnixStream,
+    max_bytes: usize,
+    timeout: Duration,
+    context: &str,
+) -> Result<Vec<u8>, String> {
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{context} timeout 溢出"))?;
+    let mut message = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .ok_or_else(|| format!("读取 {context} 超时"))?;
+        stream
+            .set_read_timeout(Some(remaining.max(Duration::from_millis(1))))
+            .map_err(|error| format!("设置 {context} 读取超时失败: {error}"))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => {
+                let end = chunk[..count]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(count, |position| position + 1);
+                if message.len().saturating_add(end) > max_bytes {
+                    return Err(format!("{context} 超过大小限制 {max_bytes} bytes"));
+                }
+                message.extend_from_slice(&chunk[..end]);
+                if end < count || chunk[end - 1] == b'\n' {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(format!("读取 {context} 超时"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("读取 {context} 失败: {error}")),
+        }
+    }
+    if message.is_empty() {
+        return Err(format!("{context} 为空"));
+    }
+    Ok(message)
+}
+
+fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), String> {
+    let mut message = serde_json::to_vec(response)
+        .map_err(|error| format!("序列化 IPC response 失败: {error}"))?;
+    if message.len().saturating_add(1) > MAX_RESPONSE_BYTES {
+        message = serde_json::to_vec(&Response::Error {
+            message: format!("IPC response 超过大小限制 {MAX_RESPONSE_BYTES} bytes"),
+        })
+        .map_err(|error| format!("序列化 IPC overflow response 失败: {error}"))?;
+    }
+    message.push(b'\n');
+    write_message(stream, &message, IPC_IO_TIMEOUT, "IPC response")
+}
+
+fn write_message(
+    mut stream: &UnixStream,
+    message: &[u8],
+    timeout: Duration,
+    context: &str,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{context} timeout 溢出"))?;
+    let mut written = 0usize;
+    while written < message.len() {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .ok_or_else(|| format!("写入 {context} 超时"))?;
+        stream
+            .set_write_timeout(Some(remaining.max(Duration::from_millis(1))))
+            .map_err(|error| format!("设置 {context} 写入超时失败: {error}"))?;
+        match stream.write(&message[written..]) {
+            Ok(0) => return Err(format!("写入 {context} 时 connection 已关闭")),
+            Ok(count) => written += count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(format!("写入 {context} 超时"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("写入 {context} 失败: {error}")),
+        }
+    }
+    Ok(())
+}
+
 pub fn request(socket: &Path, request: &Request) -> Result<Response, String> {
-    let mut stream = UnixStream::connect(socket)
+    let stream = UnixStream::connect(socket)
         .map_err(|error| format!("连接 job IPC {} 失败: {error}", socket.display()))?;
-    serde_json::to_writer(&mut stream, request)
-        .map_err(|error| format!("序列化 IPC request 失败: {error}"))?;
-    stream
-        .write_all(b"\n")
-        .map_err(|error| format!("发送 IPC request 失败: {error}"))?;
+    let mut message =
+        serde_json::to_vec(request).map_err(|error| format!("序列化 IPC request 失败: {error}"))?;
+    if message.len().saturating_add(1) > MAX_REQUEST_BYTES {
+        return Err(format!(
+            "IPC request 超过大小限制 {MAX_REQUEST_BYTES} bytes"
+        ));
+    }
+    message.push(b'\n');
+    write_message(&stream, &message, IPC_IO_TIMEOUT, "IPC request")?;
     stream
         .shutdown(std::net::Shutdown::Write)
         .map_err(|error| format!("结束 IPC request 失败: {error}"))?;
-    let mut reader = BufReader::new(stream);
-    let mut message = Vec::new();
-    reader
-        .by_ref()
-        .take(MAX_MESSAGE_BYTES as u64 + 1)
-        .read_until(b'\n', &mut message)
-        .map_err(|error| format!("读取 IPC response 失败: {error}"))?;
-    if message.len() > MAX_MESSAGE_BYTES {
-        return Err("IPC response 超过大小限制".into());
-    }
+    let response_timeout = match request {
+        Request::Watch { timeout_ms, .. } => {
+            Duration::from_millis((*timeout_ms).min(30_000)).saturating_add(IPC_IO_TIMEOUT)
+        }
+        _ => IPC_IO_TIMEOUT,
+    };
+    let message = read_message(
+        &stream,
+        MAX_RESPONSE_BYTES,
+        response_timeout,
+        "IPC response",
+    )?;
     serde_json::from_slice(&message).map_err(|error| format!("解析 IPC response 失败: {error}"))
 }
 
@@ -1478,28 +1725,13 @@ fn run_operation(
                     &mut observer,
                 )?
             } else {
-                let mut output = OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .mode(0o600)
-                    .open(output_path)
-                    .map_err(|error| {
-                        format!(
-                            "创建 Read destination {} 失败: {error}",
-                            output_path.display()
-                        )
-                    })?;
-                let bytes = crate::app::read_file_with_observer(
+                crate::app::read_file_to_path_with_observer(
                     drive,
                     &spec.source.path,
-                    &mut output,
+                    output_path,
                     cancellation,
                     &mut observer,
-                )?;
-                output
-                    .sync_all()
-                    .map_err(|error| format!("同步 Read destination 失败: {error}"))?;
-                bytes
+                )?
             };
             control.update(|state| {
                 state.revision += 1;
@@ -1936,7 +2168,11 @@ mod tests {
         unsafe_value.read_preflight.as_mut().unwrap().files[0].relative_path = "../escape".into();
         assert!(unsafe_value.validate().is_err());
 
-        let mut unsorted = value;
+        let mut overlapping = value;
+        overlapping.read_preflight.as_mut().unwrap().extents[1].file_offset = 2;
+        assert!(overlapping.validate().unwrap_err().contains("区间重叠"));
+
+        let mut unsorted = overlapping;
         unsorted.read_preflight.as_mut().unwrap().extents.swap(0, 1);
         assert!(unsorted.validate().is_err());
     }
@@ -2112,12 +2348,14 @@ mod tests {
             token.clone(),
         )
         .unwrap();
+        let watch_slots = WatchSlots::new(IPC_MAX_WATCHES);
 
         let response = handle_request(
             Request::Status {
                 protocol_version: PROTOCOL_VERSION,
             },
             &control,
+            &watch_slots,
         );
         assert!(matches!(response, Response::State { .. }));
 
@@ -2126,6 +2364,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
             &control,
+            &watch_slots,
         );
         let Response::CancelAccepted { state } = response else {
             panic!("unexpected response")
@@ -2137,6 +2376,124 @@ mod tests {
             JobPhase::CancellationRequested
         );
 
+        let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
+    fn ipc_read_uses_total_deadline_and_rejects_oversized_messages() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let drip = thread::spawn(move || {
+            for _ in 0..100 {
+                if writer.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let started = std::time::Instant::now();
+        let error = read_message(
+            &reader,
+            MAX_REQUEST_BYTES,
+            Duration::from_millis(50),
+            "test request",
+        )
+        .unwrap_err();
+        assert!(error.contains("超时"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(reader);
+        drip.join().unwrap();
+
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer
+            .write_all(&vec![b'x'; MAX_REQUEST_BYTES + 1])
+            .unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        let error = read_message(
+            &reader,
+            MAX_REQUEST_BYTES,
+            Duration::from_secs(1),
+            "test request",
+        )
+        .unwrap_err();
+        assert!(error.contains("大小限制"));
+    }
+
+    #[test]
+    fn watch_limit_preserves_cancel_capacity() {
+        let paths = test_paths("watch-limit");
+        let token = CancellationToken::default();
+        let control = JobControl::new(
+            paths.clone(),
+            JobState::queued(spec(OperationKind::Write)).unwrap(),
+            token.clone(),
+        )
+        .unwrap();
+        let no_watch_slots = WatchSlots::new(0);
+        let response = handle_request(
+            Request::Watch {
+                protocol_version: PROTOCOL_VERSION,
+                after_revision: 1,
+                timeout_ms: 30_000,
+            },
+            &control,
+            &no_watch_slots,
+        );
+        assert!(matches!(response, Response::Error { message } if message.contains("Watch")));
+
+        let response = handle_request(
+            Request::Cancel {
+                protocol_version: PROTOCOL_VERSION,
+            },
+            &control,
+            &no_watch_slots,
+        );
+        assert!(matches!(response, Response::CancelAccepted { .. }));
+        assert!(token.is_cancelled());
+        let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
+    fn watch_permit_and_connection_queue_are_bounded() {
+        let slots = WatchSlots::new(1);
+        let permit = slots.try_acquire().unwrap();
+        assert!(slots.try_acquire().is_none());
+        drop(permit);
+        assert!(slots.try_acquire().is_some());
+
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(IPC_QUEUE_CAPACITY);
+        for value in 0..IPC_QUEUE_CAPACITY {
+            sender.try_send(value).unwrap();
+        }
+        assert!(matches!(
+            sender.try_send(IPC_QUEUE_CAPACITY),
+            Err(std::sync::mpsc::TrySendError::Full(_))
+        ));
+    }
+
+    #[test]
+    fn ipc_workers_exit_when_connection_sender_closes() {
+        let paths = test_paths("worker-shutdown");
+        let control = JobControl::new(
+            paths.clone(),
+            JobState::queued(spec(OperationKind::Read)).unwrap(),
+            CancellationToken::default(),
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let watch_slots = Arc::new(WatchSlots::new(1));
+        let workers = (0..2)
+            .map(|_| {
+                let receiver = receiver.clone();
+                let control = control.clone();
+                let watch_slots = watch_slots.clone();
+                thread::spawn(move || ipc_worker(receiver, control, watch_slots))
+            })
+            .collect::<Vec<_>>();
+        drop(sender);
+        for worker in workers {
+            worker.join().unwrap();
+        }
         let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
     }
 
@@ -2344,11 +2701,13 @@ mod tests {
             CancellationToken::default(),
         )
         .unwrap();
+        let watch_slots = WatchSlots::new(IPC_MAX_WATCHES);
         let response = handle_request(
             Request::Status {
                 protocol_version: PROTOCOL_VERSION + 1,
             },
             &control,
+            &watch_slots,
         );
         let Response::Error { message } = response else {
             panic!("version mismatch was accepted")

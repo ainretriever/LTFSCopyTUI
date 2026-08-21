@@ -1253,11 +1253,17 @@ LTO-5 上完成 tapecpy/OpenLTFS 交叉验证；erase 的 short 与最小分区 
 交互式 LTFS Operations 的首次打开采用另一条低延迟路径：先读取不会引起走带的
 两份 MAM VCI，按 VCI block 较小者优先定位 index 分区，再从 VCI 声明位置定点
 读取当前 index，并用两份 VCI 的 generation/UUID/VCR 及当前 index 所在分区的
-block 完成预览级一致性检查。VCI 缺失、损坏，或 generation/UUID/self-location
-不匹配时，卷识别自动回退为 index 分区顺序扫描。预览不会为了检查第二份 index
-而跨到 data 分区；该快速检查不替代显式 `diagnose`，也不替代 Write runner 启动时
-的 index 分区顺序扫描、data index 定点验证和物理 EOD 检查，后者仍负责取得可信
-覆盖点并维持写入安全边界。
+block 完成预览级一致性检查。正常路径不会为了检查第二份 index 而跨到 data 分区。
+如果 index partition 的 VCI 目标无法读取、XML 不是完整合法文档，或
+generation/UUID/self-location 不匹配，则按 data partition VCI 定点读取同 generation
+副本；只有 UUID、generation、实际 block 和 self-location 全部一致时才允许作为只读
+fallback。该状态分类为 `IndexCopyMissing`、`safe_for_normal_write=false`，并保留原副本
+错误，不能伪报为 Healthy。两份 VCI 都不能提供可信当前 index 时才回退为 index 分区
+顺序扫描；最后一个有效 index 后存在损坏记录组时不得静默采用旧 generation。
+
+该快速检查不替代显式 `diagnose`，也不替代 Write runner 启动时的 index 分区顺序扫描、
+data index 定点验证和物理 EOD 检查。Write 启动时发现 index partition 尾部 XML 损坏、
+缺少结束 filemark 或扫描失败，必须清除 fallback 结果并拒绝普通写入。
 
 2026-08-15 在 Quantum LTO-5 测试带（index `P0B5`、data index `P1B9720`）验证：
 旧 `volume` 路径耗时 50.93 秒；新快路径在磁头已位于 index 分区时为 3.52 秒，
@@ -1341,6 +1347,16 @@ TUI / CLI client ── Unix socket ──> tapecpy job runner ──> tape driv
 * 任务完成后 runner 退出，保留最终状态和日志，socket 随之消失；
 * 主机或 runner 意外终止后，不自动从中途续写。残留 running 状态必须解释为
   interrupted，并要求执行一致性诊断。
+
+Job IPC 按单用户模型运行：socket 权限为 `0600`，TUI、CLI 和 runner 应由同一个可信
+Unix 用户启动，不建立额外的跨用户认证协议。runner 仍必须防止异常本地客户端造成无界
+资源增长：IPC 使用 8 个固定 worker、16 个等待连接和最多 4 个并发 Watch；Watch 配额
+小于 worker 数量，为 Status/Cancel 保留处理能力。请求读取和响应写入都使用 5 秒总截止
+时间，不能通过持续发送或接收零碎字节无限延长；request 最大 16 KiB，response 最大
+1 MiB。队列或 Watch 配额已满时返回明确 busy 错误，不创建额外线程。
+
+这些限制保护任务可靠性，但不构成对同 UID 恶意进程的安全边界。同一用户本来就能发送
+进程信号、修改自己的状态文件或访问其拥有的设备节点；这部分运行安全由部署用户负责。
 
 TUI 的操作顺序固定为：先选择驱动器和 Read/Write 方向，再在方向专用的浏览界面
 中解析 source 与 destination，完成冲突检查并展示 operation plan。只有确认页的

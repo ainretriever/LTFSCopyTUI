@@ -227,6 +227,7 @@ impl std::fmt::Display for IndexError {
 impl Index {
     /// 解析 LTFS index XML 文本。
     pub fn parse_xml(xml: &str) -> Result<Index, IndexError> {
+        super::validate_xml_document(xml, b"ltfsindex").map_err(IndexError::Xml)?;
         let mut reader = Reader::from_str(xml);
         // 保留 XML entity 两侧属于文件名/卷名的空格；嵌套字段解析器会按
         // 元素边界累计 Text/GeneralRef，元素间缩进不会写入字段。
@@ -1133,6 +1134,12 @@ mod tests {
             Index::parse_xml(&xml),
             Err(IndexError::MissingField("generationnumber"))
         );
+    }
+
+    #[test]
+    fn index_xml_rejects_truncated_document_after_required_fields() {
+        let xml = INDEX_XML.trim_end().strip_suffix("</ltfsindex>").unwrap();
+        assert!(matches!(Index::parse_xml(xml), Err(IndexError::Xml(_))));
     }
 
     #[test]

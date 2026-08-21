@@ -93,6 +93,39 @@ pub fn error_counters(parameters: &[LogParameter]) -> ErrorCounters {
     counters
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TemperatureLog {
+    pub current_celsius: Option<i16>,
+    pub reference_celsius: Option<i16>,
+}
+
+/// Parse SSC Temperature Log page 0Dh.
+///
+/// Parameter 0 is the current temperature and parameter 1 is the reference
+/// temperature. 0xFF/0xFFFF are commonly used by drives for unavailable data.
+pub fn temperature_log(parameters: &[LogParameter]) -> TemperatureLog {
+    let value = |code: u16| {
+        parameters
+            .iter()
+            .find(|parameter| parameter.code == code)
+            .and_then(|parameter| {
+                let raw = unsigned_value(&parameter.value)?;
+                if raw == 0xff || raw == 0xffff {
+                    return None;
+                }
+                match parameter.value.as_slice() {
+                    [value] => Some(i16::from(i8::from_be_bytes([*value]))),
+                    [high, low] => Some(i16::from_be_bytes([*high, *low])),
+                    _ => None,
+                }
+            })
+    };
+    TemperatureLog {
+        current_celsius: value(0),
+        reference_celsius: value(1),
+    }
+}
+
 /// TapeAlert page 2Eh 中值非零的 parameter code（标准 flag 编号 1..64）。
 pub fn active_tape_alerts(parameters: &[LogParameter]) -> Vec<u16> {
     parameters
@@ -123,5 +156,38 @@ mod tests {
             parse_page(&page, 0x2e),
             Err(ParseError::TruncatedParameter { code: 1 })
         );
+    }
+
+    #[test]
+    fn parses_temperature_and_unavailable_reference() {
+        let parameters = vec![
+            LogParameter {
+                code: 0,
+                control: 0x43,
+                value: vec![0, 37],
+            },
+            LogParameter {
+                code: 1,
+                control: 0x43,
+                value: vec![0, 0xff],
+            },
+        ];
+        assert_eq!(
+            temperature_log(&parameters),
+            TemperatureLog {
+                current_celsius: Some(37),
+                reference_celsius: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_negative_signed_temperature() {
+        let parameters = vec![LogParameter {
+            code: 0,
+            control: 0x43,
+            value: vec![0xff, 0xfe],
+        }];
+        assert_eq!(temperature_log(&parameters).current_celsius, Some(-2));
     }
 }

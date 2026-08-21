@@ -106,6 +106,7 @@ impl std::fmt::Display for LabelError {
 impl Label {
     /// 解析 LTFS label XML 文本。
     pub fn parse_xml(xml: &str) -> Result<Label, LabelError> {
+        super::validate_xml_document(xml, b"ltfslabel").map_err(LabelError::Xml)?;
         let mut reader = Reader::from_str(xml);
         // 实体引用会把一个字段拆成多个 Text/GeneralRef 事件；逐事件 trim
         // 会吞掉实体两侧的合法空格，因此在字段完整累积后再解释内容。
@@ -411,6 +412,12 @@ mod tests {
             Label::parse_xml(&xml),
             Err(LabelError::MissingField("creator"))
         );
+    }
+
+    #[test]
+    fn label_xml_rejects_truncated_document_after_required_fields() {
+        let xml = LABEL_XML.trim_end().strip_suffix("</ltfslabel>").unwrap();
+        assert!(matches!(Label::parse_xml(xml), Err(LabelError::Xml(_))));
     }
 
     #[test]

@@ -4,10 +4,11 @@
 //! 写入等工作流都从这里编排，Presentation 层不得直接操作设备。
 
 use std::collections::{BTreeSet, VecDeque};
-use std::io::Write;
-use std::os::fd::AsRawFd;
+use std::ffi::CString;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
@@ -63,6 +64,7 @@ pub fn select_drive<'a>(
 pub struct DriveHealth {
     pub write_errors: Option<device::log::ErrorCounters>,
     pub read_errors: Option<device::log::ErrorCounters>,
+    pub temperature: Option<device::log::TemperatureLog>,
     pub tape_alerts: Vec<u16>,
     pub write_channels: Option<Vec<device::channel_error::ChannelCounters>>,
     pub read_channels: Option<Vec<device::channel_error::ChannelCounters>>,
@@ -144,6 +146,19 @@ fn read_drive_health_session(session: &mut TapeSession) -> DriveHealth {
                 .warnings
                 .push(format!("读取 {kind} LOG SENSE page 失败: {error}")),
         }
+    }
+    match session.read_log_page(0x0d, 0) {
+        Ok(raw) => match device::log::parse_page(&raw, 0x0d) {
+            Ok(parameters) => {
+                health.temperature = Some(device::log::temperature_log(&parameters));
+            }
+            Err(error) => health
+                .warnings
+                .push(format!("解析 temperature LOG SENSE page 失败: {error:?}")),
+        },
+        Err(error) => health
+            .warnings
+            .push(format!("读取 temperature LOG SENSE page 失败: {error}")),
     }
     match session.read_log_page(0x2e, 0) {
         Ok(raw) => match device::log::parse_page(&raw, 0x2e) {
@@ -520,6 +535,9 @@ pub struct VolumeInfo {
     pub index: Option<Index>,
     /// index 分区中最新 index 前的 filemark 块号（刷新 index 时的覆盖起点）。
     pub index_write_block: Option<u64>,
+    /// 当前 index 因 index partition 副本不可用而从 data partition VCI 恢复。
+    /// 该状态允许只读访问，但不能视为两份 index 健康或允许普通写入。
+    pub index_recovered_from_data_partition: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2245,10 +2263,17 @@ fn probe_partition_label(
 }
 
 /// 在指定物理分区上从 label 之后扫描最新 index。
+struct LatestIndexScan {
+    index: Option<Index>,
+    write_block: Option<u64>,
+    /// 最后一个有效 index 之后存在非空但无法解析或没有结束 filemark 的记录组。
+    trailing_invalid_group: bool,
+}
+
 fn scan_latest_index(
     session: &mut TapeSession,
     partition: u8,
-) -> Result<(Option<Index>, Option<u64>), device::Error> {
+) -> Result<LatestIndexScan, device::Error> {
     // label 结束于块 3（VOL1, FM, XML label, FM；某些实现后跟一个多余 FM），
     // index 从块 4 开始。
     session.locate(partition, 4)?;
@@ -2260,6 +2285,7 @@ fn scan_latest_index(
     let mut records: Vec<u8> = Vec::new();
     let mut latest: Option<Index> = None;
     let mut last_valid_file_start: Option<u64> = None;
+    let mut trailing_invalid_group = false;
     let mut file_start = 4u64;
     let mut file_records = 0u64;
     loop {
@@ -2275,16 +2301,28 @@ fn scan_latest_index(
                 {
                     last_valid_file_start = Some(file_start);
                     latest = Some(idx);
+                    trailing_invalid_group = false;
+                } else if !records.is_empty() {
+                    trailing_invalid_group = true;
                 }
                 records.clear();
                 file_start += file_records + 1;
                 file_records = 0;
             }
-            ReadRecord::Eod => break,
+            ReadRecord::Eod => {
+                if !records.is_empty() {
+                    trailing_invalid_group = true;
+                }
+                break;
+            }
         }
     }
     let write_block = last_valid_file_start.and_then(|start| start.checked_sub(1));
-    Ok((latest, write_block))
+    Ok(LatestIndexScan {
+        index: latest,
+        write_block,
+        trailing_invalid_group,
+    })
 }
 
 fn scan_index_candidates(
@@ -2583,14 +2621,27 @@ fn inspect_volume_session_for_write(
         return Ok(volume);
     };
     match scan_latest_index(session, label.index_partition) {
-        Ok((index, write_block)) => {
-            volume.index = index;
-            volume.index_write_block = write_block;
+        Ok(scan) if !scan.trailing_invalid_group => {
+            volume.index = scan.index;
+            volume.index_write_block = scan.write_block;
+            volume.index_recovered_from_data_partition = false;
         }
-        Err(error) => volume.warnings.push(format!(
-            "写入前分区 {} index 顺序扫描失败: {error}",
-            label.index_partition
-        )),
+        Ok(_) => {
+            volume.index = None;
+            volume.index_write_block = None;
+            volume.warnings.push(format!(
+                "写入前分区 {} 最新 index XML 损坏或没有结束 filemark；拒绝普通写入",
+                label.index_partition
+            ));
+        }
+        Err(error) => {
+            volume.index = None;
+            volume.index_write_block = None;
+            volume.warnings.push(format!(
+                "写入前分区 {} index 顺序扫描失败: {error}",
+                label.index_partition
+            ));
+        }
     }
     Ok(volume)
 }
@@ -2635,14 +2686,17 @@ fn preferred_partition_order(
 
 fn candidate_matches_vci(
     label: &Label,
+    partition: u8,
     vci: &VolumeCoherencyInformation,
     candidate: &IndexCandidateDiagnostic,
 ) -> bool {
     candidate.index.as_ref().is_some_and(|index| {
-        vci.volume_uuid == label.volume_uuid
+        matches!(partition, p if p == label.index_partition || p == label.data_partition)
+            && candidate.physical_partition == partition
+            && vci.volume_uuid == label.volume_uuid
             && index.volume_uuid == label.volume_uuid
             && index.generation == vci.generation
-            && index.self_location.partition == label.index_partition
+            && index.self_location.partition == partition
             && index.self_location.startblock == vci.block
             && candidate.actual_start_block == vci.block
     })
@@ -2702,43 +2756,87 @@ fn inspect_volume_session_guided(
         .unwrap_or_else(|| vec![index_logical]);
 
     for partition in index_phys {
-        let direct = vci
-            .iter()
-            .find(|(physical, _)| *physical == partition)
-            .and_then(|(_, copy)| {
-                read_index_candidate_at(session, partition, copy.block)
-                    .map_err(|error| {
-                        info.warnings.push(format!(
-                            "分区 {partition} VCI 指向 block {}，定点读取失败: {error}",
-                            copy.block
-                        ));
-                    })
-                    .ok()
-                    .filter(|candidate| candidate_matches_vci(first_label, copy, candidate))
-                    .and_then(|candidate| candidate.index)
-                    .map(|index| (index, copy.block.checked_sub(1)))
-            });
-        if let Some((index, write_block)) = direct {
-            info.index = Some(index);
-            info.index_write_block = write_block;
-            break;
+        if let Some((_, copy)) = vci.iter().find(|(physical, _)| *physical == partition) {
+            match read_index_candidate_at(session, partition, copy.block) {
+                Ok(candidate)
+                    if candidate_matches_vci(first_label, partition, copy, &candidate) =>
+                {
+                    info.index = candidate.index;
+                    info.index_write_block = copy.block.checked_sub(1);
+                    break;
+                }
+                Ok(candidate) => info.warnings.push(format!(
+                    "index partition {partition} VCI 指向 block {}，但当前 index 不可信: {}",
+                    copy.block,
+                    candidate
+                        .parse_error
+                        .as_deref()
+                        .unwrap_or("UUID/generation/self-location 与 VCI 或 label 不一致")
+                )),
+                Err(error) => info.warnings.push(format!(
+                    "index partition {partition} VCI 指向 block {}，定点读取失败: {error}",
+                    copy.block
+                )),
+            }
+        } else {
+            info.warnings
+                .push(format!("index partition {partition} 没有可用 VCI"));
+        }
+
+        let data_partition = first_label.data_partition;
+        if let Some((_, copy)) = vci.iter().find(|(physical, _)| *physical == data_partition) {
+            match read_index_candidate_at(session, data_partition, copy.block) {
+                Ok(candidate)
+                    if candidate_matches_vci(
+                        first_label,
+                        data_partition,
+                        copy,
+                        &candidate,
+                    ) =>
+                {
+                    info.index = candidate.index;
+                    info.index_write_block = None;
+                    info.index_recovered_from_data_partition = true;
+                    info.warnings.push(format!(
+                        "index partition 当前副本不可用；已从 data partition {data_partition} block {} 恢复 generation {}，仅允许只读访问并要求诊断",
+                        copy.block, copy.generation
+                    ));
+                    break;
+                }
+                Ok(candidate) => info.warnings.push(format!(
+                    "data partition {data_partition} VCI 指向 block {}，但 fallback index 不可信: {}",
+                    copy.block,
+                    candidate
+                        .parse_error
+                        .as_deref()
+                        .unwrap_or("UUID/generation/self-location 与 VCI 或 label 不一致")
+                )),
+                Err(error) => info.warnings.push(format!(
+                    "data partition {data_partition} VCI 指向 block {}，fallback 定点读取失败: {error}",
+                    copy.block
+                )),
+            }
         }
 
         info.warnings.push(format!(
-            "分区 {partition} 的 VCI 无法可信定位当前 index，回退为顺序扫描"
+            "两份 VCI 均无法可信定位当前 index，回退为顺序扫描 index partition {partition}"
         ));
         match scan_latest_index(session, partition) {
-            Ok((Some(idx), write_block)) => {
-                if idx.self_location.partition == index_logical || info.index.is_none() {
-                    info.index_write_block = write_block;
-                    info.index = Some(idx);
+            Ok(scan) if scan.trailing_invalid_group => info.warnings.push(format!(
+                "index partition {partition} 最后一个有效 index 之后存在损坏或未结束的记录组；不采用旧 generation"
+            )),
+            Ok(scan) => {
+                if let Some(index) = scan.index
+                    && (index.self_location.partition == index_logical || info.index.is_none())
+                {
+                    info.index_write_block = scan.write_block;
+                    info.index = Some(index);
                     break;
                 }
             }
-            Ok((None, _)) => {}
-            Err(e) => info
+            Err(error) => info
                 .warnings
-                .push(format!("分区 {partition} index 扫描失败: {e}")),
+                .push(format!("分区 {partition} index 扫描失败: {error}")),
         }
     }
 
@@ -2766,13 +2864,17 @@ fn diagnose_preview_consistency(
         })
         .into_iter()
         .collect::<Vec<_>>();
-    let (consistency, safe_for_normal_write) = classify_preview_consistency(
-        label_uuid.as_deref(),
-        candidates
-            .first()
-            .and_then(|candidate| candidate.index.as_ref()),
-        &vci,
-    );
+    let (consistency, safe_for_normal_write) = if volume.index_recovered_from_data_partition {
+        (VolumeConsistency::IndexCopyMissing, false)
+    } else {
+        classify_preview_consistency(
+            label_uuid.as_deref(),
+            candidates
+                .first()
+                .and_then(|candidate| candidate.index.as_ref()),
+            &vci,
+        )
+    };
     VolumeDiagnosis {
         label_uuid,
         candidates,
@@ -2829,6 +2931,51 @@ pub fn read_file(
 ) -> Result<u64, String> {
     let mut ignore = |_: &ReadEvent| {};
     read_file_with_observer(drive, path, out, &CancellationToken::default(), &mut ignore)
+}
+
+/// Read one LTFS file into a host file using the bounded destination pipeline.
+///
+/// The destination is created only after the plan has been checked and the runner
+/// has revalidated the current volume generation.
+pub fn read_file_to_path_with_observer(
+    drive: &TapeDrive,
+    tape_path: &str,
+    destination: &Path,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&ReadEvent),
+) -> Result<u64, String> {
+    if std::fs::symlink_metadata(destination).is_ok() {
+        return Err(format!(
+            "Read destination 已存在，拒绝覆盖: {}",
+            destination.display()
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(format!(
+            "Read destination parent 不是目录: {}",
+            parent.display()
+        ));
+    }
+    let mut session = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
+    let volume = inspect_volume_session(&mut session).map_err(|error| error.to_string())?;
+    if !volume.recognized {
+        return Err(volume.reason.unwrap_or_else(|| "不是 LTFS 卷".into()));
+    }
+    let index = volume.index.ok_or_else(|| "没有可用的 index".to_string())?;
+    let mut plan = plan_ltfs_read(&index, &[tape_path.to_owned()])?;
+    if plan.files.len() != 1 || !plan.directories.is_empty() {
+        return Err(format!("不是单个 LTFS 文件: {tape_path}"));
+    }
+    let name = destination
+        .file_name()
+        .ok_or_else(|| format!("Read destination 不是文件路径: {}", destination.display()))?;
+    plan.files[0].relative_path = PathBuf::from(name);
+    plan.directories.clear();
+    execute_read_plan(drive, &plan, parent, cancellation, observer)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3019,11 +3166,7 @@ fn append_read_file(
     if file.symlink_target.is_some() {
         return Err(format!("Read plan 暂不恢复符号链接: {tape_path}"));
     }
-    let extent_bytes = file.extents.iter().try_fold(0u64, |total, extent| {
-        total
-            .checked_add(extent.byte_count)
-            .ok_or_else(|| format!("extent 长度溢出: {tape_path}"))
-    })?;
+    let extent_bytes = validate_file_extents(&tape_path, file.length, &file.extents)?;
     if extent_bytes > file.length {
         return Err(format!("extent 超过文件长度: {tape_path}"));
     }
@@ -3038,16 +3181,6 @@ fn append_read_file(
         length: file.length,
     });
     for extent in &file.extents {
-        let end = extent
-            .file_offset
-            .checked_add(extent.byte_count)
-            .ok_or_else(|| "extent file offset 溢出".to_string())?;
-        if end > file.length {
-            return Err(format!(
-                "extent 超出文件边界: {}",
-                plan.files[file_index].tape_path
-            ));
-        }
         plan.extents.push(PlannedReadExtent {
             file_index,
             file_offset: extent.file_offset,
@@ -3055,6 +3188,73 @@ fn append_read_file(
             start_block: extent.start_block,
             byte_count: extent.byte_count,
         });
+    }
+    Ok(())
+}
+
+fn validate_file_extents(
+    tape_path: &str,
+    file_length: u64,
+    extents: &[Extent],
+) -> Result<u64, String> {
+    let mut ranges = Vec::with_capacity(extents.len());
+    let mut total = 0u64;
+    for extent in extents {
+        total = total
+            .checked_add(extent.byte_count)
+            .ok_or_else(|| format!("extent 长度溢出: {tape_path}"))?;
+        let end = extent
+            .file_offset
+            .checked_add(extent.byte_count)
+            .ok_or_else(|| format!("extent file offset 溢出: {tape_path}"))?;
+        if end > file_length {
+            return Err(format!("extent 超出文件长度: {tape_path}"));
+        }
+        if extent.byte_count != 0 {
+            ranges.push((extent.file_offset, end));
+        }
+    }
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    let mut previous_end = None;
+    for (start, end) in ranges {
+        if previous_end.is_some_and(|previous_end| start < previous_end) {
+            return Err(format!("extent 区间重叠: {tape_path}"));
+        }
+        previous_end = Some(end);
+    }
+    Ok(total)
+}
+
+pub(crate) fn validate_read_plan_extents(plan: &ReadPlan) -> Result<(), String> {
+    let mut ranges = vec![Vec::new(); plan.files.len()];
+    for extent in &plan.extents {
+        let file = plan
+            .files
+            .get(extent.file_index)
+            .ok_or_else(|| "Read plan extent 引用了不存在的文件".to_string())?;
+        let end = extent
+            .file_offset
+            .checked_add(extent.byte_count)
+            .ok_or_else(|| format!("extent file offset 溢出: {}", file.tape_path))?;
+        if end > file.length {
+            return Err(format!("extent 超出文件长度: {}", file.tape_path));
+        }
+        if extent.byte_count != 0 {
+            ranges[extent.file_index].push((extent.file_offset, end));
+        }
+    }
+    for (file_index, mut file_ranges) in ranges.into_iter().enumerate() {
+        file_ranges.sort_unstable_by_key(|(start, _)| *start);
+        let mut previous_end = None;
+        for (start, end) in file_ranges {
+            if previous_end.is_some_and(|previous_end| start < previous_end) {
+                return Err(format!(
+                    "extent 区间重叠: {}",
+                    plan.files[file_index].tape_path
+                ));
+            }
+            previous_end = Some(end);
+        }
     }
     Ok(())
 }
@@ -3087,17 +3287,24 @@ pub fn read_file_with_observer(
     let mut performance = ReadPerformanceState::new();
 
     let mut written = 0u64;
+    let mut tape_position: Option<(u8, u64)> = None;
+    let mut reusable_buffer = Vec::new();
     for extent in &file.extents {
-        session
-            .locate(extent.partition, extent.start_block)
-            .map_err(|e| e.to_string())?;
+        if tape_position != Some((extent.partition, extent.start_block)) {
+            session
+                .locate(extent.partition, extent.start_block)
+                .map_err(|e| e.to_string())?;
+        }
         let mut remaining = extent.byte_count;
         let mut logical_block = extent.start_block;
         while remaining > 0 {
             if cancellation.is_cancelled() {
                 return Err("[cancelled]用户请求在磁带 record 边界停止读取".into());
             }
-            match session.read_record().map_err(|e| e.to_string())? {
+            match session
+                .read_record_into(reusable_buffer)
+                .map_err(|e| e.to_string())?
+            {
                 ReadRecord::Data(buf) => {
                     let n = buf.len().min(remaining as usize);
                     out.write_all(&buf[..n])
@@ -3105,6 +3312,8 @@ pub fn read_file_with_observer(
                     written += n as u64;
                     remaining -= n as u64;
                     logical_block += 1;
+                    tape_position = Some((extent.partition, logical_block));
+                    reusable_buffer = buf;
                     let sample = telemetry.sample_if_due(
                         &mut session,
                         extent.partition,
@@ -3137,6 +3346,190 @@ pub fn read_file_with_observer(
 const READ_OUTPUT_HANDLE_CAPACITY: usize = 256;
 const DEFAULT_READ_BUFFER_BYTES: usize = 512 * 1024 * 1024;
 
+// openat2 keeps every recovery path below the already-open destination directory and
+// rejects symlinks during kernel path resolution, including replacements after preflight.
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+fn openat2_path(
+    dirfd: RawFd,
+    path: &Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+    resolve: u64,
+) -> io::Result<std::fs::File> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: mode as u64,
+        resolve,
+    };
+    // SAFETY: path and how remain alive for the syscall; openat2 only reads both buffers.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dirfd,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the syscall returned a newly-owned file descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as RawFd) })
+}
+
+fn open_destination_directory(path: &Path) -> io::Result<std::fs::File> {
+    let resolve = RESOLVE_NO_SYMLINKS
+        | if path.is_relative() {
+            RESOLVE_BENEATH
+        } else {
+            0
+        };
+    openat2_path(
+        libc::AT_FDCWD,
+        path,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        0,
+        resolve,
+    )
+}
+
+fn relative_resolve_flags() -> u64 {
+    RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS
+}
+
+fn open_existing_directory_at(root: &std::fs::File, relative: &Path) -> io::Result<std::fs::File> {
+    openat2_path(
+        root.as_raw_fd(),
+        relative,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        0,
+        relative_resolve_flags(),
+    )
+}
+
+fn path_exists_at(root: &std::fs::File, relative: &Path) -> io::Result<bool> {
+    match openat2_path(
+        root.as_raw_fd(),
+        relative,
+        libc::O_PATH | libc::O_CLOEXEC,
+        0,
+        relative_resolve_flags(),
+    ) {
+        Ok(_) => Ok(true),
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_directory_at(root: &std::fs::File, relative: &Path) -> Result<(), String> {
+    let mut current = root
+        .try_clone()
+        .map_err(|error| format!("复制 destination directory fd 失败: {error}"))?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(format!(
+                "Read destination relative path 不安全: {}",
+                relative.display()
+            ));
+        };
+        let name = Path::new(name);
+        let next = match openat2_path(
+            current.as_raw_fd(),
+            name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            0,
+            RESOLVE_NO_SYMLINKS,
+        ) {
+            Ok(next) => next,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                let name_c = CString::new(name.as_os_str().as_bytes()).map_err(|_| {
+                    format!("Read destination path contains NUL: {}", relative.display())
+                })?;
+                // SAFETY: current is a valid directory fd and name_c is NUL-terminated.
+                let result = unsafe { libc::mkdirat(current.as_raw_fd(), name_c.as_ptr(), 0o777) };
+                if result != 0 {
+                    let mkdir_error = io::Error::last_os_error();
+                    if mkdir_error.raw_os_error() != Some(libc::EEXIST) {
+                        return Err(format!(
+                            "创建 Read destination 目录 {} 失败: {mkdir_error}",
+                            relative.display()
+                        ));
+                    }
+                }
+                openat2_path(
+                    current.as_raw_fd(),
+                    name,
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    0,
+                    RESOLVE_NO_SYMLINKS,
+                )
+                .map_err(|error| {
+                    format!(
+                        "安全打开 Read destination 目录 {} 失败: {error}",
+                        relative.display()
+                    )
+                })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "安全打开 Read destination 目录 {} 失败: {error}",
+                    relative.display()
+                ));
+            }
+        };
+        current = next;
+    }
+    Ok(())
+}
+
+fn create_file_at(root: &std::fs::File, relative: &Path) -> io::Result<std::fs::File> {
+    openat2_path(
+        root.as_raw_fd(),
+        relative,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+        0o666,
+        relative_resolve_flags(),
+    )
+}
+
+fn open_file_at(root: &std::fs::File, relative: &Path) -> io::Result<std::fs::File> {
+    openat2_path(
+        root.as_raw_fd(),
+        relative,
+        libc::O_WRONLY | libc::O_CLOEXEC,
+        0,
+        relative_resolve_flags(),
+    )
+}
+
+/// Create a single-file Read destination without following a symlink in its parent path.
+pub fn create_read_destination_file(path: &Path) -> Result<std::fs::File, String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("Read destination 不是文件路径: {}", path.display()))?;
+    let root = open_destination_directory(parent).map_err(|error| {
+        format!(
+            "安全打开 Read destination parent {} 失败: {error}",
+            parent.display()
+        )
+    })?;
+    create_file_at(&root, Path::new(name))
+        .map_err(|error| format!("安全创建 Read destination {} 失败: {error}", path.display()))
+}
+
 struct ReadOutputFiles {
     destination: PathBuf,
     sync_anchor: std::fs::File,
@@ -3147,9 +3540,9 @@ struct ReadOutputFiles {
 
 impl ReadOutputFiles {
     fn prepare(plan: &ReadPlan, destination: &Path) -> Result<Self, String> {
-        let sync_anchor = std::fs::File::open(destination).map_err(|error| {
+        let sync_anchor = open_destination_directory(destination).map_err(|error| {
             format!(
-                "打开 Read destination {} 失败: {error}",
+                "安全打开 Read destination {} 失败: {error}",
                 destination.display()
             )
         })?;
@@ -3162,12 +3555,7 @@ impl ReadOutputFiles {
             }
         }
         for directory in directories {
-            std::fs::create_dir_all(destination.join(&directory)).map_err(|error| {
-                format!(
-                    "创建 Read destination 目录 {} 失败: {error}",
-                    directory.display()
-                )
-            })?;
+            ensure_directory_at(&sync_anchor, &directory)?;
         }
 
         let mut extents_remaining = vec![0usize; plan.files.len()];
@@ -3184,13 +3572,12 @@ impl ReadOutputFiles {
         let mut cached_handles = 0;
         for (index, file) in plan.files.iter().enumerate() {
             let target = destination.join(&file.relative_path);
-            let output = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&target)
-                .map_err(|error| {
-                    format!("创建 Read destination {} 失败: {error}", target.display())
-                })?;
+            let output = create_file_at(&sync_anchor, &file.relative_path).map_err(|error| {
+                format!(
+                    "安全创建 Read destination {} 失败: {error}",
+                    target.display()
+                )
+            })?;
             if requires_preallocation[index] {
                 output.set_len(file.length).map_err(|error| {
                     format!("设置恢复文件长度 {} 失败: {error}", target.display())
@@ -3218,10 +3605,8 @@ impl ReadOutputFiles {
             return Ok(output);
         }
         let target = self.destination.join(&plan.files[file_index].relative_path);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&target)
-            .map_err(|error| format!("重新打开恢复文件 {} 失败: {error}", target.display()))
+        open_file_at(&self.sync_anchor, &plan.files[file_index].relative_path)
+            .map_err(|error| format!("安全重新打开恢复文件 {} 失败: {error}", target.display()))
     }
 
     fn finish_extent(&mut self, file_index: usize, output: std::fs::File) -> bool {
@@ -3567,6 +3952,7 @@ pub fn execute_read_plan(
     cancellation: &CancellationToken,
     observer: &mut dyn FnMut(&ReadEvent),
 ) -> Result<u64, String> {
+    validate_read_plan_extents(plan)?;
     validate_read_plan_destination(plan, destination)?;
     let mut session = TapeSession::open(&drive.sg_path).map_err(|error| error.to_string())?;
     let volume = inspect_volume_session(&mut session).map_err(|error| error.to_string())?;
@@ -3688,27 +4074,34 @@ pub fn execute_read_plan(
 
 /// 在 detached runner 接管设备前检查目标目录和覆盖冲突。
 pub fn validate_read_plan_destination(plan: &ReadPlan, destination: &Path) -> Result<(), String> {
-    if !destination.is_dir() {
-        return Err(format!(
-            "Read destination 不是已存在目录: {}",
+    let root = open_destination_directory(destination).map_err(|error| {
+        format!(
+            "Read destination 不是可安全打开的目录 {}: {error}",
             destination.display()
-        ));
-    }
+        )
+    })?;
     for directory in &plan.directories {
-        let target = destination.join(directory);
-        if target.exists() && !target.is_dir() {
-            return Err(format!(
-                "Read destination 目录路径已被文件占用: {}",
-                target.display()
-            ));
+        match open_existing_directory_at(&root, directory) {
+            Ok(_) => {}
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {}
+            Err(error) => {
+                return Err(format!(
+                    "Read destination 目录路径不能安全使用: {}: {error}",
+                    destination.join(directory).display()
+                ));
+            }
         }
     }
     for file in &plan.files {
-        let target = destination.join(&file.relative_path);
-        if target.exists() {
+        if path_exists_at(&root, &file.relative_path).map_err(|error| {
+            format!(
+                "检查 Read destination {} 失败: {error}",
+                destination.join(&file.relative_path).display()
+            )
+        })? {
             return Err(format!(
                 "Read destination 已存在，拒绝覆盖: {}",
-                target.display()
+                destination.join(&file.relative_path).display()
             ));
         }
     }
@@ -5204,6 +5597,7 @@ fn classify_write_failure(last: Option<&WriteEvent>, message: String) -> WriteFa
             | WriteCommitState::IndexesWritten
             | WriteCommitState::CoherencyPartial
     ) || message.contains("不一致")
+        || message.contains("requires diagnosis")
         || message.contains("coherency");
     WriteFailure {
         phase,
@@ -5241,10 +5635,15 @@ fn write_with_observer_inner(
         .label
         .clone()
         .ok_or_else(|| "缺少 LTFS label".to_string())?;
-    let mut index = volume
-        .index
-        .take()
-        .ok_or_else(|| "没有可用的 index".to_string())?;
+    let mut index = match volume.index.take() {
+        Some(index) => index,
+        None => {
+            return Err(format!(
+                "没有可用的 index；requires diagnosis: {}",
+                volume.warnings.join("; ")
+            ));
+        }
+    };
 
     validate_write_vci(&mut session, &label, &index)?;
 
@@ -5956,6 +6355,57 @@ mod tests {
     }
 
     #[test]
+    fn read_plan_rejects_overlapping_file_extents_but_allows_sparse_gaps() {
+        let mut index = read_plan_index();
+        {
+            let DirectoryEntry::File(file) = &mut index.root.entries[0] else {
+                panic!("expected file entry");
+            };
+            file.extents = vec![
+                Extent {
+                    file_offset: 0,
+                    partition: 1,
+                    start_block: 40,
+                    byte_count: 5,
+                },
+                Extent {
+                    file_offset: 4,
+                    partition: 1,
+                    start_block: 41,
+                    byte_count: 4,
+                },
+            ];
+        }
+        assert!(
+            plan_ltfs_read(&index, &["/late.bin".into()])
+                .unwrap_err()
+                .contains("区间重叠")
+        );
+
+        {
+            let DirectoryEntry::File(file) = &mut index.root.entries[0] else {
+                panic!("expected file entry");
+            };
+            file.length = 12;
+            file.extents = vec![
+                Extent {
+                    file_offset: 0,
+                    partition: 1,
+                    start_block: 40,
+                    byte_count: 4,
+                },
+                Extent {
+                    file_offset: 8,
+                    partition: 1,
+                    start_block: 41,
+                    byte_count: 4,
+                },
+            ];
+        }
+        assert!(plan_ltfs_read(&index, &["/late.bin".into()]).is_ok());
+    }
+
+    #[test]
     fn read_plan_keeps_volume_relative_parent_for_individual_files() {
         let plan = plan_ltfs_read(&read_plan_index(), &["/dir/split.bin".into()]).unwrap();
         assert_eq!(plan.files[0].relative_path, Path::new("dir/split.bin"));
@@ -5983,6 +6433,43 @@ mod tests {
         let error = validate_read_plan_destination(&plan, &destination).unwrap_err();
         assert!(error.contains("拒绝覆盖"));
         std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_destination_rejects_symlink_before_and_after_preflight() {
+        use std::os::unix::fs::symlink;
+
+        let plan = plan_ltfs_read(&read_plan_index(), &["/dir/split.bin".into()]).unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "tapecpy-read-destination-symlink-{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "tapecpy-read-destination-symlink-outside-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&destination);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&destination).unwrap();
+
+        // A pre-existing directory symlink is not accepted as a destination directory.
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, destination.join("dir")).unwrap();
+        assert!(validate_read_plan_destination(&plan, &destination).is_err());
+        std::fs::remove_file(destination.join("dir")).unwrap();
+
+        // A symlink inserted after preflight is rejected by the actual create operation.
+        validate_read_plan_destination(&plan, &destination).unwrap();
+        symlink(&outside, destination.join("dir")).unwrap();
+        let error = match ReadOutputFiles::prepare(&plan, &destination) {
+            Ok(_) => panic!("symlinked Read destination was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("安全") || error.contains("symlink"));
+
+        std::fs::remove_dir_all(destination).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]
@@ -6665,6 +7152,51 @@ mod tests {
             classify_volume_consistency(None, &candidates, &split_vci).0,
             VolumeConsistency::DivergentVci
         );
+    }
+
+    #[test]
+    fn data_partition_vci_fallback_requires_full_identity_match_and_is_degraded() {
+        let label = Label {
+            version: "2.4.0".into(),
+            creator: "test".into(),
+            format_time: "now".into(),
+            volume_uuid: "00000000-0000-0000-0000-000000000000".into(),
+            blocksize: 512 * 1024,
+            compression: true,
+            this_partition: 0,
+            index_partition: 0,
+            data_partition: 1,
+        };
+        let candidate = index_candidate(1, 42, 7);
+        let (_, vci) = test_vci(1, 42, 7);
+        assert!(candidate_matches_vci(&label, 1, &vci, &candidate));
+        assert!(!candidate_matches_vci(&label, 0, &vci, &candidate));
+        let mut wrong_generation = vci.clone();
+        wrong_generation.generation += 1;
+        assert!(!candidate_matches_vci(
+            &label,
+            1,
+            &wrong_generation,
+            &candidate
+        ));
+        let mut wrong_block = vci.clone();
+        wrong_block.block += 1;
+        assert!(!candidate_matches_vci(&label, 1, &wrong_block, &candidate));
+        let mut wrong_uuid = vci.clone();
+        wrong_uuid.volume_uuid = "11111111-1111-1111-1111-111111111111".into();
+        assert!(!candidate_matches_vci(&label, 1, &wrong_uuid, &candidate));
+
+        let volume = VolumeInfo {
+            recognized: true,
+            label: Some(label),
+            index: candidate.index,
+            index_recovered_from_data_partition: true,
+            ..VolumeInfo::default()
+        };
+        let diagnosis =
+            diagnose_preview_consistency(&volume, vec![test_vci(0, 5, 7), test_vci(1, 42, 7)]);
+        assert_eq!(diagnosis.consistency, VolumeConsistency::IndexCopyMissing);
+        assert!(!diagnosis.safe_for_normal_write);
     }
 
     #[test]

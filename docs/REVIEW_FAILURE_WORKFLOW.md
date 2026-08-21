@@ -103,6 +103,14 @@ OpenLTFS 2.4.8.4 只读挂载复现了这一过程：先从 P0 VCI 目标读取�
 failure，随后回退到 P1 generation 24 index，成功挂载并可访问根目录。物理写保护
 被 OpenLTFS 和内核同时确认。
 
+2026-08-20 的安全审计修复把同类 fallback 加入 tapecpy 普通只读卷识别：index
+partition 当前副本的 XML 损坏或元数据不匹配时，按 data partition VCI 定点读取当前
+generation。fallback 必须同时匹配 label UUID、VCI generation/block、实际物理位置和
+index self-location；成功后仍报告 `IndexCopyMissing` 并禁止普通写入。若 index 分区
+顺序扫描在最后一个有效 index 后发现损坏或未以 filemark 结束的记录组，也不会静默
+采用旧 generation。该有界恢复不扫描完整 data partition，VCI 不可信时仍要求显式
+`diagnose --full` 或后续恢复流程。
+
 验收前后 MAM VCR、两份 VCI generation/block/UUID 完全不变。LOG SENSE
 corrected/hard read-write error 均为 0，活动 TapeAlert page 为空。MAM 基本属性中的
 历史 TapeAlert bitmap 为 `0x4000`，与当前活动 TapeAlert 是不同时间域，未把它
