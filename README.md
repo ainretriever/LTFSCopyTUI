@@ -13,10 +13,15 @@ Linux 的独立架构和设备访问实现。
 - 装载、穿带、退带、弹出以及多种擦除操作；
 - 直接识别、浏览、格式化、读取和写入 LTFS；
 - 写入时计算 SHA-256，并可选择写后完整回读校验；
-- 显示实时吞吐、缓冲状态和 16 通道读写错误率；
+- 显示实时吞吐、缓冲状态、磁带机温度和 16 通道读写错误率；
 - 通过可脱离任务执行长时间 LTFS、RAW 和 TAR 读写，退出 TUI 或断开 SSH 不会终止任务；
 - 将文件或目录以 RAW records 或 GNU TAR 字节流写入磁带，并恢复完整 RAW/TAR 镜像；
-- 从 NFS、CIFS 和本地文件系统选择源数据或恢复目标。
+- 从 NFS、CIFS 和本地文件系统选择源数据或恢复目标；
+- 通过有界管线重叠主机文件访问与磁带读写，恢复时检查逐文件同步和关闭结果。
+
+读写任务默认约每 5 秒由设备持有者一起采样温度和通道错误率，通过任务状态更新
+TUI；退出并重新连接后仍可查看。温度尚未采样显示 `pending`，查询失败或设备不支持
+显示 `N/A`，超过 15 秒未更新显示 `stale`。耗时的设备命令或定位会延后采样。
 
 ## 编译与部署
 
@@ -126,6 +131,8 @@ MAM 和写保护状态。Format、Erase、RAW Write 或 TAR Write 的首次验�
 - [LTFS 写入工作流](docs/WRITE_WORKFLOW.md)
 - [RAW/TAR 工作流](docs/RAW_TAR_WORKFLOW.md)
 - [TUI 规格](docs/TUI_SPEC.md)
+- [读写性能改进与当前限制](docs/PERFORMANCE_SUMMARY_2026-10-24.md)
+- [性能测试工具与复现说明](scripts/README.md)
 - [SNIA LTFS Format Specification 2.4（官方 PDF）](https://www.snia.org/sites/default/files/technical-work/ltfs/release/SNIA-LTFS-Format-2.4.0-TechPosition.pdf)
 
 ## 许可证

@@ -1,0 +1,942 @@
+{
+  "date": "2026-10-23",
+  "host": "192.168.10.125",
+  "drive": "Quantum ULTRIUM5",
+  "binary_sha256": "0db140bd0f37964134d5270a85db562e52aa29b2acc614c75d2a2c366a4201be",
+  "method": "Same release test binary, 4GiB pseudorandom seed=12345 per round, BER enabled both; test-only TAPECPY_TEST_NO_TEMPERATURE disables new temperature query. Production source unmodified by instrumentation. Stable window 1..3GiB. Sequential off/on, different tape regions, no read-back verification.",
+  "rounds": {
+    "off": {
+      "stable_samples": 15,
+      "median_MB_s": 144.47347218198126,
+      "mean_MB_s": 144.48543991118677,
+      "minimum_MB_s": 143.50573893242566,
+      "raw_samples": [
+        {
+          "bytes": 0,
+          "elapsed": 70.475987035,
+          "kind": "phase",
+          "phase": "Preparing"
+        },
+        {
+          "bytes": 0,
+          "elapsed": 148.856556851,
+          "kind": "phase",
+          "phase": "WritingData"
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 524288,
+          "capacity": 536870912,
+          "elapsed": 151.289844258,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 220621619.59542188,
+          "tape_bps": 215450.80038615418,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 207093760,
+          "capacity": 536870912,
+          "elapsed": 156.721686781,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 38029303.59316932,
+          "tape_bps": 38029303.59316932,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 207093760,
+          "elapsed": 156.735299895,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": 0.0
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 284164096,
+          "capacity": 536870912,
+          "elapsed": 157.73243762,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 76250696.59832582,
+          "tape_bps": 76250696.59832582,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 423624704,
+          "capacity": 536870912,
+          "elapsed": 158.73269913,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 138899831.4309826,
+          "tape_bps": 139423981.7382693,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 568328192,
+          "capacity": 536870912,
+          "elapsed": 159.737016236,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144603441.67515415,
+          "tape_bps": 144081407.58968428,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 714080256,
+          "capacity": 536870912,
+          "elapsed": 160.746086205,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144442014.21925917,
+          "tape_bps": 144442014.21925917,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 855113728,
+          "elapsed": 161.743136133,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": -5.905553957501389
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 856686592,
+          "capacity": 536870912,
+          "elapsed": 161.7472561,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 141916156.5279882,
+          "tape_bps": 142439832.382335,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1003487232,
+          "capacity": 536870912,
+          "elapsed": 162.750406793,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 146862505.4070624,
+          "tape_bps": 146339863.03906575,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1148715008,
+          "capacity": 536870912,
+          "elapsed": 163.755378027,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144509110.80462024,
+          "tape_bps": 144509110.80462024,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1294467072,
+          "capacity": 536870912,
+          "elapsed": 164.76448747,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144439133.07954213,
+          "tape_bps": 144439133.07954213,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1440219136,
+          "capacity": 536870912,
+          "elapsed": 165.773522851,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144444058.48393384,
+          "tape_bps": 144444058.48393384,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 1578631168,
+          "elapsed": 166.750649399,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": -5.6736191552122035
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1585971200,
+          "capacity": 536870912,
+          "elapsed": 166.782373396,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144473472.18198127,
+          "tape_bps": 144473472.18198127,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1731723264,
+          "capacity": 536870912,
+          "elapsed": 167.791541804,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144427701.40686157,
+          "tape_bps": 144427701.40686157,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1877475328,
+          "capacity": 536870912,
+          "elapsed": 168.800229746,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144496847.48479742,
+          "tape_bps": 144496847.48479742,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2023227392,
+          "capacity": 536870912,
+          "elapsed": 169.809208157,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144454828.7247187,
+          "tape_bps": 144454828.7247187,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 2168979456,
+          "capacity": 536870912,
+          "elapsed": 170.810065783,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 145103461.22146082,
+          "tape_bps": 145627300.43164662,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 2301624320,
+          "elapsed": 171.751150977,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": -5.832042072473566
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2312634368,
+          "capacity": 536870912,
+          "elapsed": 171.811105368,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144029482.50517172,
+          "tape_bps": 143505738.93242565,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2458386432,
+          "capacity": 536870912,
+          "elapsed": 172.820033556,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144462217.0596766,
+          "tape_bps": 144462217.0596766,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2604138496,
+          "capacity": 536870912,
+          "elapsed": 173.828600074,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144513994.83106095,
+          "tape_bps": 144513994.83106095,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2749890560,
+          "capacity": 536870912,
+          "elapsed": 174.837422255,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144477637.88102955,
+          "tape_bps": 144477637.88102955,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2895642624,
+          "capacity": 536870912,
+          "elapsed": 175.846374925,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144458650.29648015,
+          "tape_bps": 144458650.29648015,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 3024093184,
+          "elapsed": 176.75462095,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": -5.804284935012991
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3041394688,
+          "capacity": 536870912,
+          "elapsed": 176.855181837,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144479904.85662636,
+          "tape_bps": 144479904.85662636,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3187146752,
+          "capacity": 536870912,
+          "elapsed": 177.863769394,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144511002.21240088,
+          "tape_bps": 144511002.21240088,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3332898816,
+          "capacity": 536870912,
+          "elapsed": 178.872740506,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144456162.50073448,
+          "tape_bps": 144456162.50073448,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3478650880,
+          "capacity": 536870912,
+          "elapsed": 179.88183695,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144438166.3317648,
+          "tape_bps": 144438166.3317648,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3624402944,
+          "capacity": 536870912,
+          "elapsed": 180.890908851,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144441650.20564717,
+          "tape_bps": 144441650.20564717,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 3747610624,
+          "elapsed": 181.756734735,
+          "kind": "telemetry",
+          "temperature": null,
+          "worst_rate": -5.782794697800891
+        },
+        {
+          "buffer": 525336576,
+          "bytes": 3769630720,
+          "capacity": 536870912,
+          "elapsed": 181.899457944,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 133080093.48623338,
+          "tape_bps": 143996819.90502596,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 379060224,
+          "bytes": 3915907072,
+          "capacity": 536870912,
+          "elapsed": 182.908337364,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 144989023.31480348,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 233832448,
+          "bytes": 4061134848,
+          "capacity": 536870912,
+          "elapsed": 183.908520667,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 145201358.35526353,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 89653248,
+          "bytes": 4205314048,
+          "capacity": 536870912,
+          "elapsed": 184.910284303,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 143925086.0120622,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 185.551152037,
+          "kind": "phase",
+          "phase": "WritingData"
+        },
+        {
+          "buffer": 0,
+          "bytes": 4294967296,
+          "capacity": 536870912,
+          "elapsed": 185.551179771,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 139884771.9210403,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 185.551190045,
+          "kind": "phase",
+          "phase": "FinalizingDataIndex"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 192.608089969,
+          "kind": "phase",
+          "phase": "SyncingIndexPartition"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 246.997730053,
+          "kind": "phase",
+          "phase": "UpdatingCoherency"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 252.104439565,
+          "kind": "phase",
+          "phase": "Completed"
+        },
+        {
+          "elapsed": 252.114983453,
+          "kind": "complete",
+          "result": "WriteResult { bytes: 4294967296, files: 1, directories: 0, file_uid: 30417, generation: 7, data_start_block: 227439, hashes: [FileHash { path: \"/temperature-ab-20261023-off.bin\", sha256: \"cdf9d57817ea76912ec6f53f3392c08d5f8296c9927a8e7212b906f65f3d29ed\" }], verification: None, health_before: DriveHealth { write_errors: Some(ErrorCounters { corrected_without_delay: Some(2272), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(78221), data_processed: Some(41883), uncorrected: Some(0) }), read_errors: Some(ErrorCounters { corrected_without_delay: Some(15332), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(15332), data_processed: Some(63048), uncorrected: Some(0) }), temperature: Some(TemperatureLog { current_celsius: Some(35), reference_celsius: None }), tape_alerts: [], write_channels: Some([ChannelCounters { c1_errors: 58213, c1_uncorrectable: 5579, header_errors: 1189, write_pass_errors: 0, ccps: 8120078 }, ChannelCounters { c1_errors: 92546, c1_uncorrectable: 6719, header_errors: 1793, write_pass_errors: 0, ccps: 8119969 }, ChannelCounters { c1_errors: 101579, c1_uncorrectable: 7797, header_errors: 1775, write_pass_errors: 0, ccps: 8119570 }, ChannelCounters { c1_errors: 103754, c1_uncorrectable: 6336, header_errors: 1604, write_pass_errors: 0, ccps: 8119970 }, ChannelCounters { c1_errors: 103649, c1_uncorrectable: 6724, header_errors: 1590, write_pass_errors: 0, ccps: 8120005 }, ChannelCounters { c1_errors: 90996, c1_uncorrectable: 5678, header_errors: 1531, write_pass_errors: 0, ccps: 8119507 }, ChannelCounters { c1_errors: 202121, c1_uncorrectable: 10670, header_errors: 3019, write_pass_errors: 0, ccps: 8119159 }, ChannelCounters { c1_errors: 124136, c1_uncorrectable: 7045, header_errors: 1971, write_pass_errors: 0, ccps: 8119895 }, ChannelCounters { c1_errors: 207848, c1_uncorrectable: 8630, header_errors: 2873, write_pass_errors: 0, ccps: 8119203 }, ChannelCounters { c1_errors: 180752, c1_uncorrectable: 9090, header_errors: 2156, write_pass_errors: 0, ccps: 8119725 }, ChannelCounters { c1_errors: 103387, c1_uncorrectable: 7994, header_errors: 1615, write_pass_errors: 0, ccps: 8119549 }, ChannelCounters { c1_errors: 128471, c1_uncorrectable: 9267, header_errors: 1890, write_pass_errors: 0, ccps: 8119988 }, ChannelCounters { c1_errors: 347823, c1_uncorrectable: 178687, header_errors: 14321, write_pass_errors: 0, ccps: 8117428 }, ChannelCounters { c1_errors: 315589, c1_uncorrectable: 199915, header_errors: 27984, write_pass_errors: 0, ccps: 8102394 }, ChannelCounters { c1_errors: 118078, c1_uncorrectable: 28401, header_errors: 6744, write_pass_errors: 6, ccps: 8089453 }, ChannelCounters { c1_errors: 119126, c1_uncorrectable: 13733, header_errors: 2864, write_pass_errors: 0, ccps: 8119127 }]), read_channels: Some([ChannelCounters { c1_errors: 89142, c1_uncorrectable: 5438, header_errors: 10957, write_pass_errors: 82207, ccps: 12264175 }, ChannelCounters { c1_errors: 123366, c1_uncorrectable: 5857, header_errors: 5819, write_pass_errors: 82440, ccps: 12267046 }, ChannelCounters { c1_errors: 115606, c1_uncorrectable: 5250, header_errors: 9045, write_pass_errors: 81847, ccps: 12266925 }, ChannelCounters { c1_errors: 121674, c1_uncorrectable: 3871, header_errors: 13105, write_pass_errors: 81839, ccps: 12267083 }, ChannelCounters { c1_errors: 108620, c1_uncorrectable: 4078, header_errors: 13606, write_pass_errors: 82970, ccps: 12267102 }, ChannelCounters { c1_errors: 106072, c1_uncorrectable: 3509, header_errors: 16144, write_pass_errors: 82943, ccps: 12267004 }, ChannelCounters { c1_errors: 193352, c1_uncorrectable: 5314, header_errors: 18677, write_pass_errors: 83405, ccps: 12266987 }, ChannelCounters { c1_errors: 89767, c1_uncorrectable: 4384, header_errors: 6521, write_pass_errors: 82293, ccps: 12267080 }, ChannelCounters { c1_errors: 277176, c1_uncorrectable: 5769, header_errors: 24533, write_pass_errors: 82079, ccps: 12266932 }, ChannelCounters { c1_errors: 199987, c1_uncorrectable: 5357, header_errors: 19415, write_pass_errors: 81946, ccps: 12266957 }, ChannelCounters { c1_errors: 115101, c1_uncorrectable: 6054, header_errors: 11033, write_pass_errors: 82019, ccps: 12267007 }, ChannelCounters { c1_errors: 112359, c1_uncorrectable: 5630, header_errors: 18254, write_pass_errors: 83613, ccps: 12267103 }, ChannelCounters { c1_errors: 666835, c1_uncorrectable: 266983, header_errors: 42799, write_pass_errors: 81907, ccps: 12265279 }, ChannelCounters { c1_errors: 581583, c1_uncorrectable: 359263, header_errors: 65584, write_pass_errors: 81767, ccps: 12237726 }, ChannelCounters { c1_errors: 198547, c1_uncorrectable: 83689, header_errors: 30226, write_pass_errors: 87450, ccps: 12186805 }, ChannelCounters { c1_errors: 208156, c1_uncorrectable: 30153, header_errors: 12115, write_pass_errors: 85732, ccps: 12265998 }]), warnings: [] }, health_after: DriveHealth { write_errors: Some(ErrorCounters { corrected_without_delay: Some(2279), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(78234), data_processed: Some(43622), uncorrected: Some(0) }), read_errors: Some(ErrorCounters { corrected_without_delay: Some(15339), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(15339), data_processed: Some(63140), uncorrected: Some(0) }), temperature: Some(TemperatureLog { current_celsius: Some(37), reference_celsius: None }), tape_alerts: [], write_channels: Some([ChannelCounters { c1_errors: 59469, c1_uncorrectable: 5690, header_errors: 1212, write_pass_errors: 0, ccps: 8453957 }, ChannelCounters { c1_errors: 93496, c1_uncorrectable: 6844, header_errors: 1813, write_pass_errors: 0, ccps: 8453862 }, ChannelCounters { c1_errors: 102560, c1_uncorrectable: 7905, header_errors: 1789, write_pass_errors: 0, ccps: 8453459 }, ChannelCounters { c1_errors: 104427, c1_uncorrectable: 6398, header_errors: 1612, write_pass_errors: 0, ccps: 8453868 }, ChannelCounters { c1_errors: 104673, c1_uncorrectable: 6819, header_errors: 1605, write_pass_errors: 0, ccps: 8453899 }, ChannelCounters { c1_errors: 92830, c1_uncorrectable: 5814, header_errors: 1560, write_pass_errors: 0, ccps: 8453382 }, ChannelCounters { c1_errors: 204229, c1_uncorrectable: 10773, header_errors: 3049, write_pass_errors: 0, ccps: 8453047 }, ChannelCounters { c1_errors: 125193, c1_uncorrectable: 7128, header_errors: 1983, write_pass_errors: 0, ccps: 8453788 }, ChannelCounters { c1_errors: 209083, c1_uncorrectable: 8763, header_errors: 2896, write_pass_errors: 0, ccps: 8453092 }, ChannelCounters { c1_errors: 181728, c1_uncorrectable: 9151, header_errors: 2166, write_pass_errors: 0, ccps: 8453611 }, ChannelCounters { c1_errors: 104722, c1_uncorrectable: 8070, header_errors: 1631, write_pass_errors: 0, ccps: 8453440 }, ChannelCounters { c1_errors: 129453, c1_uncorrectable: 9357, header_errors: 1902, write_pass_errors: 0, ccps: 8453886 }, ChannelCounters { c1_errors: 349365, c1_uncorrectable: 178789, header_errors: 14341, write_pass_errors: 0, ccps: 8451321 }, ChannelCounters { c1_errors: 316838, c1_uncorrectable: 200008, header_errors: 27998, write_pass_errors: 0, ccps: 8436284 }, ChannelCounters { c1_errors: 119495, c1_uncorrectable: 28529, header_errors: 6782, write_pass_errors: 6, ccps: 8423336 }, ChannelCounters { c1_errors: 119954, c1_uncorrectable: 13835, header_errors: 2881, write_pass_errors: 0, ccps: 8453019 }]), read_channels: Some([ChannelCounters { c1_errors: 89254, c1_uncorrectable: 5439, header_errors: 11292, write_pass_errors: 87302, ccps: 12280756 }, ChannelCounters { c1_errors: 123481, c1_uncorrectable: 5861, header_errors: 5937, write_pass_errors: 87556, ccps: 12283627 }, ChannelCounters { c1_errors: 115677, c1_uncorrectable: 5254, header_errors: 9247, write_pass_errors: 86962, ccps: 12283506 }, ChannelCounters { c1_errors: 121725, c1_uncorrectable: 3871, header_errors: 13312, write_pass_errors: 86949, ccps: 12283664 }, ChannelCounters { c1_errors: 108680, c1_uncorrectable: 4078, header_errors: 13679, write_pass_errors: 88097, ccps: 12283683 }, ChannelCounters { c1_errors: 106152, c1_uncorrectable: 3509, header_errors: 16635, write_pass_errors: 88065, ccps: 12283583 }, ChannelCounters { c1_errors: 193458, c1_uncorrectable: 5314, header_errors: 18853, write_pass_errors: 88533, ccps: 12283568 }, ChannelCounters { c1_errors: 89866, c1_uncorrectable: 4384, header_errors: 6779, write_pass_errors: 87409, ccps: 12283661 }, ChannelCounters { c1_errors: 277296, c1_uncorrectable: 5769, header_errors: 25251, write_pass_errors: 87201, ccps: 12283513 }, ChannelCounters { c1_errors: 200113, c1_uncorrectable: 5357, header_errors: 19582, write_pass_errors: 87050, ccps: 12283537 }, ChannelCounters { c1_errors: 115190, c1_uncorrectable: 6054, header_errors: 11267, write_pass_errors: 87142, ccps: 12283588 }, ChannelCounters { c1_errors: 112460, c1_uncorrectable: 5639, header_errors: 18354, write_pass_errors: 88740, ccps: 12283684 }, ChannelCounters { c1_errors: 666953, c1_uncorrectable: 266987, header_errors: 42976, write_pass_errors: 87010, ccps: 12281860 }, ChannelCounters { c1_errors: 581690, c1_uncorrectable: 359263, header_errors: 65726, write_pass_errors: 86876, ccps: 12254307 }, ChannelCounters { c1_errors: 198675, c1_uncorrectable: 83693, header_errors: 30399, write_pass_errors: 92569, ccps: 12203386 }, ChannelCounters { c1_errors: 208271, c1_uncorrectable: 30153, header_errors: 12290, write_pass_errors: 90858, ccps: 12282579 }]), warnings: [] }, health_delta: DriveHealthDelta { corrected_write_errors: Some(0), hard_write_errors: Some(0), corrected_read_errors: Some(0), hard_read_errors: Some(0), active_tape_alerts: [], write_channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.008930689043395), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.130214933331496), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.116264328410946), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.279929977845528), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.097639882678155), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.844515794062958), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.784061428533284), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.083863551312917), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-6.01626637819521), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.118479615961212), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.982454671512816), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.115833554282555), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.919854164905406), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.011372198129965), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.95655568118239), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.189906901133945), ccp_advanced: true }], worst_write_channel_rate: Some(-5.784061428533284) }, telemetry_history: [ChannelTelemetrySample { temperature: None, elapsed_millis: 7878, timestamp: \"2026-10-23T13:15:39.253337164Z\", partition: 1, logical_block: 227834, throughput_bytes_per_second: 26284456.180649947, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 227834, before: [ChannelCounters { c1_errors: 58213, c1_uncorrectable: 5579, header_errors: 1189, write_pass_errors: 0, ccps: 8120078 }, ChannelCounters { c1_errors: 92546, c1_uncorrectable: 6719, header_errors: 1793, write_pass_errors: 0, ccps: 8119969 }, ChannelCounters { c1_errors: 101579, c1_uncorrectable: 7797, header_errors: 1775, write_pass_errors: 0, ccps: 8119570 }, ChannelCounters { c1_errors: 103754, c1_uncorrectable: 6336, header_errors: 1604, write_pass_errors: 0, ccps: 8119970 }, ChannelCounters { c1_errors: 103649, c1_uncorrectable: 6724, header_errors: 1590, write_pass_errors: 0, ccps: 8120005 }, ChannelCounters { c1_errors: 90996, c1_uncorrectable: 5678, header_errors: 1531, write_pass_errors: 0, ccps: 8119507 }, ChannelCounters { c1_errors: 202121, c1_uncorrectable: 10670, header_errors: 3019, write_pass_errors: 0, ccps: 8119159 }, ChannelCounters { c1_errors: 124136, c1_uncorrectable: 7045, header_errors: 1971, write_pass_errors: 0, ccps: 8119895 }, ChannelCounters { c1_errors: 207848, c1_uncorrectable: 8630, header_errors: 2873, write_pass_errors: 0, ccps: 8119203 }, ChannelCounters { c1_errors: 180752, c1_uncorrectable: 9090, header_errors: 2156, write_pass_errors: 0, ccps: 8119725 }, ChannelCounters { c1_errors: 103387, c1_uncorrectable: 7994, header_errors: 1615, write_pass_errors: 0, ccps: 8119549 }, ChannelCounters { c1_errors: 128471, c1_uncorrectable: 9267, header_errors: 1890, write_pass_errors: 0, ccps: 8119988 }, ChannelCounters { c1_errors: 347823, c1_uncorrectable: 178687, header_errors: 14321, write_pass_errors: 0, ccps: 8117428 }, ChannelCounters { c1_errors: 315589, c1_uncorrectable: 199915, header_errors: 27984, write_pass_errors: 0, ccps: 8102394 }, ChannelCounters { c1_errors: 118078, c1_uncorrectable: 28401, header_errors: 6744, write_pass_errors: 6, ccps: 8089453 }, ChannelCounters { c1_errors: 119126, c1_uncorrectable: 13733, header_errors: 2864, write_pass_errors: 0, ccps: 8119127 }], after: [ChannelCounters { c1_errors: 58213, c1_uncorrectable: 5579, header_errors: 1189, write_pass_errors: 0, ccps: 8120078 }, ChannelCounters { c1_errors: 92546, c1_uncorrectable: 6719, header_errors: 1793, write_pass_errors: 0, ccps: 8119969 }, ChannelCounters { c1_errors: 101579, c1_uncorrectable: 7797, header_errors: 1775, write_pass_errors: 0, ccps: 8119570 }, ChannelCounters { c1_errors: 103754, c1_uncorrectable: 6336, header_errors: 1604, write_pass_errors: 0, ccps: 8119970 }, ChannelCounters { c1_errors: 103649, c1_uncorrectable: 6724, header_errors: 1590, write_pass_errors: 0, ccps: 8120005 }, ChannelCounters { c1_errors: 90996, c1_uncorrectable: 5678, header_errors: 1531, write_pass_errors: 0, ccps: 8119507 }, ChannelCounters { c1_errors: 202121, c1_uncorrectable: 10670, header_errors: 3019, write_pass_errors: 0, ccps: 8119159 }, ChannelCounters { c1_errors: 124136, c1_uncorrectable: 7045, header_errors: 1971, write_pass_errors: 0, ccps: 8119895 }, ChannelCounters { c1_errors: 207848, c1_uncorrectable: 8630, header_errors: 2873, write_pass_errors: 0, ccps: 8119203 }, ChannelCounters { c1_errors: 180752, c1_uncorrectable: 9090, header_errors: 2156, write_pass_errors: 0, ccps: 8119725 }, ChannelCounters { c1_errors: 103387, c1_uncorrectable: 7994, header_errors: 1615, write_pass_errors: 0, ccps: 8119549 }, ChannelCounters { c1_errors: 128471, c1_uncorrectable: 9267, header_errors: 1890, write_pass_errors: 0, ccps: 8119988 }, ChannelCounters { c1_errors: 347823, c1_uncorrectable: 178687, header_errors: 14321, write_pass_errors: 0, ccps: 8117428 }, ChannelCounters { c1_errors: 315589, c1_uncorrectable: 199915, header_errors: 27984, write_pass_errors: 0, ccps: 8102394 }, ChannelCounters { c1_errors: 118078, c1_uncorrectable: 28401, header_errors: 6744, write_pass_errors: 6, ccps: 8089453 }, ChannelCounters { c1_errors: 119126, c1_uncorrectable: 13733, header_errors: 2864, write_pass_errors: 0, ccps: 8119127 }] }), worst_rate: Some(0.0) }, ChannelTelemetrySample { temperature: None, elapsed_millis: 12886, timestamp: \"2026-10-23T13:15:44.261198030Z\", partition: 1, logical_block: 229070, throughput_bytes_per_second: 129400556.153322, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.002615248546869), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.13224356343865), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.0753919964997545), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.250153102963089), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-5.918372344150695), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.905553957501389), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.929644753903259), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.234518358564223), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-6.057122078697983), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.230648946573862), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.99753638871374), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.226898961694031), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.969533467084881), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.114393332491438), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-6.0944550025492505), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.025085505332588), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 229070, before: [ChannelCounters { c1_errors: 58213, c1_uncorrectable: 5579, header_errors: 1189, write_pass_errors: 0, ccps: 8120078 }, ChannelCounters { c1_errors: 92546, c1_uncorrectable: 6719, header_errors: 1793, write_pass_errors: 0, ccps: 8119969 }, ChannelCounters { c1_errors: 101579, c1_uncorrectable: 7797, header_errors: 1775, write_pass_errors: 0, ccps: 8119570 }, ChannelCounters { c1_errors: 103754, c1_uncorrectable: 6336, header_errors: 1604, write_pass_errors: 0, ccps: 8119970 }, ChannelCounters { c1_errors: 103649, c1_uncorrectable: 6724, header_errors: 1590, write_pass_errors: 0, ccps: 8120005 }, ChannelCounters { c1_errors: 90996, c1_uncorrectable: 5678, header_errors: 1531, write_pass_errors: 0, ccps: 8119507 }, ChannelCounters { c1_errors: 202121, c1_uncorrectable: 10670, header_errors: 3019, write_pass_errors: 0, ccps: 8119159 }, ChannelCounters { c1_errors: 124136, c1_uncorrectable: 7045, header_errors: 1971, write_pass_errors: 0, ccps: 8119895 }, ChannelCounters { c1_errors: 207848, c1_uncorrectable: 8630, header_errors: 2873, write_pass_errors: 0, ccps: 8119203 }, ChannelCounters { c1_errors: 180752, c1_uncorrectable: 9090, header_errors: 2156, write_pass_errors: 0, ccps: 8119725 }, ChannelCounters { c1_errors: 103387, c1_uncorrectable: 7994, header_errors: 1615, write_pass_errors: 0, ccps: 8119549 }, ChannelCounters { c1_errors: 128471, c1_uncorrectable: 9267, header_errors: 1890, write_pass_errors: 0, ccps: 8119988 }, ChannelCounters { c1_errors: 347823, c1_uncorrectable: 178687, header_errors: 14321, write_pass_errors: 0, ccps: 8117428 }, ChannelCounters { c1_errors: 315589, c1_uncorrectable: 199915, header_errors: 27984, write_pass_errors: 0, ccps: 8102394 }, ChannelCounters { c1_errors: 118078, c1_uncorrectable: 28401, header_errors: 6744, write_pass_errors: 6, ccps: 8089453 }, ChannelCounters { c1_errors: 119126, c1_uncorrectable: 13733, header_errors: 2864, write_pass_errors: 0, ccps: 8119127 }], after: [ChannelCounters { c1_errors: 58405, c1_uncorrectable: 5583, header_errors: 1189, write_pass_errors: 0, ccps: 8170380 }, ChannelCounters { c1_errors: 92689, c1_uncorrectable: 6737, header_errors: 1793, write_pass_errors: 0, ccps: 8170464 }, ChannelCounters { c1_errors: 101742, c1_uncorrectable: 7826, header_errors: 1779, write_pass_errors: 0, ccps: 8170065 }, ChannelCounters { c1_errors: 103863, c1_uncorrectable: 6361, header_errors: 1605, write_pass_errors: 0, ccps: 8170465 }, ChannelCounters { c1_errors: 103883, c1_uncorrectable: 6758, header_errors: 1590, write_pass_errors: 0, ccps: 8170501 }, ChannelCounters { c1_errors: 91237, c1_uncorrectable: 5691, header_errors: 1534, write_pass_errors: 0, ccps: 8170001 }, ChannelCounters { c1_errors: 202349, c1_uncorrectable: 10682, header_errors: 3022, write_pass_errors: 0, ccps: 8169654 }, ChannelCounters { c1_errors: 124249, c1_uncorrectable: 7046, header_errors: 1973, write_pass_errors: 0, ccps: 8170392 }, ChannelCounters { c1_errors: 208018, c1_uncorrectable: 8654, header_errors: 2876, write_pass_errors: 0, ccps: 8169697 }, ChannelCounters { c1_errors: 180866, c1_uncorrectable: 9094, header_errors: 2158, write_pass_errors: 0, ccps: 8170217 }, ChannelCounters { c1_errors: 103582, c1_uncorrectable: 8003, header_errors: 1615, write_pass_errors: 0, ccps: 8170043 }, ChannelCounters { c1_errors: 128586, c1_uncorrectable: 9267, header_errors: 1892, write_pass_errors: 0, ccps: 8170485 }, ChannelCounters { c1_errors: 348031, c1_uncorrectable: 178691, header_errors: 14323, write_pass_errors: 0, ccps: 8167925 }, ChannelCounters { c1_errors: 315738, c1_uncorrectable: 199931, header_errors: 27985, write_pass_errors: 0, ccps: 8152889 }, ChannelCounters { c1_errors: 118234, c1_uncorrectable: 28406, header_errors: 6746, write_pass_errors: 6, ccps: 8139948 }, ChannelCounters { c1_errors: 119309, c1_uncorrectable: 13754, header_errors: 2865, write_pass_errors: 0, ccps: 8169617 }] }), worst_rate: Some(-5.905553957501389) }, ChannelTelemetrySample { temperature: None, elapsed_millis: 17894, timestamp: \"2026-10-23T13:15:49.268710999Z\", partition: 1, logical_block: 230450, throughput_bytes_per_second: 144486384.4924982, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.098948465998109), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.168639208896559), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.142683606349207), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.118163709997144), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-5.976981700851719), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.815803913482036), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.6736191552122035), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-5.938269845362263), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-6.146971632552785), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.152664205379129), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-6.018529727968272), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.081639322409355), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.922888087360672), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.024862185963349), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-6.044465462062671), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.317474454025122), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 230450, before: [ChannelCounters { c1_errors: 58405, c1_uncorrectable: 5583, header_errors: 1189, write_pass_errors: 0, ccps: 8170380 }, ChannelCounters { c1_errors: 92689, c1_uncorrectable: 6737, header_errors: 1793, write_pass_errors: 0, ccps: 8170464 }, ChannelCounters { c1_errors: 101742, c1_uncorrectable: 7826, header_errors: 1779, write_pass_errors: 0, ccps: 8170065 }, ChannelCounters { c1_errors: 103863, c1_uncorrectable: 6361, header_errors: 1605, write_pass_errors: 0, ccps: 8170465 }, ChannelCounters { c1_errors: 103883, c1_uncorrectable: 6758, header_errors: 1590, write_pass_errors: 0, ccps: 8170501 }, ChannelCounters { c1_errors: 91237, c1_uncorrectable: 5691, header_errors: 1534, write_pass_errors: 0, ccps: 8170001 }, ChannelCounters { c1_errors: 202349, c1_uncorrectable: 10682, header_errors: 3022, write_pass_errors: 0, ccps: 8169654 }, ChannelCounters { c1_errors: 124249, c1_uncorrectable: 7046, header_errors: 1973, write_pass_errors: 0, ccps: 8170392 }, ChannelCounters { c1_errors: 208018, c1_uncorrectable: 8654, header_errors: 2876, write_pass_errors: 0, ccps: 8169697 }, ChannelCounters { c1_errors: 180866, c1_uncorrectable: 9094, header_errors: 2158, write_pass_errors: 0, ccps: 8170217 }, ChannelCounters { c1_errors: 103582, c1_uncorrectable: 8003, header_errors: 1615, write_pass_errors: 0, ccps: 8170043 }, ChannelCounters { c1_errors: 128586, c1_uncorrectable: 9267, header_errors: 1892, write_pass_errors: 0, ccps: 8170485 }, ChannelCounters { c1_errors: 348031, c1_uncorrectable: 178691, header_errors: 14323, write_pass_errors: 0, ccps: 8167925 }, ChannelCounters { c1_errors: 315738, c1_uncorrectable: 199931, header_errors: 27985, write_pass_errors: 0, ccps: 8152889 }, ChannelCounters { c1_errors: 118234, c1_uncorrectable: 28406, header_errors: 6746, write_pass_errors: 6, ccps: 8139948 }, ChannelCounters { c1_errors: 119309, c1_uncorrectable: 13754, header_errors: 2865, write_pass_errors: 0, ccps: 8169617 }], after: [ChannelCounters { c1_errors: 58577, c1_uncorrectable: 5606, header_errors: 1198, write_pass_errors: 0, ccps: 8226633 }, ChannelCounters { c1_errors: 92835, c1_uncorrectable: 6749, header_errors: 1797, write_pass_errors: 0, ccps: 8226525 }, ChannelCounters { c1_errors: 101897, c1_uncorrectable: 7837, header_errors: 1780, write_pass_errors: 0, ccps: 8226129 }, ChannelCounters { c1_errors: 104027, c1_uncorrectable: 6370, header_errors: 1608, write_pass_errors: 0, ccps: 8226528 }, ChannelCounters { c1_errors: 104110, c1_uncorrectable: 6784, header_errors: 1593, write_pass_errors: 0, ccps: 8226564 }, ChannelCounters { c1_errors: 91566, c1_uncorrectable: 5743, header_errors: 1540, write_pass_errors: 0, ccps: 8226063 }, ChannelCounters { c1_errors: 202807, c1_uncorrectable: 10703, header_errors: 3032, write_pass_errors: 0, ccps: 8225908 }, ChannelCounters { c1_errors: 124498, c1_uncorrectable: 7076, header_errors: 1978, write_pass_errors: 0, ccps: 8226644 }, ChannelCounters { c1_errors: 208172, c1_uncorrectable: 8666, header_errors: 2880, write_pass_errors: 0, ccps: 8225952 }, ChannelCounters { c1_errors: 181018, c1_uncorrectable: 9109, header_errors: 2160, write_pass_errors: 0, ccps: 8226474 }, ChannelCounters { c1_errors: 103789, c1_uncorrectable: 8019, header_errors: 1617, write_pass_errors: 0, ccps: 8226299 }, ChannelCounters { c1_errors: 128765, c1_uncorrectable: 9288, header_errors: 1894, write_pass_errors: 0, ccps: 8226740 }, ChannelCounters { c1_errors: 348289, c1_uncorrectable: 178703, header_errors: 14325, write_pass_errors: 0, ccps: 8224182 }, ChannelCounters { c1_errors: 315942, c1_uncorrectable: 199944, header_errors: 27989, write_pass_errors: 0, ccps: 8209144 }, ChannelCounters { c1_errors: 118429, c1_uncorrectable: 28418, header_errors: 6752, write_pass_errors: 6, ccps: 8196204 }, ChannelCounters { c1_errors: 119413, c1_uncorrectable: 13773, header_errors: 2867, write_pass_errors: 0, ccps: 8225874 }] }), worst_rate: Some(-5.6736191552122035) }, ChannelTelemetrySample { temperature: None, elapsed_millis: 22894, timestamp: \"2026-10-23T13:15:54.269212700Z\", partition: 1, logical_block: 231829, throughput_bytes_per_second: 144584118.72333834, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-5.967128712190053), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.0865422467235835), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.149793202398474), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.309194208160419), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.1014962429970945), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.832042072473566), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.834712497066384), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.017037212587924), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.982767286185336), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.085042038157692), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.965651637018823), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.142691352685693), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.909769430582691), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.054246210479181), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.872070980842277), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.320185826150812), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 231829, before: [ChannelCounters { c1_errors: 58577, c1_uncorrectable: 5606, header_errors: 1198, write_pass_errors: 0, ccps: 8226633 }, ChannelCounters { c1_errors: 92835, c1_uncorrectable: 6749, header_errors: 1797, write_pass_errors: 0, ccps: 8226525 }, ChannelCounters { c1_errors: 101897, c1_uncorrectable: 7837, header_errors: 1780, write_pass_errors: 0, ccps: 8226129 }, ChannelCounters { c1_errors: 104027, c1_uncorrectable: 6370, header_errors: 1608, write_pass_errors: 0, ccps: 8226528 }, ChannelCounters { c1_errors: 104110, c1_uncorrectable: 6784, header_errors: 1593, write_pass_errors: 0, ccps: 8226564 }, ChannelCounters { c1_errors: 91566, c1_uncorrectable: 5743, header_errors: 1540, write_pass_errors: 0, ccps: 8226063 }, ChannelCounters { c1_errors: 202807, c1_uncorrectable: 10703, header_errors: 3032, write_pass_errors: 0, ccps: 8225908 }, ChannelCounters { c1_errors: 124498, c1_uncorrectable: 7076, header_errors: 1978, write_pass_errors: 0, ccps: 8226644 }, ChannelCounters { c1_errors: 208172, c1_uncorrectable: 8666, header_errors: 2880, write_pass_errors: 0, ccps: 8225952 }, ChannelCounters { c1_errors: 181018, c1_uncorrectable: 9109, header_errors: 2160, write_pass_errors: 0, ccps: 8226474 }, ChannelCounters { c1_errors: 103789, c1_uncorrectable: 8019, header_errors: 1617, write_pass_errors: 0, ccps: 8226299 }, ChannelCounters { c1_errors: 128765, c1_uncorrectable: 9288, header_errors: 1894, write_pass_errors: 0, ccps: 8226740 }, ChannelCounters { c1_errors: 348289, c1_uncorrectable: 178703, header_errors: 14325, write_pass_errors: 0, ccps: 8224182 }, ChannelCounters { c1_errors: 315942, c1_uncorrectable: 199944, header_errors: 27989, write_pass_errors: 0, ccps: 8209144 }, ChannelCounters { c1_errors: 118429, c1_uncorrectable: 28418, header_errors: 6752, write_pass_errors: 6, ccps: 8196204 }, ChannelCounters { c1_errors: 119413, c1_uncorrectable: 13773, header_errors: 2867, write_pass_errors: 0, ccps: 8225874 }], after: [ChannelCounters { c1_errors: 58810, c1_uncorrectable: 5642, header_errors: 1201, write_pass_errors: 0, ccps: 8282887 }, ChannelCounters { c1_errors: 93012, c1_uncorrectable: 6773, header_errors: 1802, write_pass_errors: 0, ccps: 8282783 }, ChannelCounters { c1_errors: 102050, c1_uncorrectable: 7849, header_errors: 1783, write_pass_errors: 0, ccps: 8282383 }, ChannelCounters { c1_errors: 104133, c1_uncorrectable: 6374, header_errors: 1609, write_pass_errors: 0, ccps: 8282784 }, ChannelCounters { c1_errors: 104281, c1_uncorrectable: 6792, header_errors: 1594, write_pass_errors: 0, ccps: 8282819 }, ChannelCounters { c1_errors: 91884, c1_uncorrectable: 5765, header_errors: 1546, write_pass_errors: 0, ccps: 8282315 }, ChannelCounters { c1_errors: 203122, c1_uncorrectable: 10719, header_errors: 3034, write_pass_errors: 0, ccps: 8281973 }, ChannelCounters { c1_errors: 124705, c1_uncorrectable: 7098, header_errors: 1979, write_pass_errors: 0, ccps: 8282707 }, ChannelCounters { c1_errors: 208396, c1_uncorrectable: 8686, header_errors: 2887, write_pass_errors: 0, ccps: 8282016 }, ChannelCounters { c1_errors: 181195, c1_uncorrectable: 9109, header_errors: 2161, write_pass_errors: 0, ccps: 8282538 }, ChannelCounters { c1_errors: 104022, c1_uncorrectable: 8030, header_errors: 1619, write_pass_errors: 0, ccps: 8282362 }, ChannelCounters { c1_errors: 128920, c1_uncorrectable: 9296, header_errors: 1896, write_pass_errors: 0, ccps: 8282805 }, ChannelCounters { c1_errors: 348554, c1_uncorrectable: 178722, header_errors: 14328, write_pass_errors: 0, ccps: 8280246 }, ChannelCounters { c1_errors: 316132, c1_uncorrectable: 199953, header_errors: 27990, write_pass_errors: 0, ccps: 8265206 }, ChannelCounters { c1_errors: 118718, c1_uncorrectable: 28451, header_errors: 6758, write_pass_errors: 6, ccps: 8252262 }, ChannelCounters { c1_errors: 119516, c1_uncorrectable: 13781, header_errors: 2870, write_pass_errors: 0, ccps: 8281939 }] }), worst_rate: Some(-5.832042072473566) }, ChannelTelemetrySample { temperature: None, elapsed_millis: 27898, timestamp: \"2026-10-23T13:15:59.272683069Z\", partition: 1, logical_block: 233207, throughput_bytes_per_second: 144393557.98165452, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.065812589388784), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.193136218118262), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.18378069877663), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.584827277513298), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.295588806578875), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.965643890405991), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.804284935012991), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.086526807063383), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.963424491117512), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.106605648775575), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.96526877580593), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.084072351080354), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.91123103896885), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.031304016004701), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.9524444292982235), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.124977338846617), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 233207, before: [ChannelCounters { c1_errors: 58810, c1_uncorrectable: 5642, header_errors: 1201, write_pass_errors: 0, ccps: 8282887 }, ChannelCounters { c1_errors: 93012, c1_uncorrectable: 6773, header_errors: 1802, write_pass_errors: 0, ccps: 8282783 }, ChannelCounters { c1_errors: 102050, c1_uncorrectable: 7849, header_errors: 1783, write_pass_errors: 0, ccps: 8282383 }, ChannelCounters { c1_errors: 104133, c1_uncorrectable: 6374, header_errors: 1609, write_pass_errors: 0, ccps: 8282784 }, ChannelCounters { c1_errors: 104281, c1_uncorrectable: 6792, header_errors: 1594, write_pass_errors: 0, ccps: 8282819 }, ChannelCounters { c1_errors: 91884, c1_uncorrectable: 5765, header_errors: 1546, write_pass_errors: 0, ccps: 8282315 }, ChannelCounters { c1_errors: 203122, c1_uncorrectable: 10719, header_errors: 3034, write_pass_errors: 0, ccps: 8281973 }, ChannelCounters { c1_errors: 124705, c1_uncorrectable: 7098, header_errors: 1979, write_pass_errors: 0, ccps: 8282707 }, ChannelCounters { c1_errors: 208396, c1_uncorrectable: 8686, header_errors: 2887, write_pass_errors: 0, ccps: 8282016 }, ChannelCounters { c1_errors: 181195, c1_uncorrectable: 9109, header_errors: 2161, write_pass_errors: 0, ccps: 8282538 }, ChannelCounters { c1_errors: 104022, c1_uncorrectable: 8030, header_errors: 1619, write_pass_errors: 0, ccps: 8282362 }, ChannelCounters { c1_errors: 128920, c1_uncorrectable: 9296, header_errors: 1896, write_pass_errors: 0, ccps: 8282805 }, ChannelCounters { c1_errors: 348554, c1_uncorrectable: 178722, header_errors: 14328, write_pass_errors: 0, ccps: 8280246 }, ChannelCounters { c1_errors: 316132, c1_uncorrectable: 199953, header_errors: 27990, write_pass_errors: 0, ccps: 8265206 }, ChannelCounters { c1_errors: 118718, c1_uncorrectable: 28451, header_errors: 6758, write_pass_errors: 6, ccps: 8252262 }, ChannelCounters { c1_errors: 119516, c1_uncorrectable: 13781, header_errors: 2870, write_pass_errors: 0, ccps: 8281939 }], after: [ChannelCounters { c1_errors: 58995, c1_uncorrectable: 5654, header_errors: 1205, write_pass_errors: 0, ccps: 8338947 }, ChannelCounters { c1_errors: 93150, c1_uncorrectable: 6789, header_errors: 1806, write_pass_errors: 0, ccps: 8338847 }, ChannelCounters { c1_errors: 102191, c1_uncorrectable: 7861, header_errors: 1787, write_pass_errors: 0, ccps: 8338445 }, ChannelCounters { c1_errors: 104189, c1_uncorrectable: 6378, header_errors: 1610, write_pass_errors: 0, ccps: 8338848 }, ChannelCounters { c1_errors: 104390, c1_uncorrectable: 6802, header_errors: 1596, write_pass_errors: 0, ccps: 8338883 }, ChannelCounters { c1_errors: 92117, c1_uncorrectable: 5774, header_errors: 1551, write_pass_errors: 0, ccps: 8338377 }, ChannelCounters { c1_errors: 203461, c1_uncorrectable: 10731, header_errors: 3039, write_pass_errors: 0, ccps: 8338227 }, ChannelCounters { c1_errors: 124882, c1_uncorrectable: 7102, header_errors: 1981, write_pass_errors: 0, ccps: 8338963 }, ChannelCounters { c1_errors: 208631, c1_uncorrectable: 8718, header_errors: 2888, write_pass_errors: 0, ccps: 8338271 }, ChannelCounters { c1_errors: 181364, c1_uncorrectable: 9115, header_errors: 2165, write_pass_errors: 0, ccps: 8338793 }, ChannelCounters { c1_errors: 104256, c1_uncorrectable: 8038, header_errors: 1622, write_pass_errors: 0, ccps: 8338616 }, ChannelCounters { c1_errors: 129098, c1_uncorrectable: 9320, header_errors: 1897, write_pass_errors: 0, ccps: 8339060 }, ChannelCounters { c1_errors: 348819, c1_uncorrectable: 178738, header_errors: 14332, write_pass_errors: 0, ccps: 8336499 }, ChannelCounters { c1_errors: 316333, c1_uncorrectable: 199971, header_errors: 27991, write_pass_errors: 0, ccps: 8321462 }, ChannelCounters { c1_errors: 118959, c1_uncorrectable: 28464, header_errors: 6764, write_pass_errors: 6, ccps: 8308513 }, ChannelCounters { c1_errors: 119678, c1_uncorrectable: 13821, header_errors: 2875, write_pass_errors: 0, ccps: 8338194 }] }), worst_rate: Some(-5.804284935012991) }, ChannelTelemetrySample { temperature: None, elapsed_millis: 32900, timestamp: \"2026-10-23T13:16:04.274796746Z\", partition: 1, logical_block: 234587, throughput_bytes_per_second: 144642337.8191964, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-5.899938889289704), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.0185451676284725), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.133149266438745), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.366063442205261), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.114438302719141), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.789200676858078), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.782794697800891), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.120874176062068), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.942111181933088), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.142714590866175), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.911442362166636), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.120874176062068), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.858830024960212), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-5.9032940090340595), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.904911495007679), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.115577836252119), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 234587, before: [ChannelCounters { c1_errors: 58995, c1_uncorrectable: 5654, header_errors: 1205, write_pass_errors: 0, ccps: 8338947 }, ChannelCounters { c1_errors: 93150, c1_uncorrectable: 6789, header_errors: 1806, write_pass_errors: 0, ccps: 8338847 }, ChannelCounters { c1_errors: 102191, c1_uncorrectable: 7861, header_errors: 1787, write_pass_errors: 0, ccps: 8338445 }, ChannelCounters { c1_errors: 104189, c1_uncorrectable: 6378, header_errors: 1610, write_pass_errors: 0, ccps: 8338848 }, ChannelCounters { c1_errors: 104390, c1_uncorrectable: 6802, header_errors: 1596, write_pass_errors: 0, ccps: 8338883 }, ChannelCounters { c1_errors: 92117, c1_uncorrectable: 5774, header_errors: 1551, write_pass_errors: 0, ccps: 8338377 }, ChannelCounters { c1_errors: 203461, c1_uncorrectable: 10731, header_errors: 3039, write_pass_errors: 0, ccps: 8338227 }, ChannelCounters { c1_errors: 124882, c1_uncorrectable: 7102, header_errors: 1981, write_pass_errors: 0, ccps: 8338963 }, ChannelCounters { c1_errors: 208631, c1_uncorrectable: 8718, header_errors: 2888, write_pass_errors: 0, ccps: 8338271 }, ChannelCounters { c1_errors: 181364, c1_uncorrectable: 9115, header_errors: 2165, write_pass_errors: 0, ccps: 8338793 }, ChannelCounters { c1_errors: 104256, c1_uncorrectable: 8038, header_errors: 1622, write_pass_errors: 0, ccps: 8338616 }, ChannelCounters { c1_errors: 129098, c1_uncorrectable: 9320, header_errors: 1897, write_pass_errors: 0, ccps: 8339060 }, ChannelCounters { c1_errors: 348819, c1_uncorrectable: 178738, header_errors: 14332, write_pass_errors: 0, ccps: 8336499 }, ChannelCounters { c1_errors: 316333, c1_uncorrectable: 199971, header_errors: 27991, write_pass_errors: 0, ccps: 8321462 }, ChannelCounters { c1_errors: 118959, c1_uncorrectable: 28464, header_errors: 6764, write_pass_errors: 6, ccps: 8308513 }, ChannelCounters { c1_errors: 119678, c1_uncorrectable: 13821, header_errors: 2875, write_pass_errors: 0, ccps: 8338194 }], after: [ChannelCounters { c1_errors: 59267, c1_uncorrectable: 5682, header_errors: 1210, write_pass_errors: 0, ccps: 8395204 }, ChannelCounters { c1_errors: 93357, c1_uncorrectable: 6831, header_errors: 1810, write_pass_errors: 0, ccps: 8395105 }, ChannelCounters { c1_errors: 102350, c1_uncorrectable: 7873, header_errors: 1787, write_pass_errors: 0, ccps: 8394707 }, ChannelCounters { c1_errors: 104282, c1_uncorrectable: 6386, header_errors: 1611, write_pass_errors: 0, ccps: 8395110 }, ChannelCounters { c1_errors: 104556, c1_uncorrectable: 6819, header_errors: 1602, write_pass_errors: 0, ccps: 8395145 }, ChannelCounters { c1_errors: 92468, c1_uncorrectable: 5795, header_errors: 1555, write_pass_errors: 0, ccps: 8394634 }, ChannelCounters { c1_errors: 203816, c1_uncorrectable: 10749, header_errors: 3041, write_pass_errors: 0, ccps: 8394292 }, ChannelCounters { c1_errors: 125045, c1_uncorrectable: 7114, header_errors: 1983, write_pass_errors: 0, ccps: 8395033 }, ChannelCounters { c1_errors: 208877, c1_uncorrectable: 8749, header_errors: 2893, write_pass_errors: 0, ccps: 8394339 }, ChannelCounters { c1_errors: 181519, c1_uncorrectable: 9127, header_errors: 2166, write_pass_errors: 0, ccps: 8394861 }, ChannelCounters { c1_errors: 104520, c1_uncorrectable: 8066, header_errors: 1628, write_pass_errors: 0, ccps: 8394684 }, ChannelCounters { c1_errors: 129261, c1_uncorrectable: 9343, header_errors: 1901, write_pass_errors: 0, ccps: 8395130 }, ChannelCounters { c1_errors: 349117, c1_uncorrectable: 178777, header_errors: 14340, write_pass_errors: 0, ccps: 8392567 }, ChannelCounters { c1_errors: 316602, c1_uncorrectable: 199996, header_errors: 27996, write_pass_errors: 0, ccps: 8377530 }, ChannelCounters { c1_errors: 119227, c1_uncorrectable: 28501, header_errors: 6776, write_pass_errors: 6, ccps: 8364581 }, ChannelCounters { c1_errors: 119843, c1_uncorrectable: 13833, header_errors: 2877, write_pass_errors: 0, ccps: 8394264 }] }), worst_rate: Some(-5.782794697800891) }], session_worst_channel_rate: Some(SessionWorstChannelRate { rate: -5.6736191552122035, channel: 6, elapsed_millis: 17894, timestamp: \"2026-10-23T13:15:49.268710999Z\", partition: 1, logical_block: 230450 }), telemetry_warnings: [] }"
+        }
+      ]
+    },
+    "on": {
+      "stable_samples": 15,
+      "median_MB_s": 144.46130970973164,
+      "mean_MB_s": 143.92568502885072,
+      "minimum_MB_s": 136.29641319897567,
+      "raw_samples": [
+        {
+          "bytes": 0,
+          "elapsed": 1.82948015,
+          "kind": "phase",
+          "phase": "Preparing"
+        },
+        {
+          "bytes": 0,
+          "elapsed": 60.732405428,
+          "kind": "phase",
+          "phase": "WritingData"
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 524288,
+          "capacity": 536870912,
+          "elapsed": 63.084909481,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 228195834.90411544,
+          "tape_bps": 222847.49502355023,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 207093760,
+          "capacity": 536870912,
+          "elapsed": 68.521236362,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 37997979.284112796,
+          "tape_bps": 37997979.284112796,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 207093760,
+          "elapsed": 68.536938019,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761503166,
+            "timestamp": "2026-10-23T13:18:23.166602968Z"
+          },
+          "worst_rate": 0.0
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 284164096,
+          "capacity": 536870912,
+          "elapsed": 69.532172544,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 76236659.16213161,
+          "tape_bps": 76236659.16213161,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 423624704,
+          "capacity": 536870912,
+          "elapsed": 70.532860112,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 138840934.61183047,
+          "tape_bps": 139364862.66696945,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 568328192,
+          "capacity": 536870912,
+          "elapsed": 71.537262348,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144591199.07612982,
+          "tape_bps": 144069209.18776834,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 714080256,
+          "capacity": 536870912,
+          "elapsed": 72.546554544,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144410122.2526185,
+          "tape_bps": 144410122.2526185,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 855113728,
+          "elapsed": 73.544729141,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761508169,
+            "timestamp": "2026-10-23T13:18:28.169371992Z"
+          },
+          "worst_rate": -5.893136520734622
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 856162304,
+          "capacity": 536870912,
+          "elapsed": 73.547561663,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 141415326.05934706,
+          "tape_bps": 141939086.52623352,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1003487232,
+          "capacity": 536870912,
+          "elapsed": 74.550924392,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 147353506.720405,
+          "tape_bps": 146830976.55472982,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1148715008,
+          "capacity": 536870912,
+          "elapsed": 75.556204631,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144465225.55269453,
+          "tape_bps": 144465225.55269453,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1294467072,
+          "capacity": 536870912,
+          "elapsed": 76.565137759,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144461424.39859357,
+          "tape_bps": 144461424.39859357,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1440219136,
+          "capacity": 536870912,
+          "elapsed": 77.574178949,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144446146.61095092,
+          "tape_bps": 144446146.61095092,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 1578631168,
+          "elapsed": 78.552955279,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761513177,
+            "timestamp": "2026-10-23T13:18:33.177757857Z"
+          },
+          "worst_rate": -5.794139717667125
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1585971200,
+          "capacity": 536870912,
+          "elapsed": 78.583114805,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144461309.70973164,
+          "tape_bps": 144461309.70973164,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1731723264,
+          "capacity": 536870912,
+          "elapsed": 79.591866996,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144487368.51963294,
+          "tape_bps": 144487368.51963294,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 1877475328,
+          "capacity": 536870912,
+          "elapsed": 80.601396784,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144376164.92332727,
+          "tape_bps": 144376164.92332727,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2023227392,
+          "capacity": 536870912,
+          "elapsed": 81.610303683,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144465378.77002344,
+          "tape_bps": 144465378.77002344,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 2168979456,
+          "capacity": 536870912,
+          "elapsed": 82.611096788,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 145112729.61217436,
+          "tape_bps": 145636602.2822544,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 2301624320,
+          "elapsed": 83.553603475,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761518176,
+            "timestamp": "2026-10-23T13:18:38.176754508Z"
+          },
+          "worst_rate": -5.756681700650192
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2312634368,
+          "capacity": 536870912,
+          "elapsed": 83.612216443,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144018133.000415,
+          "tape_bps": 143494430.6985953,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2458386432,
+          "capacity": 536870912,
+          "elapsed": 84.621358499,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144431488.05266422,
+          "tape_bps": 144431488.05266422,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2604138496,
+          "capacity": 536870912,
+          "elapsed": 85.630442278,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144439942.10021347,
+          "tape_bps": 144439942.10021347,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2749890560,
+          "capacity": 536870912,
+          "elapsed": 86.639059487,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144506783.44100916,
+          "tape_bps": 144506783.44100916,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 2895642624,
+          "capacity": 536870912,
+          "elapsed": 87.64809373,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144447137.22910056,
+          "tape_bps": 144447137.22910056,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 3024093184,
+          "elapsed": 88.558102238,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761523182,
+            "timestamp": "2026-10-23T13:18:43.182719884Z"
+          },
+          "worst_rate": -5.734640160635971
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3041394688,
+          "capacity": 536870912,
+          "elapsed": 88.656971857,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144469459.94499403,
+          "tape_bps": 144469459.94499403,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3177709568,
+          "capacity": 536870912,
+          "elapsed": 89.657106815,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 136296413.19897568,
+          "tape_bps": 136296413.19897568,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3251634176,
+          "capacity": 536870912,
+          "elapsed": 90.685551811,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 71880026.57539974,
+          "tape_bps": 71880026.57539974,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3347578880,
+          "capacity": 536870912,
+          "elapsed": 91.69313194,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 95222838.42083085,
+          "tape_bps": 95222838.42083085,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 535822336,
+          "bytes": 3492806656,
+          "capacity": 536870912,
+          "elapsed": 92.694278282,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 144537390.97817135,
+          "tape_bps": 145061077.17736763,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 3614441472,
+          "elapsed": 93.562714046,
+          "kind": "telemetry",
+          "temperature": {
+            "current_celsius": 37,
+            "error": null,
+            "reference_celsius": null,
+            "sampled_unix_millis": 1792761528187,
+            "timestamp": "2026-10-23T13:18:48.187672634Z"
+          },
+          "worst_rate": -5.827215937400921
+        },
+        {
+          "buffer": 536346624,
+          "bytes": 3636985856,
+          "capacity": 536870912,
+          "elapsed": 93.696540648,
+          "kind": "performance",
+          "reader_waiting": true,
+          "source_bps": 144377429.76642868,
+          "tape_bps": 143854323.13684016,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 512753664,
+          "bytes": 3782213632,
+          "capacity": 536870912,
+          "elapsed": 94.696845915,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 121597683.95844497,
+          "tape_bps": 145183441.62279853,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 369098752,
+          "bytes": 3925868544,
+          "capacity": 536870912,
+          "elapsed": 95.696849513,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 143654367.6936008,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 223346688,
+          "bytes": 4071620608,
+          "capacity": 536870912,
+          "elapsed": 96.705860589,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 144450295.84567547,
+          "writer_waiting": false
+        },
+        {
+          "buffer": 77594624,
+          "bytes": 4217372672,
+          "capacity": 536870912,
+          "elapsed": 97.714790837,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 144461968.49305397,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 98.27088034,
+          "kind": "phase",
+          "phase": "WritingData"
+        },
+        {
+          "buffer": 0,
+          "bytes": 4294967296,
+          "capacity": 536870912,
+          "elapsed": 98.270917577,
+          "kind": "performance",
+          "reader_waiting": false,
+          "source_bps": 0.0,
+          "tape_bps": 139524305.09888348,
+          "writer_waiting": false
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 98.270922746,
+          "kind": "phase",
+          "phase": "FinalizingDataIndex"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 105.305357225,
+          "kind": "phase",
+          "phase": "SyncingIndexPartition"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 139.584926788,
+          "kind": "phase",
+          "phase": "UpdatingCoherency"
+        },
+        {
+          "bytes": 4294967296,
+          "elapsed": 144.759944035,
+          "kind": "phase",
+          "phase": "Completed"
+        },
+        {
+          "elapsed": 144.770608485,
+          "kind": "complete",
+          "result": "WriteResult { bytes: 4294967296, files: 1, directories: 0, file_uid: 30418, generation: 8, data_start_block: 235677, hashes: [FileHash { path: \"/temperature-ab-20261023-on.bin\", sha256: \"cdf9d57817ea76912ec6f53f3392c08d5f8296c9927a8e7212b906f65f3d29ed\" }], verification: None, health_before: DriveHealth { write_errors: Some(ErrorCounters { corrected_without_delay: Some(2279), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(78234), data_processed: Some(43622), uncorrected: Some(0) }), read_errors: Some(ErrorCounters { corrected_without_delay: Some(15339), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(15339), data_processed: Some(63140), uncorrected: Some(0) }), temperature: Some(TemperatureLog { current_celsius: Some(37), reference_celsius: None }), tape_alerts: [], write_channels: Some([ChannelCounters { c1_errors: 59469, c1_uncorrectable: 5690, header_errors: 1212, write_pass_errors: 0, ccps: 8453957 }, ChannelCounters { c1_errors: 93496, c1_uncorrectable: 6844, header_errors: 1813, write_pass_errors: 0, ccps: 8453862 }, ChannelCounters { c1_errors: 102560, c1_uncorrectable: 7905, header_errors: 1789, write_pass_errors: 0, ccps: 8453459 }, ChannelCounters { c1_errors: 104427, c1_uncorrectable: 6398, header_errors: 1612, write_pass_errors: 0, ccps: 8453868 }, ChannelCounters { c1_errors: 104673, c1_uncorrectable: 6819, header_errors: 1605, write_pass_errors: 0, ccps: 8453899 }, ChannelCounters { c1_errors: 92830, c1_uncorrectable: 5814, header_errors: 1560, write_pass_errors: 0, ccps: 8453382 }, ChannelCounters { c1_errors: 204229, c1_uncorrectable: 10773, header_errors: 3049, write_pass_errors: 0, ccps: 8453047 }, ChannelCounters { c1_errors: 125193, c1_uncorrectable: 7128, header_errors: 1983, write_pass_errors: 0, ccps: 8453788 }, ChannelCounters { c1_errors: 209083, c1_uncorrectable: 8763, header_errors: 2896, write_pass_errors: 0, ccps: 8453092 }, ChannelCounters { c1_errors: 181728, c1_uncorrectable: 9151, header_errors: 2166, write_pass_errors: 0, ccps: 8453611 }, ChannelCounters { c1_errors: 104722, c1_uncorrectable: 8070, header_errors: 1631, write_pass_errors: 0, ccps: 8453440 }, ChannelCounters { c1_errors: 129453, c1_uncorrectable: 9357, header_errors: 1902, write_pass_errors: 0, ccps: 8453886 }, ChannelCounters { c1_errors: 349365, c1_uncorrectable: 178789, header_errors: 14341, write_pass_errors: 0, ccps: 8451321 }, ChannelCounters { c1_errors: 316838, c1_uncorrectable: 200008, header_errors: 27998, write_pass_errors: 0, ccps: 8436284 }, ChannelCounters { c1_errors: 119495, c1_uncorrectable: 28529, header_errors: 6782, write_pass_errors: 6, ccps: 8423336 }, ChannelCounters { c1_errors: 119954, c1_uncorrectable: 13835, header_errors: 2881, write_pass_errors: 0, ccps: 8453019 }]), read_channels: Some([ChannelCounters { c1_errors: 89254, c1_uncorrectable: 5439, header_errors: 11292, write_pass_errors: 87302, ccps: 12280756 }, ChannelCounters { c1_errors: 123481, c1_uncorrectable: 5861, header_errors: 5937, write_pass_errors: 87556, ccps: 12283627 }, ChannelCounters { c1_errors: 115677, c1_uncorrectable: 5254, header_errors: 9247, write_pass_errors: 86962, ccps: 12283506 }, ChannelCounters { c1_errors: 121725, c1_uncorrectable: 3871, header_errors: 13312, write_pass_errors: 86949, ccps: 12283664 }, ChannelCounters { c1_errors: 108680, c1_uncorrectable: 4078, header_errors: 13679, write_pass_errors: 88097, ccps: 12283683 }, ChannelCounters { c1_errors: 106152, c1_uncorrectable: 3509, header_errors: 16635, write_pass_errors: 88065, ccps: 12283583 }, ChannelCounters { c1_errors: 193458, c1_uncorrectable: 5314, header_errors: 18853, write_pass_errors: 88533, ccps: 12283568 }, ChannelCounters { c1_errors: 89866, c1_uncorrectable: 4384, header_errors: 6779, write_pass_errors: 87409, ccps: 12283661 }, ChannelCounters { c1_errors: 277296, c1_uncorrectable: 5769, header_errors: 25251, write_pass_errors: 87201, ccps: 12283513 }, ChannelCounters { c1_errors: 200113, c1_uncorrectable: 5357, header_errors: 19582, write_pass_errors: 87050, ccps: 12283537 }, ChannelCounters { c1_errors: 115190, c1_uncorrectable: 6054, header_errors: 11267, write_pass_errors: 87142, ccps: 12283588 }, ChannelCounters { c1_errors: 112460, c1_uncorrectable: 5639, header_errors: 18354, write_pass_errors: 88740, ccps: 12283684 }, ChannelCounters { c1_errors: 666953, c1_uncorrectable: 266987, header_errors: 42976, write_pass_errors: 87010, ccps: 12281860 }, ChannelCounters { c1_errors: 581690, c1_uncorrectable: 359263, header_errors: 65726, write_pass_errors: 86876, ccps: 12254307 }, ChannelCounters { c1_errors: 198675, c1_uncorrectable: 83693, header_errors: 30399, write_pass_errors: 92569, ccps: 12203386 }, ChannelCounters { c1_errors: 208271, c1_uncorrectable: 30153, header_errors: 12290, write_pass_errors: 90858, ccps: 12282579 }]), warnings: [] }, health_after: DriveHealth { write_errors: Some(ErrorCounters { corrected_without_delay: Some(2286), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(78247), data_processed: Some(45358), uncorrected: Some(0) }), read_errors: Some(ErrorCounters { corrected_without_delay: Some(15350), corrected_with_delay: Some(0), total_corrected: Some(0), correction_processed: Some(15350), data_processed: Some(63220), uncorrected: Some(0) }), temperature: Some(TemperatureLog { current_celsius: Some(37), reference_celsius: None }), tape_alerts: [], write_channels: Some([ChannelCounters { c1_errors: 60555, c1_uncorrectable: 5776, header_errors: 1230, write_pass_errors: 0, ccps: 8787272 }, ChannelCounters { c1_errors: 94343, c1_uncorrectable: 6892, header_errors: 1831, write_pass_errors: 0, ccps: 8787185 }, ChannelCounters { c1_errors: 103335, c1_uncorrectable: 7989, header_errors: 1799, write_pass_errors: 0, ccps: 8786776 }, ChannelCounters { c1_errors: 104964, c1_uncorrectable: 6436, header_errors: 1620, write_pass_errors: 0, ccps: 8787193 }, ChannelCounters { c1_errors: 105403, c1_uncorrectable: 6888, header_errors: 1613, write_pass_errors: 0, ccps: 8787224 }, ChannelCounters { c1_errors: 94696, c1_uncorrectable: 5924, header_errors: 1577, write_pass_errors: 0, ccps: 8786689 }, ChannelCounters { c1_errors: 206073, c1_uncorrectable: 10871, header_errors: 3075, write_pass_errors: 0, ccps: 8786356 }, ChannelCounters { c1_errors: 126205, c1_uncorrectable: 7213, header_errors: 1993, write_pass_errors: 0, ccps: 8787111 }, ChannelCounters { c1_errors: 210505, c1_uncorrectable: 8858, header_errors: 2915, write_pass_errors: 0, ccps: 8786409 }, ChannelCounters { c1_errors: 182798, c1_uncorrectable: 9241, header_errors: 2173, write_pass_errors: 0, ccps: 8786922 }, ChannelCounters { c1_errors: 106179, c1_uncorrectable: 8208, header_errors: 1651, write_pass_errors: 0, ccps: 8786755 }, ChannelCounters { c1_errors: 130329, c1_uncorrectable: 9406, header_errors: 1915, write_pass_errors: 0, ccps: 8787208 }, ChannelCounters { c1_errors: 350998, c1_uncorrectable: 178878, header_errors: 14375, write_pass_errors: 0, ccps: 8784638 }, ChannelCounters { c1_errors: 318040, c1_uncorrectable: 200081, header_errors: 28016, write_pass_errors: 0, ccps: 8769599 }, ChannelCounters { c1_errors: 120996, c1_uncorrectable: 28682, header_errors: 6814, write_pass_errors: 6, ccps: 8756648 }, ChannelCounters { c1_errors: 120806, c1_uncorrectable: 13903, header_errors: 2895, write_pass_errors: 0, ccps: 8786343 }]), read_channels: Some([ChannelCounters { c1_errors: 89334, c1_uncorrectable: 5439, header_errors: 11582, write_pass_errors: 87930, ccps: 12295800 }, ChannelCounters { c1_errors: 123547, c1_uncorrectable: 5869, header_errors: 6001, write_pass_errors: 88187, ccps: 12298671 }, ChannelCounters { c1_errors: 115734, c1_uncorrectable: 5254, header_errors: 9393, write_pass_errors: 87593, ccps: 12298550 }, ChannelCounters { c1_errors: 121754, c1_uncorrectable: 3875, header_errors: 13487, write_pass_errors: 87579, ccps: 12298708 }, ChannelCounters { c1_errors: 108752, c1_uncorrectable: 4082, header_errors: 13746, write_pass_errors: 88726, ccps: 12298727 }, ChannelCounters { c1_errors: 106224, c1_uncorrectable: 3509, header_errors: 16975, write_pass_errors: 88696, ccps: 12298624 }, ChannelCounters { c1_errors: 193547, c1_uncorrectable: 5318, header_errors: 18970, write_pass_errors: 89164, ccps: 12298612 }, ChannelCounters { c1_errors: 89911, c1_uncorrectable: 4388, header_errors: 6910, write_pass_errors: 88040, ccps: 12298705 }, ChannelCounters { c1_errors: 277383, c1_uncorrectable: 5769, header_errors: 25821, write_pass_errors: 87832, ccps: 12298557 }, ChannelCounters { c1_errors: 200183, c1_uncorrectable: 5361, header_errors: 19647, write_pass_errors: 87678, ccps: 12298581 }, ChannelCounters { c1_errors: 115281, c1_uncorrectable: 6058, header_errors: 11432, write_pass_errors: 87774, ccps: 12298632 }, ChannelCounters { c1_errors: 112535, c1_uncorrectable: 5642, header_errors: 18469, write_pass_errors: 89372, ccps: 12298728 }, ChannelCounters { c1_errors: 667042, c1_uncorrectable: 266987, header_errors: 43077, write_pass_errors: 87642, ccps: 12296904 }, ChannelCounters { c1_errors: 581766, c1_uncorrectable: 359267, header_errors: 65797, write_pass_errors: 87507, ccps: 12269350 }, ChannelCounters { c1_errors: 198770, c1_uncorrectable: 83701, header_errors: 30529, write_pass_errors: 93201, ccps: 12218430 }, ChannelCounters { c1_errors: 208313, c1_uncorrectable: 30153, header_errors: 12372, write_pass_errors: 91491, ccps: 12297623 }]), warnings: [] }, health_delta: DriveHealthDelta { corrected_write_errors: Some(0), hard_write_errors: Some(0), corrected_read_errors: Some(0), hard_read_errors: Some(0), active_tape_alerts: [], write_channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.071356257541641), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.1793130959795395), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.217886986190557), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.377224826450546), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.243876252029645), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.83626401961803), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.841417348275845), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.102015993806466), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.95428909230312), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.077797093257554), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.943726531024479), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.164691097216375), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.8942025039602), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.027281615127748), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.930801481668283), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.176758214465428), ccp_advanced: true }], worst_write_channel_rate: Some(-5.83626401961803) }, telemetry_history: [ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:23.166602968Z\", sampled_unix_millis: 1792761503166, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 7804, timestamp: \"2026-10-23T13:18:23.179434324Z\", partition: 1, logical_block: 236072, throughput_bytes_per_second: 26534343.832746424, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-2.98), ccp_advanced: false }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 236072, before: [ChannelCounters { c1_errors: 59469, c1_uncorrectable: 5690, header_errors: 1212, write_pass_errors: 0, ccps: 8453957 }, ChannelCounters { c1_errors: 93496, c1_uncorrectable: 6844, header_errors: 1813, write_pass_errors: 0, ccps: 8453862 }, ChannelCounters { c1_errors: 102560, c1_uncorrectable: 7905, header_errors: 1789, write_pass_errors: 0, ccps: 8453459 }, ChannelCounters { c1_errors: 104427, c1_uncorrectable: 6398, header_errors: 1612, write_pass_errors: 0, ccps: 8453868 }, ChannelCounters { c1_errors: 104673, c1_uncorrectable: 6819, header_errors: 1605, write_pass_errors: 0, ccps: 8453899 }, ChannelCounters { c1_errors: 92830, c1_uncorrectable: 5814, header_errors: 1560, write_pass_errors: 0, ccps: 8453382 }, ChannelCounters { c1_errors: 204229, c1_uncorrectable: 10773, header_errors: 3049, write_pass_errors: 0, ccps: 8453047 }, ChannelCounters { c1_errors: 125193, c1_uncorrectable: 7128, header_errors: 1983, write_pass_errors: 0, ccps: 8453788 }, ChannelCounters { c1_errors: 209083, c1_uncorrectable: 8763, header_errors: 2896, write_pass_errors: 0, ccps: 8453092 }, ChannelCounters { c1_errors: 181728, c1_uncorrectable: 9151, header_errors: 2166, write_pass_errors: 0, ccps: 8453611 }, ChannelCounters { c1_errors: 104722, c1_uncorrectable: 8070, header_errors: 1631, write_pass_errors: 0, ccps: 8453440 }, ChannelCounters { c1_errors: 129453, c1_uncorrectable: 9357, header_errors: 1902, write_pass_errors: 0, ccps: 8453886 }, ChannelCounters { c1_errors: 349365, c1_uncorrectable: 178789, header_errors: 14341, write_pass_errors: 0, ccps: 8451321 }, ChannelCounters { c1_errors: 316838, c1_uncorrectable: 200008, header_errors: 27998, write_pass_errors: 0, ccps: 8436284 }, ChannelCounters { c1_errors: 119495, c1_uncorrectable: 28529, header_errors: 6782, write_pass_errors: 6, ccps: 8423336 }, ChannelCounters { c1_errors: 119954, c1_uncorrectable: 13835, header_errors: 2881, write_pass_errors: 0, ccps: 8453019 }], after: [ChannelCounters { c1_errors: 59469, c1_uncorrectable: 5690, header_errors: 1212, write_pass_errors: 0, ccps: 8453957 }, ChannelCounters { c1_errors: 93496, c1_uncorrectable: 6844, header_errors: 1813, write_pass_errors: 0, ccps: 8453862 }, ChannelCounters { c1_errors: 102560, c1_uncorrectable: 7905, header_errors: 1789, write_pass_errors: 0, ccps: 8453459 }, ChannelCounters { c1_errors: 104427, c1_uncorrectable: 6398, header_errors: 1612, write_pass_errors: 0, ccps: 8453868 }, ChannelCounters { c1_errors: 104673, c1_uncorrectable: 6819, header_errors: 1605, write_pass_errors: 0, ccps: 8453899 }, ChannelCounters { c1_errors: 92830, c1_uncorrectable: 5814, header_errors: 1560, write_pass_errors: 0, ccps: 8453382 }, ChannelCounters { c1_errors: 204229, c1_uncorrectable: 10773, header_errors: 3049, write_pass_errors: 0, ccps: 8453047 }, ChannelCounters { c1_errors: 125193, c1_uncorrectable: 7128, header_errors: 1983, write_pass_errors: 0, ccps: 8453788 }, ChannelCounters { c1_errors: 209083, c1_uncorrectable: 8763, header_errors: 2896, write_pass_errors: 0, ccps: 8453092 }, ChannelCounters { c1_errors: 181728, c1_uncorrectable: 9151, header_errors: 2166, write_pass_errors: 0, ccps: 8453611 }, ChannelCounters { c1_errors: 104722, c1_uncorrectable: 8070, header_errors: 1631, write_pass_errors: 0, ccps: 8453440 }, ChannelCounters { c1_errors: 129453, c1_uncorrectable: 9357, header_errors: 1902, write_pass_errors: 0, ccps: 8453886 }, ChannelCounters { c1_errors: 349365, c1_uncorrectable: 178789, header_errors: 14341, write_pass_errors: 0, ccps: 8451321 }, ChannelCounters { c1_errors: 316838, c1_uncorrectable: 200008, header_errors: 27998, write_pass_errors: 0, ccps: 8436284 }, ChannelCounters { c1_errors: 119495, c1_uncorrectable: 28529, header_errors: 6782, write_pass_errors: 6, ccps: 8423336 }, ChannelCounters { c1_errors: 119954, c1_uncorrectable: 13835, header_errors: 2881, write_pass_errors: 0, ccps: 8453019 }] }), worst_rate: Some(0.0) }, ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:28.169371992Z\", sampled_unix_millis: 1792761508169, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 12812, timestamp: \"2026-10-23T13:18:28.187244605Z\", partition: 1, logical_block: 237308, throughput_bytes_per_second: 129401860.90556501, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.147726315962895), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.141494566807954), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.300850868219947), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.4243083421713205), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.319148253737842), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.927778520170425), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.893136520734622), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.120296667762137), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-6.0111607983129485), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.1540836941159744), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-6.09449800413173), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.234535559026893), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.933505563362912), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.011152198337069), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-6.015789595755278), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.254216046440123), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 237308, before: [ChannelCounters { c1_errors: 59469, c1_uncorrectable: 5690, header_errors: 1212, write_pass_errors: 0, ccps: 8453957 }, ChannelCounters { c1_errors: 93496, c1_uncorrectable: 6844, header_errors: 1813, write_pass_errors: 0, ccps: 8453862 }, ChannelCounters { c1_errors: 102560, c1_uncorrectable: 7905, header_errors: 1789, write_pass_errors: 0, ccps: 8453459 }, ChannelCounters { c1_errors: 104427, c1_uncorrectable: 6398, header_errors: 1612, write_pass_errors: 0, ccps: 8453868 }, ChannelCounters { c1_errors: 104673, c1_uncorrectable: 6819, header_errors: 1605, write_pass_errors: 0, ccps: 8453899 }, ChannelCounters { c1_errors: 92830, c1_uncorrectable: 5814, header_errors: 1560, write_pass_errors: 0, ccps: 8453382 }, ChannelCounters { c1_errors: 204229, c1_uncorrectable: 10773, header_errors: 3049, write_pass_errors: 0, ccps: 8453047 }, ChannelCounters { c1_errors: 125193, c1_uncorrectable: 7128, header_errors: 1983, write_pass_errors: 0, ccps: 8453788 }, ChannelCounters { c1_errors: 209083, c1_uncorrectable: 8763, header_errors: 2896, write_pass_errors: 0, ccps: 8453092 }, ChannelCounters { c1_errors: 181728, c1_uncorrectable: 9151, header_errors: 2166, write_pass_errors: 0, ccps: 8453611 }, ChannelCounters { c1_errors: 104722, c1_uncorrectable: 8070, header_errors: 1631, write_pass_errors: 0, ccps: 8453440 }, ChannelCounters { c1_errors: 129453, c1_uncorrectable: 9357, header_errors: 1902, write_pass_errors: 0, ccps: 8453886 }, ChannelCounters { c1_errors: 349365, c1_uncorrectable: 178789, header_errors: 14341, write_pass_errors: 0, ccps: 8451321 }, ChannelCounters { c1_errors: 316838, c1_uncorrectable: 200008, header_errors: 27998, write_pass_errors: 0, ccps: 8436284 }, ChannelCounters { c1_errors: 119495, c1_uncorrectable: 28529, header_errors: 6782, write_pass_errors: 6, ccps: 8423336 }, ChannelCounters { c1_errors: 119954, c1_uncorrectable: 13835, header_errors: 2881, write_pass_errors: 0, ccps: 8453019 }], after: [ChannelCounters { c1_errors: 59607, c1_uncorrectable: 5706, header_errors: 1213, write_pass_errors: 0, ccps: 8504455 }, ChannelCounters { c1_errors: 93636, c1_uncorrectable: 6856, header_errors: 1816, write_pass_errors: 0, ccps: 8504362 }, ChannelCounters { c1_errors: 102657, c1_uncorrectable: 7919, header_errors: 1790, write_pass_errors: 0, ccps: 8503959 }, ChannelCounters { c1_errors: 104500, c1_uncorrectable: 6402, header_errors: 1612, write_pass_errors: 0, ccps: 8504369 }, ChannelCounters { c1_errors: 104766, c1_uncorrectable: 6834, header_errors: 1607, write_pass_errors: 0, ccps: 8504400 }, ChannelCounters { c1_errors: 93059, c1_uncorrectable: 5824, header_errors: 1561, write_pass_errors: 0, ccps: 8503881 }, ChannelCounters { c1_errors: 204477, c1_uncorrectable: 10791, header_errors: 3052, write_pass_errors: 0, ccps: 8503543 }, ChannelCounters { c1_errors: 125340, c1_uncorrectable: 7145, header_errors: 1984, write_pass_errors: 0, ccps: 8504287 }, ChannelCounters { c1_errors: 209272, c1_uncorrectable: 8777, header_errors: 2899, write_pass_errors: 0, ccps: 8503592 }, ChannelCounters { c1_errors: 181864, c1_uncorrectable: 9167, header_errors: 2166, write_pass_errors: 0, ccps: 8504111 }, ChannelCounters { c1_errors: 104878, c1_uncorrectable: 8080, header_errors: 1632, write_pass_errors: 0, ccps: 8503940 }, ChannelCounters { c1_errors: 129566, c1_uncorrectable: 9367, header_errors: 1905, write_pass_errors: 0, ccps: 8504385 }, ChannelCounters { c1_errors: 349591, c1_uncorrectable: 178807, header_errors: 14344, write_pass_errors: 0, ccps: 8501820 }, ChannelCounters { c1_errors: 317027, c1_uncorrectable: 200023, header_errors: 28002, write_pass_errors: 0, ccps: 8486783 }, ChannelCounters { c1_errors: 119682, c1_uncorrectable: 28556, header_errors: 6787, write_pass_errors: 6, ccps: 8473837 }, ChannelCounters { c1_errors: 120062, c1_uncorrectable: 13843, header_errors: 2881, write_pass_errors: 0, ccps: 8503521 }] }), worst_rate: Some(-5.893136520734622) }, ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:33.177757857Z\", sampled_unix_millis: 1792761513177, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 17820, timestamp: \"2026-10-23T13:18:33.195470214Z\", partition: 1, logical_block: 238688, throughput_bytes_per_second: 144465824.09453395, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.0497063293412925), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.219087444747468), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.23608205167294), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.465276073592926), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.227290103777322), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.794139717667125), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.821267033148134), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.158416534268221), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.980368473758257), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.117008409175342), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-6.018537447866985), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.117023849109996), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.861735904072036), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.037834883163659), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-6.002053893473643), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.158416534268221), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 238688, before: [ChannelCounters { c1_errors: 59607, c1_uncorrectable: 5706, header_errors: 1213, write_pass_errors: 0, ccps: 8504455 }, ChannelCounters { c1_errors: 93636, c1_uncorrectable: 6856, header_errors: 1816, write_pass_errors: 0, ccps: 8504362 }, ChannelCounters { c1_errors: 102657, c1_uncorrectable: 7919, header_errors: 1790, write_pass_errors: 0, ccps: 8503959 }, ChannelCounters { c1_errors: 104500, c1_uncorrectable: 6402, header_errors: 1612, write_pass_errors: 0, ccps: 8504369 }, ChannelCounters { c1_errors: 104766, c1_uncorrectable: 6834, header_errors: 1607, write_pass_errors: 0, ccps: 8504400 }, ChannelCounters { c1_errors: 93059, c1_uncorrectable: 5824, header_errors: 1561, write_pass_errors: 0, ccps: 8503881 }, ChannelCounters { c1_errors: 204477, c1_uncorrectable: 10791, header_errors: 3052, write_pass_errors: 0, ccps: 8503543 }, ChannelCounters { c1_errors: 125340, c1_uncorrectable: 7145, header_errors: 1984, write_pass_errors: 0, ccps: 8504287 }, ChannelCounters { c1_errors: 209272, c1_uncorrectable: 8777, header_errors: 2899, write_pass_errors: 0, ccps: 8503592 }, ChannelCounters { c1_errors: 181864, c1_uncorrectable: 9167, header_errors: 2166, write_pass_errors: 0, ccps: 8504111 }, ChannelCounters { c1_errors: 104878, c1_uncorrectable: 8080, header_errors: 1632, write_pass_errors: 0, ccps: 8503940 }, ChannelCounters { c1_errors: 129566, c1_uncorrectable: 9367, header_errors: 1905, write_pass_errors: 0, ccps: 8504385 }, ChannelCounters { c1_errors: 349591, c1_uncorrectable: 178807, header_errors: 14344, write_pass_errors: 0, ccps: 8501820 }, ChannelCounters { c1_errors: 317027, c1_uncorrectable: 200023, header_errors: 28002, write_pass_errors: 0, ccps: 8486783 }, ChannelCounters { c1_errors: 119682, c1_uncorrectable: 28556, header_errors: 6787, write_pass_errors: 6, ccps: 8473837 }, ChannelCounters { c1_errors: 120062, c1_uncorrectable: 13843, header_errors: 2881, write_pass_errors: 0, ccps: 8503521 }], after: [ChannelCounters { c1_errors: 59799, c1_uncorrectable: 5718, header_errors: 1216, write_pass_errors: 0, ccps: 8560518 }, ChannelCounters { c1_errors: 93766, c1_uncorrectable: 6868, header_errors: 1818, write_pass_errors: 0, ccps: 8560428 }, ChannelCounters { c1_errors: 102782, c1_uncorrectable: 7938, header_errors: 1793, write_pass_errors: 0, ccps: 8560020 }, ChannelCounters { c1_errors: 104574, c1_uncorrectable: 6409, header_errors: 1615, write_pass_errors: 0, ccps: 8560626 }, ChannelCounters { c1_errors: 104894, c1_uncorrectable: 6846, header_errors: 1608, write_pass_errors: 0, ccps: 8560656 }, ChannelCounters { c1_errors: 93406, c1_uncorrectable: 5836, header_errors: 1566, write_pass_errors: 0, ccps: 8560133 }, ChannelCounters { c1_errors: 204803, c1_uncorrectable: 10829, header_errors: 3057, write_pass_errors: 0, ccps: 8559797 }, ChannelCounters { c1_errors: 125490, c1_uncorrectable: 7165, header_errors: 1986, write_pass_errors: 0, ccps: 8560544 }, ChannelCounters { c1_errors: 209498, c1_uncorrectable: 8794, header_errors: 2902, write_pass_errors: 0, ccps: 8559845 }, ChannelCounters { c1_errors: 182029, c1_uncorrectable: 9179, header_errors: 2166, write_pass_errors: 0, ccps: 8560366 }, ChannelCounters { c1_errors: 105085, c1_uncorrectable: 8098, header_errors: 1637, write_pass_errors: 0, ccps: 8560197 }, ChannelCounters { c1_errors: 129731, c1_uncorrectable: 9371, header_errors: 1907, write_pass_errors: 0, ccps: 8560642 }, ChannelCounters { c1_errors: 349888, c1_uncorrectable: 178828, header_errors: 14347, write_pass_errors: 0, ccps: 8558075 }, ChannelCounters { c1_errors: 317225, c1_uncorrectable: 200045, header_errors: 28007, write_pass_errors: 0, ccps: 8543039 }, ChannelCounters { c1_errors: 119897, c1_uncorrectable: 28569, header_errors: 6789, write_pass_errors: 6, ccps: 8530092 }, ChannelCounters { c1_errors: 120212, c1_uncorrectable: 13852, header_errors: 2886, write_pass_errors: 0, ccps: 8559778 }] }), worst_rate: Some(-5.794139717667125) }, ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:38.176754508Z\", sampled_unix_millis: 1792761518176, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 22821, timestamp: \"2026-10-23T13:18:38.196118917Z\", partition: 1, logical_block: 240067, throughput_bytes_per_second: 144579872.00017124, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.0720875818161275), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.19783354267823), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.213964740340708), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.272371685619978), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.243156669026627), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.756681700650192), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.829255605979286), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.07538320559684), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.801575117778064), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.1540693417432974), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.924798577802615), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.279967845553047), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.873661547061088), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.10515183850079), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.893698103224042), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.186933744787787), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 240067, before: [ChannelCounters { c1_errors: 59799, c1_uncorrectable: 5718, header_errors: 1216, write_pass_errors: 0, ccps: 8560518 }, ChannelCounters { c1_errors: 93766, c1_uncorrectable: 6868, header_errors: 1818, write_pass_errors: 0, ccps: 8560428 }, ChannelCounters { c1_errors: 102782, c1_uncorrectable: 7938, header_errors: 1793, write_pass_errors: 0, ccps: 8560020 }, ChannelCounters { c1_errors: 104574, c1_uncorrectable: 6409, header_errors: 1615, write_pass_errors: 0, ccps: 8560626 }, ChannelCounters { c1_errors: 104894, c1_uncorrectable: 6846, header_errors: 1608, write_pass_errors: 0, ccps: 8560656 }, ChannelCounters { c1_errors: 93406, c1_uncorrectable: 5836, header_errors: 1566, write_pass_errors: 0, ccps: 8560133 }, ChannelCounters { c1_errors: 204803, c1_uncorrectable: 10829, header_errors: 3057, write_pass_errors: 0, ccps: 8559797 }, ChannelCounters { c1_errors: 125490, c1_uncorrectable: 7165, header_errors: 1986, write_pass_errors: 0, ccps: 8560544 }, ChannelCounters { c1_errors: 209498, c1_uncorrectable: 8794, header_errors: 2902, write_pass_errors: 0, ccps: 8559845 }, ChannelCounters { c1_errors: 182029, c1_uncorrectable: 9179, header_errors: 2166, write_pass_errors: 0, ccps: 8560366 }, ChannelCounters { c1_errors: 105085, c1_uncorrectable: 8098, header_errors: 1637, write_pass_errors: 0, ccps: 8560197 }, ChannelCounters { c1_errors: 129731, c1_uncorrectable: 9371, header_errors: 1907, write_pass_errors: 0, ccps: 8560642 }, ChannelCounters { c1_errors: 349888, c1_uncorrectable: 178828, header_errors: 14347, write_pass_errors: 0, ccps: 8558075 }, ChannelCounters { c1_errors: 317225, c1_uncorrectable: 200045, header_errors: 28007, write_pass_errors: 0, ccps: 8543039 }, ChannelCounters { c1_errors: 119897, c1_uncorrectable: 28569, header_errors: 6789, write_pass_errors: 6, ccps: 8530092 }, ChannelCounters { c1_errors: 120212, c1_uncorrectable: 13852, header_errors: 2886, write_pass_errors: 0, ccps: 8559778 }], after: [ChannelCounters { c1_errors: 59982, c1_uncorrectable: 5739, header_errors: 1221, write_pass_errors: 0, ccps: 8616779 }, ChannelCounters { c1_errors: 93903, c1_uncorrectable: 6876, header_errors: 1820, write_pass_errors: 0, ccps: 8616691 }, ChannelCounters { c1_errors: 102914, c1_uncorrectable: 7950, header_errors: 1794, write_pass_errors: 0, ccps: 8616281 }, ChannelCounters { c1_errors: 104689, c1_uncorrectable: 6420, header_errors: 1618, write_pass_errors: 0, ccps: 8616697 }, ChannelCounters { c1_errors: 105017, c1_uncorrectable: 6850, header_errors: 1610, write_pass_errors: 0, ccps: 8616726 }, ChannelCounters { c1_errors: 93783, c1_uncorrectable: 5876, header_errors: 1571, write_pass_errors: 0, ccps: 8616198 }, ChannelCounters { c1_errors: 205122, c1_uncorrectable: 10851, header_errors: 3061, write_pass_errors: 0, ccps: 8615865 }, ChannelCounters { c1_errors: 125671, c1_uncorrectable: 7172, header_errors: 1990, write_pass_errors: 0, ccps: 8616614 }, ChannelCounters { c1_errors: 209838, c1_uncorrectable: 8829, header_errors: 2907, write_pass_errors: 0, ccps: 8615914 }, ChannelCounters { c1_errors: 182180, c1_uncorrectable: 9183, header_errors: 2168, write_pass_errors: 0, ccps: 8616434 }, ChannelCounters { c1_errors: 105341, c1_uncorrectable: 8128, header_errors: 1640, write_pass_errors: 0, ccps: 8616264 }, ChannelCounters { c1_errors: 129844, c1_uncorrectable: 9377, header_errors: 1909, write_pass_errors: 0, ccps: 8616710 }, ChannelCounters { c1_errors: 350176, c1_uncorrectable: 178848, header_errors: 14351, write_pass_errors: 0, ccps: 8614144 }, ChannelCounters { c1_errors: 317394, c1_uncorrectable: 200049, header_errors: 28008, write_pass_errors: 0, ccps: 8599106 }, ChannelCounters { c1_errors: 120172, c1_uncorrectable: 28590, header_errors: 6793, write_pass_errors: 6, ccps: 8586158 }, ChannelCounters { c1_errors: 120352, c1_uncorrectable: 13862, header_errors: 2889, write_pass_errors: 0, ccps: 8615848 }] }), worst_rate: Some(-5.756681700650192) }, ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:43.182719884Z\", sampled_unix_millis: 1792761523182, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 27825, timestamp: \"2026-10-23T13:18:43.200617668Z\", partition: 1, logical_block: 241445, throughput_bytes_per_second: 144363881.42655924, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.021292427980713), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.112930455074409), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.151210446875547), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.2446181212702605), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.173170669311582), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.734640160635971), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.809486145159868), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-6.251761020442746), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.978512814353435), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-6.074444125100316), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.954319710485107), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.135881584592135), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.919565323575739), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-5.941849437499531), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.857394258365728), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.104082030818439), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 241445, before: [ChannelCounters { c1_errors: 59982, c1_uncorrectable: 5739, header_errors: 1221, write_pass_errors: 0, ccps: 8616779 }, ChannelCounters { c1_errors: 93903, c1_uncorrectable: 6876, header_errors: 1820, write_pass_errors: 0, ccps: 8616691 }, ChannelCounters { c1_errors: 102914, c1_uncorrectable: 7950, header_errors: 1794, write_pass_errors: 0, ccps: 8616281 }, ChannelCounters { c1_errors: 104689, c1_uncorrectable: 6420, header_errors: 1618, write_pass_errors: 0, ccps: 8616697 }, ChannelCounters { c1_errors: 105017, c1_uncorrectable: 6850, header_errors: 1610, write_pass_errors: 0, ccps: 8616726 }, ChannelCounters { c1_errors: 93783, c1_uncorrectable: 5876, header_errors: 1571, write_pass_errors: 0, ccps: 8616198 }, ChannelCounters { c1_errors: 205122, c1_uncorrectable: 10851, header_errors: 3061, write_pass_errors: 0, ccps: 8615865 }, ChannelCounters { c1_errors: 125671, c1_uncorrectable: 7172, header_errors: 1990, write_pass_errors: 0, ccps: 8616614 }, ChannelCounters { c1_errors: 209838, c1_uncorrectable: 8829, header_errors: 2907, write_pass_errors: 0, ccps: 8615914 }, ChannelCounters { c1_errors: 182180, c1_uncorrectable: 9183, header_errors: 2168, write_pass_errors: 0, ccps: 8616434 }, ChannelCounters { c1_errors: 105341, c1_uncorrectable: 8128, header_errors: 1640, write_pass_errors: 0, ccps: 8616264 }, ChannelCounters { c1_errors: 129844, c1_uncorrectable: 9377, header_errors: 1909, write_pass_errors: 0, ccps: 8616710 }, ChannelCounters { c1_errors: 350176, c1_uncorrectable: 178848, header_errors: 14351, write_pass_errors: 0, ccps: 8614144 }, ChannelCounters { c1_errors: 317394, c1_uncorrectable: 200049, header_errors: 28008, write_pass_errors: 0, ccps: 8599106 }, ChannelCounters { c1_errors: 120172, c1_uncorrectable: 28590, header_errors: 6793, write_pass_errors: 6, ccps: 8586158 }, ChannelCounters { c1_errors: 120352, c1_uncorrectable: 13862, header_errors: 2889, write_pass_errors: 0, ccps: 8615848 }], after: [ChannelCounters { c1_errors: 60187, c1_uncorrectable: 5747, header_errors: 1222, write_pass_errors: 0, ccps: 8672847 }, ChannelCounters { c1_errors: 94069, c1_uncorrectable: 6880, header_errors: 1825, write_pass_errors: 0, ccps: 8672758 }, ChannelCounters { c1_errors: 103066, c1_uncorrectable: 7956, header_errors: 1795, write_pass_errors: 0, ccps: 8672350 }, ChannelCounters { c1_errors: 104812, c1_uncorrectable: 6432, header_errors: 1618, write_pass_errors: 0, ccps: 8672956 }, ChannelCounters { c1_errors: 105162, c1_uncorrectable: 6860, header_errors: 1610, write_pass_errors: 0, ccps: 8672987 }, ChannelCounters { c1_errors: 94181, c1_uncorrectable: 5888, header_errors: 1575, write_pass_errors: 0, ccps: 8672457 }, ChannelCounters { c1_errors: 205457, c1_uncorrectable: 10859, header_errors: 3065, write_pass_errors: 0, ccps: 8672125 }, ChannelCounters { c1_errors: 125792, c1_uncorrectable: 7172, header_errors: 1991, write_pass_errors: 0, ccps: 8672876 }, ChannelCounters { c1_errors: 210065, c1_uncorrectable: 8850, header_errors: 2910, write_pass_errors: 0, ccps: 8672175 }, ChannelCounters { c1_errors: 182362, c1_uncorrectable: 9189, header_errors: 2169, write_pass_errors: 0, ccps: 8672692 }, ChannelCounters { c1_errors: 105581, c1_uncorrectable: 8133, header_errors: 1643, write_pass_errors: 0, ccps: 8672524 }, ChannelCounters { c1_errors: 130002, c1_uncorrectable: 9393, header_errors: 1909, write_pass_errors: 0, ccps: 8672971 }, ChannelCounters { c1_errors: 350436, c1_uncorrectable: 178853, header_errors: 14359, write_pass_errors: 0, ccps: 8670405 }, ChannelCounters { c1_errors: 317641, c1_uncorrectable: 200077, header_errors: 28013, write_pass_errors: 0, ccps: 8655368 }, ChannelCounters { c1_errors: 120472, c1_uncorrectable: 28628, header_errors: 6801, write_pass_errors: 6, ccps: 8642416 }, ChannelCounters { c1_errors: 120522, c1_uncorrectable: 13885, header_errors: 2891, write_pass_errors: 0, ccps: 8672108 }] }), worst_rate: Some(-5.734640160635971) }, ChannelTelemetrySample { temperature: Some(TemperatureTelemetry { timestamp: \"2026-10-23T13:18:48.187672634Z\", sampled_unix_millis: 1792761528187, current_celsius: Some(37), reference_celsius: None, error: None }), elapsed_millis: 32830, timestamp: \"2026-10-23T13:18:48.205229406Z\", partition: 1, logical_block: 242571, throughput_bytes_per_second: 117960858.69042753, channel_rates: [ChannelRate { channel: 0, log10_bit_error_rate: Some(-6.04461604907294), ccp_advanced: true }, ChannelRate { channel: 1, log10_bit_error_rate: Some(-6.195192722695516), ccp_advanced: true }, ChannelRate { channel: 2, log10_bit_error_rate: Some(-6.231915529720256), ccp_advanced: true }, ChannelRate { channel: 3, log10_bit_error_rate: Some(-6.492337259540516), ccp_advanced: true }, ChannelRate { channel: 4, log10_bit_error_rate: Some(-6.240515701482173), ccp_advanced: true }, ChannelRate { channel: 5, log10_bit_error_rate: Some(-5.924526185261507), ccp_advanced: true }, ChannelRate { channel: 6, log10_bit_error_rate: Some(-5.827215937400921), ccp_advanced: true }, ChannelRate { channel: 7, log10_bit_error_rate: Some(-5.952742726110961), ccp_advanced: true }, ChannelRate { channel: 8, log10_bit_error_rate: Some(-5.994993448391929), ccp_advanced: true }, ChannelRate { channel: 9, log10_bit_error_rate: Some(-5.928733083963445), ccp_advanced: true }, ChannelRate { channel: 10, log10_bit_error_rate: Some(-5.86945742427498), ccp_advanced: true }, ChannelRate { channel: 11, log10_bit_error_rate: Some(-6.126591519092881), ccp_advanced: true }, ChannelRate { channel: 12, log10_bit_error_rate: Some(-5.8657769405366125), ccp_advanced: true }, ChannelRate { channel: 13, log10_bit_error_rate: Some(-6.07912852848345), ccp_advanced: true }, ChannelRate { channel: 14, log10_bit_error_rate: Some(-5.992542435120367), ccp_advanced: true }, ChannelRate { channel: 15, log10_bit_error_rate: Some(-6.219326402412236), ccp_advanced: true }], counter_window: Some(ChannelCounterWindow { page_code: 136, partition: 1, logical_block: 242571, before: [ChannelCounters { c1_errors: 60187, c1_uncorrectable: 5747, header_errors: 1222, write_pass_errors: 0, ccps: 8672847 }, ChannelCounters { c1_errors: 94069, c1_uncorrectable: 6880, header_errors: 1825, write_pass_errors: 0, ccps: 8672758 }, ChannelCounters { c1_errors: 103066, c1_uncorrectable: 7956, header_errors: 1795, write_pass_errors: 0, ccps: 8672350 }, ChannelCounters { c1_errors: 104812, c1_uncorrectable: 6432, header_errors: 1618, write_pass_errors: 0, ccps: 8672956 }, ChannelCounters { c1_errors: 105162, c1_uncorrectable: 6860, header_errors: 1610, write_pass_errors: 0, ccps: 8672987 }, ChannelCounters { c1_errors: 94181, c1_uncorrectable: 5888, header_errors: 1575, write_pass_errors: 0, ccps: 8672457 }, ChannelCounters { c1_errors: 205457, c1_uncorrectable: 10859, header_errors: 3065, write_pass_errors: 0, ccps: 8672125 }, ChannelCounters { c1_errors: 125792, c1_uncorrectable: 7172, header_errors: 1991, write_pass_errors: 0, ccps: 8672876 }, ChannelCounters { c1_errors: 210065, c1_uncorrectable: 8850, header_errors: 2910, write_pass_errors: 0, ccps: 8672175 }, ChannelCounters { c1_errors: 182362, c1_uncorrectable: 9189, header_errors: 2169, write_pass_errors: 0, ccps: 8672692 }, ChannelCounters { c1_errors: 105581, c1_uncorrectable: 8133, header_errors: 1643, write_pass_errors: 0, ccps: 8672524 }, ChannelCounters { c1_errors: 130002, c1_uncorrectable: 9393, header_errors: 1909, write_pass_errors: 0, ccps: 8672971 }, ChannelCounters { c1_errors: 350436, c1_uncorrectable: 178853, header_errors: 14359, write_pass_errors: 0, ccps: 8670405 }, ChannelCounters { c1_errors: 317641, c1_uncorrectable: 200077, header_errors: 28013, write_pass_errors: 0, ccps: 8655368 }, ChannelCounters { c1_errors: 120472, c1_uncorrectable: 28628, header_errors: 6801, write_pass_errors: 6, ccps: 8642416 }, ChannelCounters { c1_errors: 120522, c1_uncorrectable: 13885, header_errors: 2891, write_pass_errors: 0, ccps: 8672108 }], after: [ChannelCounters { c1_errors: 60344, c1_uncorrectable: 5755, header_errors: 1223, write_pass_errors: 0, ccps: 8718156 }, ChannelCounters { c1_errors: 94180, c1_uncorrectable: 6888, header_errors: 1826, write_pass_errors: 0, ccps: 8718067 }, ChannelCounters { c1_errors: 103168, c1_uncorrectable: 7956, header_errors: 1795, write_pass_errors: 0, ccps: 8717659 }, ChannelCounters { c1_errors: 104868, c1_uncorrectable: 6432, header_errors: 1619, write_pass_errors: 0, ccps: 8718266 }, ChannelCounters { c1_errors: 105262, c1_uncorrectable: 6864, header_errors: 1612, write_pass_errors: 0, ccps: 8718296 }, ChannelCounters { c1_errors: 94388, c1_uncorrectable: 5892, header_errors: 1575, write_pass_errors: 0, ccps: 8717764 }, ChannelCounters { c1_errors: 205716, c1_uncorrectable: 10859, header_errors: 3068, write_pass_errors: 0, ccps: 8717434 }, ChannelCounters { c1_errors: 125986, c1_uncorrectable: 7193, header_errors: 1992, write_pass_errors: 0, ccps: 8718188 }, ChannelCounters { c1_errors: 210241, c1_uncorrectable: 8858, header_errors: 2911, write_pass_errors: 0, ccps: 8717483 }, ChannelCounters { c1_errors: 182567, c1_uncorrectable: 9223, header_errors: 2171, write_pass_errors: 0, ccps: 8717998 }, ChannelCounters { c1_errors: 105816, c1_uncorrectable: 8146, header_errors: 1646, write_pass_errors: 0, ccps: 8717834 }, ChannelCounters { c1_errors: 130132, c1_uncorrectable: 9401, header_errors: 1913, write_pass_errors: 0, ccps: 8718282 }, ChannelCounters { c1_errors: 350673, c1_uncorrectable: 178863, header_errors: 14366, write_pass_errors: 0, ccps: 8715715 }, ChannelCounters { c1_errors: 317786, c1_uncorrectable: 200081, header_errors: 28014, write_pass_errors: 0, ccps: 8700675 }, ChannelCounters { c1_errors: 120649, c1_uncorrectable: 28631, header_errors: 6807, write_pass_errors: 6, ccps: 8687725 }, ChannelCounters { c1_errors: 120627, c1_uncorrectable: 13897, header_errors: 2891, write_pass_errors: 0, ccps: 8717417 }] }), worst_rate: Some(-5.827215937400921) }], session_worst_channel_rate: Some(SessionWorstChannelRate { rate: -5.734640160635971, channel: 5, elapsed_millis: 27825, timestamp: \"2026-10-23T13:18:43.200617668Z\", partition: 1, logical_block: 241445 }), telemetry_warnings: [] }"
+        }
+      ]
+    }
+  },
+  "temperature_queries_ms": [
+    2.803,
+    2.239,
+    3.133,
+    1.694,
+    3.045,
+    3.371
+  ],
+  "temperature_query_mean_ms": 2.7141666666666664,
+  "harness_source": "use tapecpy::{app, device::lease};\nfn main() -> Result<(), String> {\n let target = std::env::args().nth(1).ok_or(\"target required\")?;\n let drives = app::discover_drives().map_err(|e| e.to_string())?;\n let drive = app::select_drive(&drives, Some(\"/dev/sg0\"))?;\n let _lock = lease::DeviceLease::try_acquire(&drive.serial, lease::LeaseOwner::new(\"hardware-test\", \"temperature-ab\"))?;\n let start = std::time::Instant::now();\n let mut observer = |e: &app::WriteEvent| {\n   if let Some(p) = &e.performance { println!(\"{}\", serde_json::json!({\"kind\":\"performance\",\"elapsed\":start.elapsed().as_secs_f64(),\"bytes\":e.bytes_written,\"tape_bps\":p.tape_bytes_per_second,\"source_bps\":p.source_bytes_per_second,\"buffer\":p.buffer_used_bytes,\"capacity\":p.buffer_capacity_bytes,\"reader_waiting\":p.reader_waiting,\"writer_waiting\":p.writer_waiting})); }\n   if let Some(t) = &e.telemetry { println!(\"{}\", serde_json::json!({\"kind\":\"telemetry\",\"elapsed\":start.elapsed().as_secs_f64(),\"bytes\":e.bytes_written,\"temperature\":t.temperature,\"worst_rate\":t.worst_rate})); }\n   if e.performance.is_none() && e.telemetry.is_none() { println!(\"{}\", serde_json::json!({\"kind\":\"phase\",\"phase\":format!(\"{:?}\",e.phase),\"elapsed\":start.elapsed().as_secs_f64(),\"bytes\":e.bytes_written})); }\n };\n let result = app::WriteSession::new(drive).run_pseudorandom(4*1024*1024*1024, 12345, &target, app::WriteOptions::default(), &mut observer)?;\n println!(\"{}\",serde_json::json!({\"kind\":\"complete\",\"elapsed\":start.elapsed().as_secs_f64(),\"result\":format!(\"{result:?}\")}));\n Ok(())\n}\n"
+}

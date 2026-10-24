@@ -207,6 +207,7 @@ struct UiState {
     ltfs_read: bool,
     ltfs_open_pending: bool,
     channels: ChannelTelemetryFrame,
+    health_updated_at: Option<Instant>,
     busy: Option<&'static str>,
     status: String,
     last_error: Option<String>,
@@ -268,6 +269,7 @@ impl Default for UiState {
             ltfs_read: false,
             ltfs_open_pending: false,
             channels: ChannelTelemetryFrame::default(),
+            health_updated_at: None,
             busy: Some("Discovering tape drives"),
             status: "Starting Milestone 12 TUI".into(),
             last_error: None,
@@ -527,8 +529,9 @@ fn job_monitor(commands: Receiver<JobCommand>, events: Sender<JobEvent>) {
             return;
         }
     };
+    let mut job_cache = job::JobListCache::default();
     loop {
-        match job::list_states(&root) {
+        match job_cache.list(&root) {
             Ok(states) => {
                 let _ = events.send(JobEvent::States(states));
             }
@@ -988,6 +991,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
                 None
             };
             state.snapshot = Some(snapshot);
+            state.health_updated_at = Some(Instant::now());
             state.channels = channels;
             state.selected = true;
             state.busy = None;
@@ -1013,6 +1017,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
             };
         }
         WorkerEvent::Telemetry(health, channels, timestamp) => {
+            state.health_updated_at = Some(Instant::now());
             if let Some(snapshot) = state.snapshot.as_mut() {
                 snapshot.health = Some(*health);
             }
@@ -1033,6 +1038,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
         WorkerEvent::FormatCompleted(result, snapshot, channels) => {
             state.format_result = Some(result);
             state.snapshot = Some(*snapshot);
+            state.health_updated_at = Some(Instant::now());
             state.channels = channels;
             state.ltfs_read = true;
             state.format_view = FormatView::Complete;
@@ -1058,6 +1064,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
         WorkerEvent::EraseCompleted(result, snapshot, channels) => {
             state.erase_result = Some(result);
             state.snapshot = Some(*snapshot);
+            state.health_updated_at = Some(Instant::now());
             state.channels = channels;
             state.ltfs_read = false;
             state.erase_view = EraseView::Complete;
@@ -1071,6 +1078,7 @@ fn apply_worker_event(state: &mut UiState, event: WorkerEvent) {
         }
         WorkerEvent::EraseFailed(error, snapshot, channels) => {
             state.snapshot = Some(*snapshot);
+            state.health_updated_at = Some(Instant::now());
             state.channels = channels;
             state.ltfs_read = false;
             state.erase_view = EraseView::Complete;
@@ -2150,9 +2158,8 @@ fn start_source_scan(state: &mut UiState, commands: &Sender<FileCommand>) {
     let remaining_capacity_mib = state
         .snapshot
         .as_ref()
-        .and_then(|snapshot| snapshot.media.as_ref())
-        .and_then(|media| media.mam.as_ref())
-        .and_then(|mam| mam.remaining_capacity_mib);
+        .and_then(|snapshot| snapshot.volume.as_ref())
+        .and_then(|volume| volume.data_remaining_capacity_mib);
     state.file_busy = true;
     state.status = format!(
         "Scanning {} selected source roots",
@@ -4029,9 +4036,9 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
                 |(used, capacity)| format!("{} / {}", human_bytes(used), human_bytes(capacity)),
             );
         let pressure = if job.progress.reader_waiting {
-            "destination slow / buffer full"
+            "destination slow / queue full"
         } else if job.progress.writer_waiting {
-            "tape side limiting / buffer empty"
+            "waiting for tape input"
         } else {
             "flowing"
         };
@@ -4042,7 +4049,9 @@ fn render_job_throughput(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobSt
             .as_deref()
             .unwrap_or("unknown");
         lines.push(Line::from(format!(
-            " Buffer {buffer} │ {pressure} │ Destination {filesystem} {}",
+            " Buffer {buffer} │ {pressure} │ Wait {:.1}s/{} │ Destination {filesystem} {}",
+            job.progress.destination_backpressure_nanoseconds as f64 / 1e9,
+            job.progress.destination_backpressure_events,
             job.spec.destination.path,
         )));
         "Read"
@@ -4126,7 +4135,8 @@ fn render_job_channels(frame: &mut ratatui::Frame<'_>, area: Rect, job: &JobStat
             |(channel, rate)| format!("CH{channel:02} {rate:.2}"),
         );
     lines.push(Line::from(format!(
-        " Session worst {worst} │ sampled {sampled}"
+        " Session worst {worst} │ sampled {sampled} │ {}",
+        job_temperature_label(job.progress.temperature.as_ref()).0
     )));
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
@@ -4353,6 +4363,25 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
 }
 
 fn header_temperature(state: &UiState) -> (String, Style) {
+    let serial = state
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.drive.serial.as_str())
+        .or_else(|| {
+            state
+                .selected
+                .then(|| state.drives.get(state.drive_index))
+                .flatten()
+                .map(|drive| drive.serial.as_str())
+        });
+    if let Some(job) = serial.and_then(|serial| {
+        state
+            .jobs
+            .iter()
+            .find(|job| job.phase.is_active() && job.spec.drive_serial == serial)
+    }) {
+        return job_temperature_label(job.progress.temperature.as_ref());
+    }
     let Some(snapshot) = state.snapshot.as_ref() else {
         return ("TEMP —".into(), Style::default().fg(Color::DarkGray));
     };
@@ -4363,9 +4392,39 @@ fn header_temperature(state: &UiState) -> (String, Style) {
         .temperature
         .and_then(|temperature| temperature.current_celsius)
     {
-        Some(value) => (format!("{value}°C"), Style::default().fg(Color::Green)),
+        Some(value) => {
+            let stale = state
+                .health_updated_at
+                .is_none_or(|sampled| sampled.elapsed() > Duration::from_secs(15));
+            (
+                format!("{value}°C{}", if stale { " stale" } else { "" }),
+                Style::default().fg(if stale { Color::Yellow } else { Color::Green }),
+            )
+        }
         None => ("TEMP N/A".into(), Style::default().fg(Color::Yellow)),
     }
+}
+
+fn job_temperature_label(sample: Option<&app::TemperatureTelemetry>) -> (String, Style) {
+    let Some(sample) = sample else {
+        return ("TEMP pending".into(), Style::default().fg(Color::DarkGray));
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let stale = now.saturating_sub(u128::from(sample.sampled_unix_millis)) > 15_000;
+    let value = sample
+        .current_celsius
+        .map_or_else(|| "TEMP N/A".into(), |value| format!("{value}°C"));
+    (
+        format!("{value}{}", if stale { " stale" } else { "" }),
+        Style::default().fg(if stale || sample.current_celsius.is_none() {
+            Color::Yellow
+        } else {
+            Color::Green
+        }),
+    )
 }
 
 fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, state: &UiState) {
@@ -4454,11 +4513,16 @@ fn render_overview_media(
                     .unwrap_or("—"),
             ),
             line(
-                "Remaining",
-                mam_capacity(mam.and_then(|mam| mam.remaining_capacity_mib)),
+                "LTFS Data Remaining",
+                mam_capacity(
+                    snapshot
+                        .volume
+                        .as_ref()
+                        .and_then(|volume| volume.data_remaining_capacity_mib),
+                ),
             ),
             line(
-                "Maximum",
+                "P0 Maximum",
                 mam_capacity(mam.and_then(|mam| mam.max_capacity_mib)),
             ),
             line("Load Count", counter(mam.and_then(|mam| mam.load_count))),
@@ -5126,6 +5190,29 @@ mod tests {
     use crate::app::EraseMode;
     use crossterm::event::KeyCode;
     use std::sync::mpsc;
+
+    #[test]
+    fn task_temperature_distinguishes_pending_failed_fresh_and_stale() {
+        assert_eq!(super::job_temperature_label(None).0, "TEMP pending");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut sample = crate::app::TemperatureTelemetry {
+            timestamp: "sample".into(),
+            sampled_unix_millis: now,
+            current_celsius: Some(39),
+            reference_celsius: None,
+            error: None,
+        };
+        assert_eq!(super::job_temperature_label(Some(&sample)).0, "39°C");
+        sample.sampled_unix_millis = now - 16_000;
+        assert_eq!(super::job_temperature_label(Some(&sample)).0, "39°C stale");
+        sample.sampled_unix_millis = now;
+        sample.current_celsius = None;
+        sample.error = Some("query failed".into());
+        assert_eq!(super::job_temperature_label(Some(&sample)).0, "TEMP N/A");
+    }
 
     #[test]
     fn suspended_worker_rejects_all_device_access() {

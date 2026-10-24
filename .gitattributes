@@ -1,0 +1,3 @@
+# Preserve raw performance evidence while keeping source reviews readable on GitHub.
+docs/*_2026-*.json linguist-generated=true
+docs/*_2026-*.jsonl linguist-generated=true

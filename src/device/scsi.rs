@@ -146,7 +146,15 @@ fn sg_io_to_device_timeout(
     };
 
     // SAFETY: 与 sg_io_impl 相同的约束；data 在整个调用期间保持存活。
+    #[cfg(test)]
+    let bench_started = std::time::Instant::now();
     let rc = unsafe { libc::ioctl(fd.as_raw_fd(), SG_IO, &mut hdr) };
+    #[cfg(test)]
+    crate::app::performance_tests::record_scsi(
+        cdb[0],
+        (hdr.dxfer_len as usize).saturating_sub(hdr.resid.max(0) as usize),
+        bench_started.elapsed(),
+    );
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -204,7 +212,15 @@ fn sg_io_impl(
 
     // SAFETY: hdr 是 repr(C) 结构，字段与 Linux sg_io_hdr 一致；
     // buf 与 sense_buf 在整个调用期间保持存活。
+    #[cfg(test)]
+    let bench_started = std::time::Instant::now();
     let rc = unsafe { libc::ioctl(fd.as_raw_fd(), SG_IO, &mut hdr) };
+    #[cfg(test)]
+    crate::app::performance_tests::record_scsi(
+        cdb[0],
+        (hdr.dxfer_len as usize).saturating_sub(hdr.resid.max(0) as usize),
+        bench_started.elapsed(),
+    );
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -441,10 +457,20 @@ pub fn prevent_allow_medium_removal(fd: &impl AsRawFd, prevent: bool) -> io::Res
     sg_io_none(fd, &cdb)
 }
 
+fn checked_record_length(len: usize) -> io::Result<usize> {
+    if len > 0xff_ffff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "record length exceeds READ/WRITE(6) 24-bit transfer length",
+        ));
+    }
+    Ok(len)
+}
+
 /// 发送 SCSI READ(6)。可变块模式下 transfer length 以字节为单位，
 /// 每次返回一条记录（不足时按实际长度返回）。
 pub fn read6(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
-    let len = buf.len().min(0xff_ffff);
+    let len = checked_record_length(buf.len())?;
     let mut cdb = [0u8; 6];
     cdb[0] = READ_OPCODE;
     cdb[2] = (len >> 16) as u8;
@@ -456,7 +482,7 @@ pub fn read6(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<ScsiResult> {
 /// 发送 SCSI WRITE(6)。可变块模式下 transfer length 以字节为单位，
 /// 每次写入一条记录。
 pub fn write6(fd: &impl AsRawFd, data: &[u8]) -> io::Result<ScsiResult> {
-    let len = data.len().min(0xff_ffff);
+    let len = checked_record_length(data.len())?;
     let mut cdb = [0u8; 6];
     cdb[0] = WRITE_OPCODE;
     cdb[2] = (len >> 16) as u8;
@@ -683,6 +709,16 @@ mod tests {
             resid: 0,
             sense: Vec::new(),
         }
+    }
+
+    #[test]
+    fn rejects_record_lengths_that_do_not_fit_cdb_without_truncation() {
+        assert_eq!(checked_record_length(0xff_ffff).unwrap(), 0xff_ffff);
+        assert_eq!(
+            checked_record_length(0x100_0000).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(checked_record_length(usize::MAX).is_err());
     }
 
     #[test]

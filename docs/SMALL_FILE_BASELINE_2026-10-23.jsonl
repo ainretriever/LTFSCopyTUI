@@ -1,0 +1,15 @@
+{"protocol": "local", "operation": "enumerate_stat", "files": 10000, "seconds": 0.051749291000305675}
+{"protocol": "local", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 0.36265238800115185, "files_per_second": 27574.615060767883, "MB_per_second": 112.94562328890525, "matches_local": true}
+{"protocol": "local", "operation": "open_read_hash_close", "workers": 4, "files": 10000, "bytes": 40960000, "seconds": 0.2892129940009909, "files_per_second": 34576.59305572466, "MB_per_second": 141.62572515624822, "matches_local": true}
+{"protocol": "local", "operation": "open_read_hash_close", "workers": 16, "files": 10000, "bytes": 40960000, "seconds": 0.29584489300032146, "files_per_second": 33801.4961102916, "MB_per_second": 138.45092806775438, "matches_local": true}
+{"protocol": "local", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 0.06508850199861627, "files_per_second": 153636.96648315233, "MB_per_second": 629.297014714992, "matches_local": true}
+{"protocol": "nfs", "operation": "enumerate_stat", "files": 10000, "seconds": 1.1871505599992815}
+{"protocol": "nfs", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 4.084160946000338, "files_per_second": 2448.4833316358663, "MB_per_second": 10.028987726380509, "matches_local": true}
+{"protocol": "nfs", "operation": "open_read_hash_close", "workers": 4, "files": 10000, "bytes": 40960000, "seconds": 0.5832774360005715, "files_per_second": 17144.4999974081, "MB_per_second": 70.22387198938358, "matches_local": true}
+{"protocol": "nfs", "operation": "open_read_hash_close", "workers": 16, "files": 10000, "bytes": 40960000, "seconds": 0.4624478749992704, "files_per_second": 21624.05871151592, "MB_per_second": 88.57214448236921, "matches_local": true}
+{"protocol": "nfs", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 1.9367703670013725, "files_per_second": 5163.234718157433, "MB_per_second": 21.148609405572845, "matches_local": true}
+{"protocol": "smb", "operation": "enumerate_stat", "files": 10000, "seconds": 0.24210782699992706}
+{"protocol": "smb", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 6.184391037999376, "files_per_second": 1616.9740785399879, "MB_per_second": 6.62312582569979, "matches_local": true}
+{"protocol": "smb", "operation": "open_read_hash_close", "workers": 4, "files": 10000, "bytes": 40960000, "seconds": 3.5648836550008127, "files_per_second": 2805.140635086931, "MB_per_second": 11.48985604131607, "matches_local": true}
+{"protocol": "smb", "operation": "open_read_hash_close", "workers": 16, "files": 10000, "bytes": 40960000, "seconds": 2.8156319229983637, "files_per_second": 3551.600590375112, "MB_per_second": 14.547356018176458, "matches_local": true}
+{"protocol": "smb", "operation": "open_read_hash_close", "workers": 1, "files": 10000, "bytes": 40960000, "seconds": 6.43742069900145, "files_per_second": 1553.417194180142, "MB_per_second": 6.362796827361861, "matches_local": true}

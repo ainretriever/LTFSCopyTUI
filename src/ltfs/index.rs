@@ -27,12 +27,13 @@ pub struct FileTimes {
 /// 文件在数据分区上的 extent。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Extent {
-    /// 文件内逻辑偏移（块）。
+    /// 文件内逻辑偏移（字节）。
     pub file_offset: u64,
     /// 所在分区（逻辑）。
     pub partition: u8,
     /// 数据起始磁带块号（记录索引）。
     pub start_block: u64,
+    pub byte_offset: u64,
     /// extent 字节长度（通常等于文件长度）。
     pub byte_count: u64,
 }
@@ -462,8 +463,11 @@ fn write_file(s: &mut String, file: &FileEntry) {
                 "<startblock>{}</startblock>\n",
                 extent.start_block
             ));
-            // OpenLTFS 解析时 byteoffset 是必需字段；LTFSCopyGUI 写入恒 0。
-            s.push_str("<byteoffset>0</byteoffset>\n");
+            // Preserve offsets when rewriting indexes from other implementations.
+            s.push_str(&format!(
+                "<byteoffset>{}</byteoffset>\n",
+                extent.byte_offset
+            ));
             s.push_str(&format!("<bytecount>{}</bytecount>\n", extent.byte_count));
             s.push_str("</extent>\n");
         }
@@ -798,6 +802,7 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
                     "fileoffset" => Pending::FileOffset,
                     "startblock" => Pending::StartBlock,
                     "bytecount" => Pending::ByteCount,
+                    "byteoffset" => Pending::ByteOffset,
                     "partition" => Pending::Partition,
                     _ => Pending::None,
                 };
@@ -808,6 +813,7 @@ fn parse_extent(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Extent,
                     match std::mem::replace(&mut pending, Pending::None) {
                         Pending::FileOffset => extent.file_offset = parse_u64(&text, "fileoffset")?,
                         Pending::StartBlock => extent.start_block = parse_u64(&text, "startblock")?,
+                        Pending::ByteOffset => extent.byte_offset = parse_u64(&text, "byteoffset")?,
                         Pending::ByteCount => extent.byte_count = parse_u64(&text, "bytecount")?,
                         Pending::Partition => {
                             extent.partition = parse_partition(&text, "partition")?
@@ -840,6 +846,7 @@ enum Pending {
     FileOffset,
     StartBlock,
     ByteCount,
+    ByteOffset,
     Partition,
     SymlinkTarget,
     Time(TimeField),
@@ -1044,6 +1051,18 @@ mod tests {
 </ltfsindex>"#;
 
     #[test]
+    fn nonzero_byteoffset_survives_index_rewrite() {
+        let xml = INDEX_XML.replace(
+            "<fileoffset>0</fileoffset>",
+            "<fileoffset>0</fileoffset><byteoffset>17</byteoffset>",
+        );
+        let index = Index::parse_xml(&xml).unwrap();
+        let rewritten = index.to_xml();
+        assert!(rewritten.contains("<byteoffset>17</byteoffset>"));
+        assert_eq!(Index::parse_xml(&rewritten).unwrap(), index);
+    }
+
+    #[test]
     fn parse_index_xml_with_tree() {
         let idx = Index::parse_xml(INDEX_XML).unwrap();
         assert_eq!(idx.version, "2.4.0");
@@ -1082,6 +1101,7 @@ mod tests {
                 file_offset: 0,
                 partition: 1,
                 start_block: 7,
+                byte_offset: 0,
                 byte_count: 1024
             }
         );
