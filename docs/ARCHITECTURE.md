@@ -1393,28 +1393,61 @@ Read 的 host output 路径针对 NFS/CIFS 小文件延迟采用有界句柄策�
 目录从显式目录项和文件父路径汇总、去重后创建。按物理 extent 首次出现顺序最多保留
 256 个已创建文件句柄，后续 extent 尽量复用，但不能通过无限打开文件突破进程 descriptor
 限制。没有 hole 的稠密文件依靠顺序写自然增长，不额外发送 `set_len`；稀疏或不完整
-extent 仍预设 LTFS 逻辑长度。最后一个 extent 完成时关闭文件，整个 Read 成功结束前对
-destination 所在 filesystem 执行一次 Linux `syncfs` completion barrier，而不是为每个
-文件重新 open + `sync_all`。这会同步同一挂载上的其他 pending writes，是用一次挂载级
-barrier 换取避免逐小文件 SMB FLUSH/NFS COMMIT 的明确取舍。
+extent 仍预设 LTFS 逻辑长度。最后一个 extent 写完后，必须在仍打开的输出句柄上执行
+`sync_all`，成功后显式检查 Linux close 结果，才增加已完成文件数。零数据 extent 的
+空文件/纯稀疏文件在 prepare 中完成长度设置、同步和关闭。多 extent 文件只在最后
+一个 extent 同步；中间因句柄预算而关闭时也检查 close 错误，但不额外逐 extent fsync。
+
+2026-10-24 实测证明，原先只在关闭全部文件后调用一次 `syncfs` 的策略，在当前 CIFS
+挂载上没有发出逐文件 SMB FLUSH，不能替代打开句柄上的 fsync。现在文件完成后按子目录
+到父目录顺序 fsync 恢复涉及的目录和根目录，最后保留 syncfs 作为挂载级写回/错误检查。
+任何文件、目录同步或写入句柄关闭失败均使任务失败，不得进入 Completed。目录同步以
+各 filesystem/客户端提供的语义为准；CIFS directory fsync 不等于额外的逐文件 FLUSH。
+保证边界是OS、挂载配置、协议及服务器对同步调用的承诺；nostrictsync、服务器行为或
+硬件断电保护不能由应用fsync弥补，不能承诺经过断电实验验证的持久化。
 
 2026-08-15 在 tapeserver 的已挂载共享上用 163 个 4 KiB 文件做了仅 host-output 的等价
 生命周期基准（不包含磁带走带）：CIFS 从 2147 ms 降至 171 ms，NFSv4 从 216 ms 降至
-125 ms。该结果证明元数据/同步往返已减少，但不是完整 LTFS Read 吞吐结论；完整实机
+125 ms。该结果属于旧同步策略，仅证明当时元数据/同步往返减少，不代表与逐文件fsync等价的保证，也不是完整 LTFS Read 吞吐结论；完整实机
 验收仍应同时观察磁带是否持续 streaming、最终文件内容和任务终态。
+
+Read 的host-output实现集中在 `src/app/read_pipeline.rs`，负责输出文件生命周期、
+有界批次与完成屏障；`app/mod.rs` 保留磁带会话、extent游标和工作流编排。模块拆分
+不改变设备owner或执行顺序。
 
 Read 数据传输进一步采用默认 512 MiB 的有界管线。runner 主线程是唯一 tape reader，
 严格按全局物理 extent 顺序执行 LOCATE/READ、Read BER 和位置采样；独立的
 `tapecpy-destination-writer` 线程只持有 host 文件句柄，按 message 中的 file index、
-file offset 和 extent 边界写 NFS/CIFS，不能访问磁带设备。每个槽复用 1 MiB 最大 tape
-record allocation，避免持续分配；槽耗尽对 tape reader 施加背压，writer 出错或退出则
-通过断开的 data/recycle channel 反向停止 reader。只有发送 Finish、缓存完全排空、所有
-extent 关闭且 `syncfs` 成功后，Read job 才能进入 Completed。
+file offset 和 extent 边界写 NFS/CIFS，不能访问磁带设备。
 
-Read job snapshot 复用通用的 buffer used/capacity、reader waiting 和 writer waiting
-字段，但界面按 Read 方向解释：tape reader 等待空槽表示 `destination slow / buffer
-full`，destination writer 等待消息表示 `tape side limiting / buffer empty`。缓存只能吸收短时网络抖动；
-若 destination 的持续吞吐低于磁带，缓存最终仍会填满并正确反压，不能伪造持续速度。
+2026-10-24 起，待读取目标写出的 payload 聚合到可复用的 1MiB 主机缓冲块；文件/
+extent 开始、结束及数据范围描述符与 payload 放在同一批次中，磁带 record 格式不变。
+reader 复用独立的最大 record 工作缓冲，把选中的数据复制到批次；跨文件/extent 的
+边界与顺序完整保留，writer 仍在最终 extent 上逐文件 fsync/检查 close。批次达到
+1MiB payload 或4096个描述符时提交，Finish和已知非连续LOCATE前也提交。
+默认最多512块在 producer、队列、writer、回收池之间流转，按需分配，不能在回收池
+之外再另建一套512MiB缓存。通道虽使用无界mpsc，唯一生产者必须先取得块才能提交，
+因此在途块数量严格有界。控制消息不再独立消耗最大record槽。
+
+512MiB表示payload分配上限，不是整个进程RSS。每块至多4096个描述符，描述符数组
+按需增长，总上限为512×4096×size_of(ReadBatchEntry)；另有reader工作缓冲、至多
+一个共享record缓存、通道节点、计划和文件句柄。极微小payload、控制消息或频繁定位
+提前提交仍可能降低有效payload容量，不能承诺所有布局都能存满512MiB；受控1–512KiB
+连续数据测试应能用满配置容量。回收在整批处理完毕后发生，used_bytes表示尚未写出的
+payload，已写出但尚未释放的块也可能继续造成背压。
+
+只有发送 Finish、缓存完全排空、所有 extent 的最终文件同步和关闭、目录同步及
+`syncfs` 全部成功后，Read job 才能进入 Completed。writer 出错或退出时，断开的
+提交/回收通道将错误反向传播；禁止丢弃待写数据以腾出容量。
+
+Read snapshot 中 reader waiting 表示实际等待可回收缓冲块，而不再根据数据消息
+数量猜测。等待时每100ms由同一个设备owner发布进度并检查取消，不发出额外SCSI命令；
+进入/退出等待的状态变化绕过通常250ms进度节流，短等待也保留累计次数和纳秒时长
+`destination_backpressure_events/nanoseconds`，完成后保留累计值。TUI显示当前
+`destination slow / queue full`及累计Wait秒/次数。destination writer等待下一批
+输入表示`waiting for tape input`，这里指可消费输入队列为空，
+不是producer必然没有尚未提交的payload。末尾排空/同步期间也发布实际written/files
+进度，不能提前报告所有文件完成。缓存只能吸收短时抖动，目标持续慢于磁带仍会正确背压。
 
 物理调度表相邻 extent 若与 reader 已知位置的 `(partition, next block)` 完全连续，必须
 直接继续 READ，不能为每个小文件重复发送 LOCATE。只有 partition 改变或 start block
@@ -1651,6 +1684,41 @@ minimum-partition long erase 展示了临时分区、rethread、REQUEST SENSE �
 且不再提供旧 LTFS index。最后用 tapecpy 重新格式化为 `M14ERS` / `Milestone 14 Ready`，
 UUID `cc45750c-2a99-486b-8e20-153e99e814dc`，generation 1。按计划没有启动 full-tape long。
 
+## 33.7 顺序数据路径性能修正
+
+普通 job 进度的 250 ms 节流不再意味着设备线程同步 fsync。Application observer
+先合并内存状态，由独立 worker 通过一个合并 wake 槽保存最新 checkpoint；worker
+写盘时不持有状态 mutex。阶段切换、取消和终态仍同步持久化。两者共用磁盘串行锁，
+并在取得锁后读取最新状态，以免旧 checkpoint 回退最终结果；operation 退出前
+join worker。运行中 IPC 可以看到尚未落盘的普通进度，崩溃后磁盘快照可能滞后；
+这不改变禁止自动续跑和设备唯一 owner 的原则。
+
+source EOF buffer 跨文件保留；RAW/TAR 使用有总 allocation 预算的回收池，RAW
+恢复的 hash 移到 host writer。LTFS FileEnd 和回读校验在 streaming 前批量解析
+本批次索引条目，避免大目录中的逐文件线性查找。写后校验沿连续 record 前进，
+不再为每个文件 LOCATE。完整限制、回归测试和真机验收见
+[`STREAMING_PERFORMANCE.md`](STREAMING_PERFORMANCE.md)。
+
+## 33.8 Extent byteoffset、输入边界和任务状态摘要
+
+Extent 与冻结的 Read plan 均保存 byteoffset，旧 job 缺少该字段按零解释。索引重写
+保留原偏移；新写入仍使用零偏移，不在本轮引入跨文件打包。普通恢复、stdout 读取和
+SHA-256 回读校验共用 ExtentReadCursor：完整且消费完的 record 直接 move；部分
+record 保留最多一条 READ_BUF_LEN 的额外缓存，下一 extent 指向同一 record 时复用
+并切片。跨块按 record 推进位置，跨分区或非连续地址仍 LOCATE。只有 payload 计入
+恢复进度；缓存上限为原有 pipeline allocation 预算加一条 record。
+
+当前实现接受 label blocksize 1..=1 MiB；这是实现上限，不宣称所有驱动器都具有同样
+上限。卷识别时拒绝不支持的块大小，并验证 extent 偏移/长度与地址溢出。READ/WRITE(6)
+不能编码超过 24-bit 的 transfer length，越界在 ioctl 前返回 InvalidInput，不截断。
+
+JobState 在进程内通过 Arc 共享不可变 JobSpec，复制状态不再复制完整计划。完整
+preflight 仅由 spec.json 保存；state.json 和 IPC 中的 spec 保留身份、endpoint 与
+完成策略，省略可选 preflight 字段，因此仍可由 v1 客户端解析。runner 明确读取并
+校验 spec.json 后恢复执行计划；旧 state 内嵌的完整计划仍可读取，但加载后丢弃冗余
+副本。旧 server 的 IPC 超限 Error 可以回退到磁盘摘要，不再使任务从列表消失。
+TUI 缓存未变化的终态任务（mtime/长度校验），只对活动任务持续查询。
+
 # 34. 暂时不决定的架构问题
 
 以下问题当前明确保持开放。
@@ -1742,3 +1810,41 @@ UUID `cc45750c-2a99-486b-8e20-153e99e814dc`，generation 1。按计划没有启�
 ```
 
 tapecpy 本次重新开始的核心目标之一，就是避免再次重复这种开发方式。
+
+## 2026-10-23 任务内温度遥测
+
+读写任务的唯一 TapeSession owner 在既有约 5 秒通道 BER 采样点，串行查询既有
+LOG SENSE 0Dh 温度页；不增加 TUI poller 或第二个设备访问线程。覆盖 LTFS 和
+RAW/TAR 共用的 ChannelTelemetryState。温度查询与 BER 查询独立处理：任一失败
+不阻止发布另一项；尚未建立 BER baseline 时也发布温度。温度查询复用已有协议
+实现，不改变设备命令编码。当前工作目录未提供可选的 LTFSCopyGUI checkout。
+
+JobProgress.temperature 保存最近一次尝试的温度、reference、UTC 时间、Unix 毫秒
+时间及错误；旧快照缺少字段时按 None 读取。断开和重新 attach 通过现有 job IPC /
+持久化状态取得读数。顶部按 drive serial 匹配活动 job，任务首次采样前显示 pending，
+失败或不支持显示 N/A，超过 15 秒显示 stale；空闲 health 快照也标记过期。Jobs
+错误率区域同时显示温度，沿用错误率采样时间。BER 原始窗口和 session worst 保留。
+
+采样在数据命令之间执行，长时间 READ/WRITE、定位、索引提交或 host I/O 等待期间
+不保证每 5 秒取得读数，不并发打断设备命令。温度页增加两个 LOG SENSE 命令
+（header + 完整 page）。Quantum LTO-5 两轮各 4GiB 短测的稳定区间吞吐中位数为
+关闭 144.473MB/s、开启 144.461MB/s；6 次查询耗时 1.694–3.371ms。正式实现默认
+启用约 5 秒温度采样，不包含测试副本中的环境变量开关或 stderr 计时输出。短测未发现
+明显持续吞吐下降，不代表零开销或排除偶发延迟，详见
+[TEMPERATURE_SAMPLING_TEST_2026-10-23.md](TEMPERATURE_SAMPLING_TEST_2026-10-23.md)。
+
+## 2026-10-24 LTFS 容量预检分区修正
+
+VolumeInfo.data_remaining_capacity_mib 只来自有效 LTFS label 的 data_partition：
+显式 READ ATTRIBUTE 0000h，验证角色不同、分区编号可支持、属性为 8-byte 整数。
+查询失败按 Unknown 并保留警告，不回退到默认分区 0。CLI/TUI source plan 和
+runner 启动复核共用这个字段；runner 在独占 lease 内重新检查当前卷，避免使用
+创建 job 时的旧容量。原有 90% warning、超容量拦截及 Unknown 显式确认规则保留。
+
+TUI Overview 的 Remaining 改为 LTFS Data Remaining，basic snapshot 未读取 LTFS
+时为未知；P0 Maximum 保留明确标注。CLI media 把默认 MAM 容量明确标为分区 0，
+volume 显示数据分区余量。容量估算依然是 payload 对 MAM 剩余容量的比较，不能
+保证恰好装满时仍有足够的文件记录、index 和同步开销空间。
+
+Quantum LTO-5 PERF02 实测 index p0 36,476MiB、data p1 1,279,001MiB，100GiB
+payload 预检为 Normal。未装载时容量为 Unknown，正常 LOAD 后才取得上述读数。

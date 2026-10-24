@@ -243,6 +243,8 @@ pub struct ReadPlanExtent {
     pub file_offset: u64,
     pub partition: u8,
     pub start_block: u64,
+    #[serde(default)]
+    pub byte_offset: u64,
     pub byte_count: u64,
 }
 
@@ -402,6 +404,7 @@ impl JobSpec {
                     file_offset: extent.file_offset,
                     partition: extent.partition,
                     start_block: extent.start_block,
+                    byte_offset: extent.byte_offset,
                     byte_count: extent.byte_count,
                 })
                 .collect(),
@@ -543,7 +546,7 @@ fn validate_read_preflight(plan: &ReadPreflight) -> Result<(), String> {
             file_ranges[extent.file_index]
                 .push((extent.file_offset, extent.file_offset + extent.byte_count));
         }
-        let position = (extent.partition, extent.start_block);
+        let position = (extent.partition, extent.start_block, extent.byte_offset);
         if previous.is_some_and(|previous| previous > position) {
             return Err("read preflight extents 未按磁带位置排序".into());
         }
@@ -588,6 +591,7 @@ fn application_read_plan(plan: &ReadPreflight) -> crate::app::ReadPlan {
                 file_offset: extent.file_offset,
                 partition: extent.partition,
                 start_block: extent.start_block,
+                byte_offset: extent.byte_offset,
                 byte_count: extent.byte_count,
             })
             .collect(),
@@ -597,6 +601,8 @@ fn application_read_plan(plan: &ReadPreflight) -> crate::app::ReadPlan {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JobProgress {
+    #[serde(default)]
+    pub temperature: Option<crate::app::TemperatureTelemetry>,
     pub current_item: Option<String>,
     pub items_completed: u64,
     pub items_total: u64,
@@ -616,10 +622,16 @@ pub struct JobProgress {
     #[serde(default)]
     pub writer_waiting: bool,
     #[serde(default)]
+    pub destination_backpressure_nanoseconds: u64,
+    #[serde(default)]
+    pub destination_backpressure_events: u64,
+    #[serde(default)]
     pub performance_updated_at: Option<String>,
     pub worst_channel_rate: Option<f64>,
     #[serde(default)]
     pub channel_rates: Vec<crate::device::channel_error::ChannelRate>,
+    #[serde(default)]
+    pub channel_counter_window: Option<crate::app::ChannelCounterWindow>,
     #[serde(default)]
     pub session_worst_channel: Option<usize>,
     #[serde(default)]
@@ -628,6 +640,28 @@ pub struct JobProgress {
     pub telemetry_updated_at: Option<String>,
     #[serde(default)]
     pub throughput_history: Vec<JobThroughputSample>,
+}
+
+impl JobProgress {
+    fn finish_read(&mut self, files: u64, bytes: u64) {
+        self.items_completed = files;
+        self.items_total = files;
+        self.bytes_completed = bytes;
+        self.bytes_total = bytes;
+        self.clear_live_performance();
+    }
+
+    /// Live pipeline metrics are invalid once that pipeline has stopped.
+    /// Keep the throughput history as a record of the completed data phase.
+    fn clear_live_performance(&mut self) {
+        self.tape_bytes_per_second = None;
+        self.source_bytes_per_second = None;
+        self.buffer_used_bytes = None;
+        self.buffer_capacity_bytes = None;
+        self.reader_waiting = false;
+        self.writer_waiting = false;
+        self.performance_updated_at = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -640,7 +674,8 @@ pub struct JobThroughputSample {
 pub struct JobState {
     pub protocol_version: u16,
     pub revision: u64,
-    pub spec: JobSpec,
+    #[serde(serialize_with = "serialize_state_spec")]
+    pub spec: Arc<JobSpec>,
     pub phase: JobPhase,
     pub runner_pid: Option<u32>,
     pub updated_at: String,
@@ -665,6 +700,38 @@ pub struct JobCompletion {
     pub tape_alerts: Vec<u16>,
 }
 
+/// Keep the wire shape compatible with v1 while omitting immutable preflight payloads.
+/// Full plans are serialized only by save_spec, never by a status/checkpoint response.
+fn serialize_state_spec<S: serde::Serializer>(
+    spec: &Arc<JobSpec>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut summary = serializer.serialize_struct("JobSpec", 16)?;
+    macro_rules! field {
+        ($name:ident) => {
+            summary.serialize_field(stringify!($name), &spec.$name)?;
+        };
+    }
+    field!(protocol_version);
+    field!(id);
+    field!(operation);
+    field!(drive_selector);
+    field!(drive_serial);
+    field!(source);
+    field!(source_roots);
+    field!(destination);
+    field!(read_back_verify);
+    field!(completion_action);
+    field!(volume_barcode);
+    field!(volume_name);
+    field!(created_at);
+    field!(overwrite_ltfs_acknowledged);
+    field!(overwrite_unknown_mam_acknowledged);
+    field!(sequential_block_size);
+    summary.end()
+}
+
 impl JobState {
     pub fn queued(spec: JobSpec) -> Result<Self, String> {
         spec.validate()?;
@@ -672,7 +739,7 @@ impl JobState {
             protocol_version: PROTOCOL_VERSION,
             revision: 1,
             updated_at: spec.created_at.clone(),
-            spec,
+            spec: Arc::new(spec),
             phase: JobPhase::Queued,
             runner_pid: None,
             message: "等待 operation runner 启动".into(),
@@ -718,8 +785,10 @@ impl JobState {
         self.progress.partition = event.partition;
         self.progress.logical_block = event.logical_block;
         if let Some(sample) = &event.telemetry {
+            self.progress.temperature = sample.temperature.clone();
             self.progress.worst_channel_rate = sample.worst_rate;
             self.progress.channel_rates = sample.channel_rates.clone();
+            self.progress.channel_counter_window = sample.counter_window.clone();
             self.progress.telemetry_updated_at = Some(sample.timestamp.clone());
             if let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0)
                 && self
@@ -737,7 +806,9 @@ impl JobState {
                 self.progress.session_worst_channel_rate = Some(rate);
             }
         }
-        if let Some(sample) = &event.performance {
+        if event.phase != WritePhase::WritingData {
+            self.progress.clear_live_performance();
+        } else if let Some(sample) = &event.performance {
             self.progress.tape_bytes_per_second = Some(sample.tape_bytes_per_second);
             self.progress.source_bytes_per_second = Some(sample.source_bytes_per_second);
             self.progress.buffer_used_bytes = Some(sample.buffer_used_bytes);
@@ -797,11 +868,15 @@ impl JobState {
             self.progress.buffer_capacity_bytes = Some(buffer.capacity_bytes);
             self.progress.reader_waiting = buffer.tape_waiting;
             self.progress.writer_waiting = buffer.destination_waiting;
+            self.progress.destination_backpressure_nanoseconds = buffer.wait_nanoseconds;
+            self.progress.destination_backpressure_events = buffer.wait_events;
             self.progress.performance_updated_at = Some(self.updated_at.clone());
         }
         if let Some(sample) = &event.telemetry {
+            self.progress.temperature = sample.temperature.clone();
             self.progress.worst_channel_rate = sample.worst_rate;
             self.progress.channel_rates = sample.channel_rates.clone();
+            self.progress.channel_counter_window = sample.counter_window.clone();
             self.progress.telemetry_updated_at = Some(sample.timestamp.clone());
             if let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0)
                 && self
@@ -875,7 +950,11 @@ pub fn load_spec(paths: &JobPaths) -> Result<JobSpec, String> {
 }
 
 pub fn load_state(paths: &JobPaths) -> Result<JobState, String> {
-    read_json(&paths.state)
+    let mut state: JobState = read_json(&paths.state)?;
+    let spec = Arc::make_mut(&mut state.spec);
+    spec.read_preflight = None;
+    spec.write_preflight = None;
+    Ok(state)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -946,6 +1025,7 @@ struct SharedState {
 pub struct JobControl {
     paths: JobPaths,
     shared: Arc<SharedState>,
+    persistence: Arc<Mutex<()>>,
     cancellation: CancellationToken,
 }
 
@@ -962,6 +1042,7 @@ impl JobControl {
                 state: Mutex::new(state),
                 changed: Condvar::new(),
             }),
+            persistence: Arc::new(Mutex::new(())),
             cancellation,
         })
     }
@@ -971,6 +1052,7 @@ impl JobControl {
     }
 
     pub fn update(&self, update: impl FnOnce(&mut JobState)) -> Result<JobState, String> {
+        let _persistence = self.persistence.lock().unwrap();
         let mut state = self.shared.state.lock().unwrap();
         update(&mut state);
         save_state(&self.paths, &state)?;
@@ -1001,6 +1083,75 @@ impl JobControl {
         }
         let (state, _) = self.shared.changed.wait_timeout(state, timeout).unwrap();
         state.clone()
+    }
+}
+
+/// Coalesced progress checkpoints. Only this worker does ordinary-progress disk I/O;
+/// it releases the state mutex before serialization/fsync. Phase/cancel/terminal updates
+/// still use JobControl::update and share the persistence lock, preventing stale writes.
+struct ProgressPersistence {
+    control: JobControl,
+    wake: Option<std::sync::mpsc::SyncSender<()>>,
+    worker: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl ProgressPersistence {
+    fn start(control: &JobControl) -> Result<Self, String> {
+        let (wake, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker_control = control.clone();
+        let worker = thread::Builder::new()
+            .name("tapecpy-job-progress".into())
+            .spawn(move || {
+                while receiver.recv().is_ok() {
+                    let _persistence = worker_control.persistence.lock().unwrap();
+                    let snapshot = worker_control.snapshot();
+                    if let Err(error) = save_state(&worker_control.paths, &snapshot) {
+                        worker_control.cancellation.request_cancel();
+                        return Err(error);
+                    }
+                    worker_control.shared.changed.notify_all();
+                }
+                Ok(())
+            })
+            .map_err(|error| format!("启动 progress persistence worker 失败: {error}"))?;
+        Ok(Self {
+            control: control.clone(),
+            wake: Some(wake),
+            worker: Some(worker),
+        })
+    }
+
+    fn update(&self, update: impl FnOnce(&mut JobState)) {
+        {
+            let mut state = self.control.shared.state.lock().unwrap();
+            update(&mut state);
+        }
+        // A full wake queue already guarantees another checkpoint of the latest state.
+        // No events are discarded: telemetry/history have already been merged in memory.
+        let _ = self
+            .wake
+            .as_ref()
+            .expect("progress worker exists")
+            .try_send(());
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        self.wake.take();
+        self.worker
+            .take()
+            .expect("progress worker exists")
+            .join()
+            .map_err(|_| "progress persistence worker thread panic".to_string())?
+    }
+}
+
+impl Drop for ProgressPersistence {
+    fn drop(&mut self) {
+        // On any early return, finish outstanding checkpoints before runner failure is saved.
+        self.wake.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1464,13 +1615,25 @@ pub fn spawn_detached(spec: JobSpec, root: &Path) -> Result<JobState, String> {
     Ok(state)
 }
 
+fn load_runner_state(paths: &JobPaths, id: &JobId) -> Result<JobState, String> {
+    let mut state = load_state(paths)?;
+    let full_spec = load_spec(paths)?;
+    if state.spec.id != *id
+        || full_spec.id != *id
+        || full_spec.operation != state.spec.operation
+        || full_spec.drive_serial != state.spec.drive_serial
+    {
+        return Err("job spec 与持久化 state 身份不一致".into());
+    }
+    full_spec.validate()?;
+    state.spec = Arc::new(full_spec);
+    Ok(state)
+}
+
 /// 隐藏的 runner 入口。只能由 `spawn_detached` 创建的新 session 调用。
 pub fn run_detached(root: &Path, id: &JobId) -> Result<(), String> {
     let paths = JobPaths::new(root, id);
-    let state = load_state(&paths)?;
-    if state.spec.id != *id {
-        return Err("job id 与持久化 spec 不一致".into());
-    }
+    let state = load_runner_state(&paths, id)?;
     let cancellation = CancellationToken::default();
     let control = JobControl::new(paths.clone(), state, cancellation.clone())?;
     let _ipc = IpcServer::start(control.clone())?;
@@ -1539,13 +1702,10 @@ fn run_operation(
         OperationKind::RawRead | OperationKind::TarRead => validate_host_mount(&spec.destination)?,
     }
     if let Some(preflight) = spec.write_preflight.as_ref() {
-        let media = crate::app::inspect_media(drive).map_err(|error| error.to_string())?;
+        let volume = crate::app::inspect_volume(drive).map_err(|error| error.to_string())?;
         let current_capacity = crate::app::assess_write_capacity(
             preflight.payload_bytes,
-            media
-                .mam
-                .as_ref()
-                .and_then(|mam| mam.remaining_capacity_mib),
+            volume.data_remaining_capacity_mib,
             timestamp_now(),
         );
         match current_capacity.status {
@@ -1584,6 +1744,8 @@ fn run_operation(
         }
     })?;
 
+    let progress_persistence = ProgressPersistence::start(control)?;
+
     match spec.operation {
         OperationKind::Write => {
             let mut last_persist = std::time::Instant::now()
@@ -1591,7 +1753,8 @@ fn run_operation(
                 .unwrap_or_else(std::time::Instant::now);
             let mut last_persisted_phase = None;
             let mut observer = |event: &WriteEvent| {
-                let durable_boundary = last_persisted_phase != Some(event.phase)
+                let phase_changed = last_persisted_phase != Some(event.phase);
+                let durable_boundary = phase_changed
                     || event.telemetry.is_some()
                     || event.performance.is_some()
                     || event.failure.is_some();
@@ -1600,9 +1763,15 @@ fn run_operation(
                 }
                 last_persist = std::time::Instant::now();
                 last_persisted_phase = Some(event.phase);
-                let _ = control.update(|state| {
-                    state.apply_write_event(event, timestamp_now());
-                });
+                if phase_changed || event.failure.is_some() {
+                    let _ = control.update(|state| {
+                        state.apply_write_event(event, timestamp_now());
+                    });
+                } else {
+                    progress_persistence.update(|state| {
+                        state.apply_write_event(event, timestamp_now());
+                    });
+                }
             };
             let options = crate::app::WriteOptions {
                 verification: if spec.read_back_verify {
@@ -1703,15 +1872,23 @@ fn run_operation(
                 .read_preflight
                 .as_ref()
                 .map_or(1, |plan| plan.files.len() as u64);
+            let mut last_waiting = false;
             let mut observer = |event: &crate::app::ReadEvent| {
-                if event.telemetry.is_none()
+                let waiting = event
+                    .buffer
+                    .as_ref()
+                    .is_some_and(|buffer| buffer.tape_waiting);
+                let wait_changed = waiting != last_waiting;
+                last_waiting = waiting;
+                if !wait_changed
+                    && event.telemetry.is_none()
                     && event.tape_bytes_per_second.is_none()
                     && last_persist.elapsed() < Duration::from_millis(250)
                 {
                     return;
                 }
                 last_persist = std::time::Instant::now();
-                let _ = control.update(|state| {
+                progress_persistence.update(|state| {
                     state.apply_read_event(event, timestamp_now());
                 });
             };
@@ -1738,13 +1915,12 @@ fn run_operation(
                 state.phase = JobPhase::Completed;
                 state.updated_at = timestamp_now();
                 state.message = "Read operation 已完成".into();
-                state.progress.items_completed = files_total;
-                state.progress.items_total = files_total;
-                state.progress.bytes_completed = spec
-                    .read_preflight
-                    .as_ref()
-                    .map_or(bytes_read, |plan| plan.payload_bytes);
-                state.progress.bytes_total = state.progress.bytes_completed;
+                state.progress.finish_read(
+                    files_total,
+                    spec.read_preflight
+                        .as_ref()
+                        .map_or(bytes_read, |plan| plan.payload_bytes),
+                );
             })?;
         }
         OperationKind::RawWrite | OperationKind::TarWrite => {
@@ -1776,7 +1952,7 @@ fn run_operation(
                     );
                 if durable || last_persist.elapsed() >= Duration::from_millis(250) {
                     last_persist = std::time::Instant::now();
-                    let _ = control.update(|state| {
+                    let update = |state: &mut JobState| {
                         state.revision += 1;
                         state.updated_at = timestamp_now();
                         state.message = sequential_write_phase_message(event.phase).into();
@@ -1806,7 +1982,12 @@ fn run_operation(
                         if let Some(sample) = &event.telemetry {
                             apply_sequential_telemetry(&mut state.progress, sample);
                         }
-                    });
+                    };
+                    if event.phase == crate::app::SequentialWritePhase::WritingRecords {
+                        progress_persistence.update(update);
+                    } else {
+                        let _ = control.update(update);
+                    }
                 }
             };
             let options = crate::app::RawWriteOptions {
@@ -1859,7 +2040,7 @@ fn run_operation(
             let mut observer = |bytes: u64| {
                 if last_persist.elapsed() >= Duration::from_millis(250) {
                     last_persist = std::time::Instant::now();
-                    let _ = control.update(|state| {
+                    progress_persistence.update(|state| {
                         state.revision += 1;
                         state.updated_at = timestamp_now();
                         state.progress.bytes_completed = bytes;
@@ -1882,7 +2063,7 @@ fn run_operation(
             })?;
         }
     }
-    Ok(())
+    progress_persistence.finish()
 }
 
 fn sequential_write_phase_message(phase: crate::app::SequentialWritePhase) -> &'static str {
@@ -1925,8 +2106,10 @@ fn apply_sequential_telemetry(
     progress: &mut JobProgress,
     sample: &crate::app::ChannelTelemetrySample,
 ) {
+    progress.temperature = sample.temperature.clone();
     progress.worst_channel_rate = sample.worst_rate;
     progress.channel_rates = sample.channel_rates.clone();
+    progress.channel_counter_window = sample.counter_window.clone();
     progress.telemetry_updated_at = Some(sample.timestamp.clone());
     if let Some(rate) = sample.worst_rate.filter(|rate| *rate < 0.0)
         && progress
@@ -1971,6 +2154,9 @@ pub fn query_state(root: &Path, id: &JobId) -> Result<JobState, String> {
         },
     ) {
         Ok(Response::State { state }) => Ok(*state),
+        Ok(Response::Error { message }) if message.starts_with("IPC response 超过大小限制") => {
+            load_state(&paths)
+        }
         Ok(Response::Error { message }) => Err(message),
         Ok(_) => Err("job runner 返回了意外响应".into()),
         Err(_) => {
@@ -2009,26 +2195,63 @@ pub fn cancel(root: &Path, id: &JobId) -> Result<JobState, String> {
 }
 
 /// 为 TUI 的“可重新连接任务”列表提供持久化快照；损坏的单个 job 不阻塞其余任务。
+#[derive(Default)]
+pub struct JobListCache {
+    terminal: std::collections::HashMap<PathBuf, (SystemTime, u64, JobState)>,
+}
+
+impl JobListCache {
+    /// Poll active runners, but do not reparse unchanged retained terminal states.
+    pub fn list(&mut self, root: &Path) -> Result<Vec<JobState>, String> {
+        if !root.exists() {
+            self.terminal.clear();
+            return Ok(Vec::new());
+        }
+        let entries = fs::read_dir(root)
+            .map_err(|error| format!("读取 job 根目录 {} 失败: {error}", root.display()))?;
+        let mut states = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(id) = JobId::parse(entry.file_name().to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let path = JobPaths::new(root, &id).state;
+            seen.insert(path.clone());
+            let stamp = path.metadata().ok().and_then(|metadata| {
+                metadata
+                    .modified()
+                    .ok()
+                    .map(|modified| (modified, metadata.len()))
+            });
+            if let Some((modified, length)) = stamp
+                && let Some((old_modified, old_length, state)) = self.terminal.get(&path)
+                && (*old_modified, *old_length) == (modified, length)
+            {
+                states.push(state.clone());
+                continue;
+            }
+            self.terminal.remove(&path);
+            if let Ok(state) = query_state(root, &id) {
+                if state.phase.is_terminal()
+                    && let Some((modified, length)) = stamp
+                {
+                    self.terminal
+                        .insert(path, (modified, length, state.clone()));
+                }
+                states.push(state);
+            }
+        }
+        self.terminal.retain(|path, _| seen.contains(path));
+        states.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(states)
+    }
+}
+
 pub fn list_states(root: &Path) -> Result<Vec<JobState>, String> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    let entries = fs::read_dir(root)
-        .map_err(|error| format!("读取 job 根目录 {} 失败: {error}", root.display()))?;
-    let mut states = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Ok(id) = JobId::parse(entry.file_name().to_string_lossy().into_owned()) else {
-            continue;
-        };
-        if let Ok(state) = query_state(root, &id) {
-            states.push(state);
-        }
-    }
-    states.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    Ok(states)
+    JobListCache::default().list(root)
 }
 
 pub fn watch_state(
@@ -2145,6 +2368,7 @@ mod tests {
                     file_offset: 0,
                     partition: 1,
                     start_block: 10,
+                    byte_offset: 0,
                     byte_count: 4,
                 },
                 crate::app::PlannedReadExtent {
@@ -2152,6 +2376,7 @@ mod tests {
                     file_offset: 4,
                     partition: 1,
                     start_block: 30,
+                    byte_offset: 0,
                     byte_count: 4,
                 },
             ],
@@ -2302,6 +2527,71 @@ mod tests {
     }
 
     #[test]
+    fn completed_read_clears_last_in_flight_pipeline_snapshot() {
+        let mut progress = JobProgress {
+            bytes_completed: 512,
+            buffer_used_bytes: Some(512),
+            buffer_capacity_bytes: Some(1024),
+            reader_waiting: true,
+            writer_waiting: true,
+            tape_bytes_per_second: Some(140_000_000.0),
+            performance_updated_at: Some("in flight".into()),
+            ..JobProgress::default()
+        };
+        progress.finish_read(123, 4096);
+        assert_eq!(progress.items_completed, 123);
+        assert_eq!(progress.items_total, 123);
+        assert_eq!(progress.bytes_completed, 4096);
+        assert_eq!(progress.bytes_total, 4096);
+        assert_eq!(progress.buffer_used_bytes, None);
+        assert_eq!(progress.buffer_capacity_bytes, None);
+        assert!(!progress.reader_waiting);
+        assert!(!progress.writer_waiting);
+        assert_eq!(progress.tape_bytes_per_second, None);
+        assert_eq!(progress.performance_updated_at, None);
+    }
+
+    #[test]
+    fn verification_does_not_display_previous_write_pipeline_metrics() {
+        let mut state = JobState::queued(spec(OperationKind::Write)).unwrap();
+        state.progress.tape_bytes_per_second = Some(144_000_000.0);
+        state.progress.source_bytes_per_second = Some(144_000_000.0);
+        state.progress.buffer_used_bytes = Some(512);
+        state.progress.buffer_capacity_bytes = Some(1024);
+        state.progress.reader_waiting = true;
+        state.progress.writer_waiting = true;
+        state.progress.performance_updated_at = Some("old".into());
+        state.progress.throughput_history.push(JobThroughputSample {
+            timestamp: "old".into(),
+            bytes_per_second: 144_000_000.0,
+        });
+        let event = WriteEvent {
+            phase: WritePhase::Verifying,
+            current_file: Some("/file".into()),
+            files_completed: 1,
+            files_total: 1,
+            bytes_written: 100,
+            bytes_total: 100,
+            partition: Some(1),
+            logical_block: Some(20),
+            telemetry: None,
+            performance: None,
+            failure: None,
+        };
+        state.apply_write_event(&event, "verify".into());
+        assert_eq!(state.phase, JobPhase::Verifying);
+        assert_eq!(state.progress.tape_bytes_per_second, None);
+        assert_eq!(state.progress.source_bytes_per_second, None);
+        assert_eq!(state.progress.buffer_used_bytes, None);
+        assert_eq!(state.progress.buffer_capacity_bytes, None);
+        assert!(!state.progress.reader_waiting);
+        assert!(!state.progress.writer_waiting);
+        assert_eq!(state.progress.performance_updated_at, None);
+        assert_eq!(state.progress.bytes_completed, 100);
+        assert_eq!(state.progress.throughput_history.len(), 1);
+    }
+
+    #[test]
     fn application_completed_event_waits_for_runner_completion_action() {
         let mut state = JobState::queued(spec(OperationKind::Write)).unwrap();
         let event = WriteEvent {
@@ -2323,12 +2613,146 @@ mod tests {
     }
 
     #[test]
+    fn progress_checkpoints_do_not_block_on_storage_and_cannot_regress_terminal_state() {
+        let paths = test_paths("async-progress");
+        let control = JobControl::new(
+            paths.clone(),
+            JobState::queued(spec(OperationKind::Read)).unwrap(),
+            CancellationToken::default(),
+        )
+        .unwrap();
+        let progress = ProgressPersistence::start(&control).unwrap();
+        // Model a stalled fsync: the worker cannot acquire the disk serialization lock.
+        let stalled_disk = control.persistence.lock().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let producer = thread::spawn(move || {
+            for bytes in 1..=1000 {
+                progress.update(|state| {
+                    state.revision += 1;
+                    state.progress.bytes_completed = bytes;
+                });
+            }
+            done_tx.send(()).unwrap();
+            progress
+        });
+        let unblocked = done_rx.recv_timeout(Duration::from_secs(2));
+        drop(stalled_disk);
+        let progress = producer.join().unwrap();
+        assert!(unblocked.is_ok(), "ordinary progress waited for storage");
+        assert_eq!(control.snapshot().progress.bytes_completed, 1000);
+        control
+            .update(|state| {
+                state.revision += 1;
+                state.phase = JobPhase::Completed;
+            })
+            .unwrap();
+        progress.finish().unwrap();
+        let saved = load_state(&paths).unwrap();
+        assert_eq!(saved.phase, JobPhase::Completed);
+        assert_eq!(saved.progress.bytes_completed, 1000);
+        assert_eq!(saved.revision, control.snapshot().revision);
+        let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
+    fn progress_checkpoint_failure_requests_safe_cancellation_and_is_reported() {
+        let paths = test_paths("progress-error");
+        let token = CancellationToken::default();
+        let control = JobControl::new(
+            paths.clone(),
+            JobState::queued(spec(OperationKind::Write)).unwrap(),
+            token.clone(),
+        )
+        .unwrap();
+        let progress = ProgressPersistence::start(&control).unwrap();
+        // Make the atomic-write temporary path unusable without depending on permissions.
+        fs::create_dir(paths.state.with_extension("json.tmp")).unwrap();
+        progress.update(|state| state.revision += 1);
+        assert!(progress.finish().is_err());
+        assert!(token.is_cancelled());
+        let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
+    fn large_read_plan_stays_in_spec_and_status_remains_small_and_cheap_to_clone() {
+        let paths = test_paths("large-plan-summary");
+        let count = 20_000;
+        let mut spec = spec(OperationKind::Read);
+        spec.read_preflight = Some(ReadPreflight {
+            volume_uuid: "test-volume".into(),
+            index_generation: 3,
+            selections: vec!["/archive".into()],
+            directories: vec!["archive".into()],
+            files: (0..count)
+                .map(|i| ReadPlanFile {
+                    tape_path: format!("/archive/{i}"),
+                    relative_path: format!("archive/{i}"),
+                    length: 1,
+                })
+                .collect(),
+            extents: (0..count)
+                .map(|i| ReadPlanExtent {
+                    file_index: i,
+                    file_offset: 0,
+                    partition: 1,
+                    start_block: i as u64,
+                    byte_offset: 7,
+                    byte_count: 1,
+                })
+                .collect(),
+            payload_bytes: count as u64,
+        });
+        spec.validate().unwrap();
+        let state = JobState::queued(spec).unwrap();
+        let clone = state.clone();
+        assert!(Arc::ptr_eq(&state.spec, &clone.spec));
+        assert!(serde_json::to_vec(&*state.spec).unwrap().len() > MAX_RESPONSE_BYTES);
+        let wire = serde_json::to_vec(&Response::State {
+            state: Box::new(state.clone()),
+        })
+        .unwrap();
+        assert!(wire.len() < 16 * 1024);
+        let Response::State { state: decoded } = serde_json::from_slice(&wire).unwrap() else {
+            panic!("status")
+        };
+        assert!(decoded.spec.read_preflight.is_none());
+        save_spec(&paths, &state.spec).unwrap();
+        save_state(&paths, &state).unwrap();
+        assert!(fs::metadata(&paths.state).unwrap().len() < 16 * 1024);
+        assert!(load_state(&paths).unwrap().spec.read_preflight.is_none());
+        let runner = load_runner_state(&paths, &state.spec.id).unwrap();
+        assert_eq!(
+            runner.spec.read_preflight.as_ref().unwrap().extents.len(),
+            count
+        );
+        assert_eq!(
+            runner.spec.read_preflight.as_ref().unwrap().extents[0].byte_offset,
+            7
+        );
+        // Old state files embedded the complete plan; still readable, but trimmed in memory.
+        let mut legacy = serde_json::to_value(&state).unwrap();
+        legacy["spec"] = serde_json::to_value(&*state.spec).unwrap();
+        atomic_json_write(&paths.state, &legacy).unwrap();
+        assert!(load_state(&paths).unwrap().spec.read_preflight.is_none());
+        let mut old_extent =
+            serde_json::to_value(&runner.spec.read_preflight.as_ref().unwrap().extents[0]).unwrap();
+        old_extent.as_object_mut().unwrap().remove("byte_offset");
+        assert_eq!(
+            serde_json::from_value::<ReadPlanExtent>(old_extent)
+                .unwrap()
+                .byte_offset,
+            0
+        );
+        let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
     fn state_is_persisted_atomically_and_round_trips() {
         let paths = test_paths("persist");
         let state = JobState::queued(spec(OperationKind::Write)).unwrap();
         save_spec(&paths, &state.spec).unwrap();
         save_state(&paths, &state).unwrap();
-        assert_eq!(load_spec(&paths).unwrap(), state.spec);
+        assert_eq!(load_spec(&paths).unwrap(), *state.spec);
         assert_eq!(load_state(&paths).unwrap(), state);
         assert_eq!(
             fs::metadata(&paths.directory).unwrap().permissions().mode() & 0o777,
@@ -2540,6 +2964,8 @@ mod tests {
                     capacity_bytes: 512,
                     tape_waiting: true,
                     destination_waiting: false,
+                    wait_nanoseconds: 250_000_000,
+                    wait_events: 2,
                 }),
             },
             "sample".into(),
@@ -2547,8 +2973,30 @@ mod tests {
         assert_eq!(state.progress.buffer_used_bytes, Some(400));
         assert_eq!(state.progress.bytes_completed, 384);
         assert_eq!(state.progress.buffer_capacity_bytes, Some(512));
+        assert_eq!(
+            state.progress.destination_backpressure_nanoseconds,
+            250_000_000
+        );
+        assert_eq!(state.progress.destination_backpressure_events, 2);
         assert!(state.progress.reader_waiting);
         assert!(!state.progress.writer_waiting);
+        state.progress.finish_read(1, 1024);
+        assert!(!state.progress.reader_waiting);
+        assert_eq!(state.progress.destination_backpressure_events, 2);
+        assert_eq!(
+            state.progress.destination_backpressure_nanoseconds,
+            250_000_000
+        );
+        let mut old = serde_json::to_value(&state.progress).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("destination_backpressure_events");
+        old.as_object_mut()
+            .unwrap()
+            .remove("destination_backpressure_nanoseconds");
+        let old: JobProgress = serde_json::from_value(old).unwrap();
+        assert_eq!(old.destination_backpressure_events, 0);
+        assert_eq!(old.destination_backpressure_nanoseconds, 0);
     }
 
     #[test]
@@ -2597,6 +3045,8 @@ mod tests {
                     partition: Some(1),
                     logical_block: Some(index as u64),
                     telemetry: Some(crate::app::ChannelTelemetrySample {
+                        temperature: None,
+                        counter_window: None,
                         elapsed_millis: index as u64 * 5_000,
                         timestamp: format!("sample-{index}"),
                         partition: 1,
@@ -2653,6 +3103,24 @@ mod tests {
         apply_sequential_telemetry(
             &mut progress,
             &crate::app::ChannelTelemetrySample {
+                temperature: Some(crate::app::TemperatureTelemetry {
+                    timestamp: "sample".into(),
+                    sampled_unix_millis: 1234,
+                    current_celsius: Some(39),
+                    reference_celsius: None,
+                    error: None,
+                }),
+                counter_window: Some(crate::app::ChannelCounterWindow {
+                    page_code: 0x88,
+                    partition: 0,
+                    logical_block: 10,
+                    before: vec![crate::device::channel_error::ChannelCounters::default()],
+                    after: vec![crate::device::channel_error::ChannelCounters {
+                        c1_errors: 12,
+                        ccps: 100,
+                        ..Default::default()
+                    }],
+                }),
                 elapsed_millis: 5000,
                 timestamp: "sample".into(),
                 partition: 0,
@@ -2666,6 +3134,30 @@ mod tests {
                 worst_rate: Some(-5.5),
             },
         );
+        let round_trip: JobProgress =
+            serde_json::from_slice(&serde_json::to_vec(&progress).unwrap()).unwrap();
+        assert_eq!(
+            round_trip.temperature.as_ref().unwrap().current_celsius,
+            Some(39)
+        );
+        assert_eq!(
+            round_trip.temperature.as_ref().unwrap().sampled_unix_millis,
+            1234
+        );
+        let mut legacy = serde_json::to_value(&progress).unwrap();
+        legacy.as_object_mut().unwrap().remove("temperature");
+        assert!(
+            serde_json::from_value::<JobProgress>(legacy)
+                .unwrap()
+                .temperature
+                .is_none()
+        );
+        let window = round_trip.channel_counter_window.unwrap();
+        assert_eq!(window.page_code, 0x88);
+        assert_eq!(window.logical_block, 10);
+        assert_eq!(window.before[0].ccps, 0);
+        assert_eq!(window.after[0].ccps, 100);
+        assert_eq!(window.after[0].c1_errors, 12);
         assert_eq!(progress.tape_bytes_per_second, Some(140.0));
         assert_eq!(progress.source_bytes_per_second, Some(150.0));
         assert_eq!(progress.buffer_used_bytes, Some(1024));
@@ -2714,6 +3206,27 @@ mod tests {
         };
         assert!(message.contains("version"));
         let _ = fs::remove_dir_all(paths.directory.parent().unwrap());
+    }
+
+    #[test]
+    fn terminal_job_cache_reuses_snapshots_and_observes_replacement_or_removal() {
+        let paths = test_paths("terminal-cache");
+        let root = paths.directory.parent().unwrap();
+        let mut state = JobState::queued(spec(OperationKind::Read)).unwrap();
+        state.phase = JobPhase::Completed;
+        save_state(&paths, &state).unwrap();
+        let mut cache = JobListCache::default();
+        let first = cache.list(root).unwrap();
+        let second = cache.list(root).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(Arc::ptr_eq(&first[0].spec, &second[0].spec));
+        state.message = "terminal result changed, invalidate cached snapshot".into();
+        save_state(&paths, &state).unwrap();
+        assert_eq!(cache.list(root).unwrap()[0].message, state.message);
+        fs::remove_dir_all(&paths.directory).unwrap();
+        assert!(cache.list(root).unwrap().is_empty());
+        assert!(cache.terminal.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

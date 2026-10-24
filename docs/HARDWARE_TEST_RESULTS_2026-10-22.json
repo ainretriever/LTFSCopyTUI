@@ -1,0 +1,498 @@
+{
+  "suite.json": [
+    {
+      "name": "large-read",
+      "job_id": "000000000000000018e0e3cb85ddd4ac-0000432f",
+      "started_at": "2026-10-22T15:31:54.952776+00:00",
+      "finished_at": "2026-10-22T15:36:38.766661+00:00",
+      "state_bytes": 34186,
+      "spec_bytes": 811,
+      "completion": {
+        "index_committed": false,
+        "generation": null,
+        "verification": "not_requested",
+        "eject": {
+          "status": "not_requested"
+        },
+        "corrected_write_errors": null,
+        "hard_write_errors": null,
+        "corrected_read_errors": null,
+        "hard_read_errors": null,
+        "tape_alerts": []
+      },
+      "independent_verification": {
+        "verified_files": 1,
+        "verified_bytes": 34359738368,
+        "seconds": 33.033,
+        "sha256": "all matched"
+      }
+    },
+    {
+      "name": "mixed-write",
+      "job_id": "000000000000000018e0e4187cbd49f1-0000454b",
+      "started_at": "2026-10-22T15:37:11.865971+00:00",
+      "finished_at": "2026-10-22T15:39:24.869020+00:00",
+      "state_bytes": 2317,
+      "spec_bytes": 1262,
+      "completion": {
+        "index_committed": true,
+        "generation": 3,
+        "verification": "passed",
+        "eject": {
+          "status": "not_requested"
+        },
+        "corrected_write_errors": 0,
+        "hard_write_errors": 0,
+        "corrected_read_errors": 0,
+        "hard_read_errors": 0,
+        "tape_alerts": []
+      }
+    },
+    {
+      "name": "mixed-read",
+      "job_id": "000000000000000018e0e437daad20a9-000045e2",
+      "started_at": "2026-10-22T15:39:24.869161+00:00",
+      "finished_at": "2026-10-22T15:40:02.346237+00:00",
+      "state_bytes": 4184,
+      "spec_bytes": 42286,
+      "completion": {
+        "index_committed": false,
+        "generation": null,
+        "verification": "not_requested",
+        "eject": {
+          "status": "not_requested"
+        },
+        "corrected_write_errors": null,
+        "hard_write_errors": null,
+        "corrected_read_errors": null,
+        "hard_read_errors": null,
+        "tape_alerts": []
+      },
+      "independent_verification": {
+        "verified_files": 123,
+        "verified_bytes": 124260353,
+        "seconds": 0.081,
+        "sha256": "all matched"
+      }
+    },
+    {
+      "name": "small-write",
+      "job_id": "000000000000000018e0e4409e11538f-00004663",
+      "started_at": "2026-10-22T15:40:02.487803+00:00",
+      "finished_at": "2026-10-22T15:42:54.083146+00:00",
+      "state_bytes": 2451,
+      "spec_bytes": 1265,
+      "completion": {
+        "index_committed": true,
+        "generation": 4,
+        "verification": "passed",
+        "eject": {
+          "status": "not_requested"
+        },
+        "corrected_write_errors": 0,
+        "hard_write_errors": 0,
+        "corrected_read_errors": 0,
+        "hard_read_errors": 0,
+        "tape_alerts": []
+      }
+    },
+    {
+      "name": "small-read",
+      "job_id": "000000000000000018e0e46867b5d98d-0000479c",
+      "started_at": "2026-10-22T15:42:54.083292+00:00",
+      "finished_at": "2026-10-22T15:44:10.166429+00:00",
+      "state_bytes": 4297,
+      "spec_bytes": 3510272,
+      "completion": {
+        "index_committed": false,
+        "generation": null,
+        "verification": "not_requested",
+        "eject": {
+          "status": "not_requested"
+        },
+        "corrected_write_errors": null,
+        "hard_write_errors": null,
+        "corrected_read_errors": null,
+        "hard_read_errors": null,
+        "tape_alerts": []
+      },
+      "independent_verification": {
+        "verified_files": 10000,
+        "verified_bytes": 40960000,
+        "seconds": 0.203,
+        "sha256": "all matched"
+      }
+    }
+  ],
+  "nonzero-slices.json": {
+    "job_id": "000000000000000018e0e4898238cbfb-00004902",
+    "verified": [
+      {
+        "file": "slice-0.bin",
+        "source_offset": 17,
+        "length": 123,
+        "sha256": "924caa0ac18f281883006548ffd098adcb8085d004656dadd3b655fcc7841b0e"
+      },
+      {
+        "file": "slice-1.bin",
+        "source_offset": 140,
+        "length": 600000,
+        "sha256": "de1f9e1cd60bc2fbe32ee73f0466657a747ff468b32d695e4d6fc74f218b2ed9"
+      },
+      {
+        "file": "slice-2.bin",
+        "source_offset": 600140,
+        "length": 1048700,
+        "sha256": "fdf51bef24acdfc1c53e37981d6026e64300b66868498ebb835a8eaa648c04fc"
+      }
+    ]
+  },
+  "traced-read.json": {
+    "started_at": "2026-10-22T15:45:41.015819+00:00",
+    "finished_at": "2026-10-22T15:50:18.758691+00:00",
+    "note": "Instrumented stdout-to-/dev/null probe; not an untraced destination-pipeline throughput baseline"
+  },
+  "large-read-ioctl.analysis.json": {
+    "note": "strace-instrumented stdout probe; includes tracer overhead and excludes startup/index inspection",
+    "payload_bytes": 34359738368,
+    "stream_wall_seconds": 258.32278084754944,
+    "stream_MB_s": 133.01087211614364,
+    "host_gap_ms": {
+      "count": 65639,
+      "sum": 9095.550060272217,
+      "p50": 0.12111663818359375,
+      "p99": 0.6041526794433594,
+      "max": 5.034923553466797
+    },
+    "host_gap_percent_of_wall": 3.5210019149027367,
+    "host_gaps_over_1ms": 51,
+    "host_gaps_over_10ms": 0,
+    "service_ms_by_opcode": {
+      "0x08": {
+        "count": 65536,
+        "sum": 248299.425,
+        "p50": 1.325,
+        "p99": 24.580000000000002,
+        "max": 3736.029
+      },
+      "0x1c": {
+        "count": 104,
+        "sum": 927.722,
+        "p50": 8.847,
+        "p99": 10.943,
+        "max": 11.100999999999999
+      }
+    },
+    "GiB_bins": [
+      {
+        "GiB_start": 0.0,
+        "MB_s": 143.65722722359214,
+        "READ_service_ms": 3.5158920898437502
+      },
+      {
+        "GiB_start": 1.0,
+        "MB_s": 143.32675333880923,
+        "READ_service_ms": 3.52116552734375
+      },
+      {
+        "GiB_start": 2.0,
+        "MB_s": 139.8140471581711,
+        "READ_service_ms": 3.5927661132812503
+      },
+      {
+        "GiB_start": 3.0,
+        "MB_s": 142.36116189459898,
+        "READ_service_ms": 3.5424204101562498
+      },
+      {
+        "GiB_start": 4.0,
+        "MB_s": 143.677878590348,
+        "READ_service_ms": 3.5101064453124997
+      },
+      {
+        "GiB_start": 5.0,
+        "MB_s": 139.6085568486734,
+        "READ_service_ms": 3.590810546875
+      },
+      {
+        "GiB_start": 6.0,
+        "MB_s": 143.33698977116575,
+        "READ_service_ms": 3.511392578125
+      },
+      {
+        "GiB_start": 7.0,
+        "MB_s": 142.3125368036694,
+        "READ_service_ms": 3.524296875
+      },
+      {
+        "GiB_start": 8.0,
+        "MB_s": 140.1976485472438,
+        "READ_service_ms": 3.60265478515625
+      },
+      {
+        "GiB_start": 9.0,
+        "MB_s": 142.9333011949352,
+        "READ_service_ms": 3.5319960937499997
+      },
+      {
+        "GiB_start": 10.0,
+        "MB_s": 143.29260598098398,
+        "READ_service_ms": 3.522587890625
+      },
+      {
+        "GiB_start": 11.0,
+        "MB_s": 142.00678493851674,
+        "READ_service_ms": 3.5355649414062498
+      },
+      {
+        "GiB_start": 12.0,
+        "MB_s": 142.25587870415788,
+        "READ_service_ms": 3.5553212890625
+      },
+      {
+        "GiB_start": 13.0,
+        "MB_s": 135.25595748604502,
+        "READ_service_ms": 3.72178955078125
+      },
+      {
+        "GiB_start": 14.0,
+        "MB_s": 107.21100547797187,
+        "READ_service_ms": 4.676118164062499
+      },
+      {
+        "GiB_start": 15.0,
+        "MB_s": 73.91754758131486,
+        "READ_service_ms": 6.7479140625
+      },
+      {
+        "GiB_start": 16.0,
+        "MB_s": 79.67406214143035,
+        "READ_service_ms": 6.3788427734374995
+      },
+      {
+        "GiB_start": 17.0,
+        "MB_s": 141.80148695006486,
+        "READ_service_ms": 3.565083984375
+      },
+      {
+        "GiB_start": 18.0,
+        "MB_s": 143.811632782365,
+        "READ_service_ms": 3.5099189453125
+      },
+      {
+        "GiB_start": 19.0,
+        "MB_s": 137.36660208694693,
+        "READ_service_ms": 3.6798208007812496
+      },
+      {
+        "GiB_start": 20.0,
+        "MB_s": 143.39031675809022,
+        "READ_service_ms": 3.51218896484375
+      },
+      {
+        "GiB_start": 21.0,
+        "MB_s": 131.92899349238408,
+        "READ_service_ms": 3.80567578125
+      },
+      {
+        "GiB_start": 22.0,
+        "MB_s": 143.42500400856602,
+        "READ_service_ms": 3.509044921875
+      },
+      {
+        "GiB_start": 23.0,
+        "MB_s": 139.75701428678568,
+        "READ_service_ms": 3.6155107421875
+      },
+      {
+        "GiB_start": 24.0,
+        "MB_s": 131.74477911599047,
+        "READ_service_ms": 3.8264228515625
+      },
+      {
+        "GiB_start": 25.0,
+        "MB_s": 143.36342240218545,
+        "READ_service_ms": 3.5209873046875004
+      },
+      {
+        "GiB_start": 26.0,
+        "MB_s": 143.57127118639164,
+        "READ_service_ms": 3.52414453125
+      },
+      {
+        "GiB_start": 27.0,
+        "MB_s": 143.3492307048277,
+        "READ_service_ms": 3.51461865234375
+      },
+      {
+        "GiB_start": 28.0,
+        "MB_s": 143.5883955650355,
+        "READ_service_ms": 3.5096352539062496
+      },
+      {
+        "GiB_start": 29.0,
+        "MB_s": 143.3753072582656,
+        "READ_service_ms": 3.52197265625
+      },
+      {
+        "GiB_start": 30.0,
+        "MB_s": 143.55359264030213,
+        "READ_service_ms": 3.5208198242187496
+      },
+      {
+        "GiB_start": 31.0,
+        "MB_s": 143.31246400944673,
+        "READ_service_ms": 3.5224682617187497
+      }
+    ]
+  },
+  "000000000000000018e0e334b3516327-00003efb.summary.json": {
+    "job_id": "000000000000000018e0e334b3516327-00003efb",
+    "operation": "write",
+    "phase": "completed",
+    "bytes": 34359738368,
+    "items": 1,
+    "total_wall_seconds": 609.692,
+    "all_history": {
+      "samples": 257,
+      "min_MB_s": 0.203,
+      "p10_MB_s": 75.425,
+      "median_MB_s": 143.677,
+      "p90_MB_s": 145.119,
+      "max_MB_s": 147.322,
+      "mean_MB_s": 132.798
+    },
+    "history_without_first_last_10": {
+      "samples": 237,
+      "min_MB_s": 2.753,
+      "p10_MB_s": 75.425,
+      "median_MB_s": 143.689,
+      "p90_MB_s": 145.121,
+      "max_MB_s": 147.322,
+      "mean_MB_s": 133.801
+    },
+    "peak_RSS_KiB_observed": 531732,
+    "max_state_bytes_observed": 34546,
+    "completion": {
+      "index_committed": true,
+      "generation": 2,
+      "verification": "passed",
+      "eject": {
+        "status": "not_requested"
+      },
+      "corrected_write_errors": 0,
+      "hard_write_errors": 0,
+      "corrected_read_errors": 1,
+      "hard_read_errors": 0,
+      "tape_alerts": []
+    },
+    "error": null,
+    "observed_phases": {
+      "WritingData": {
+        "first_observed": "2026-10-22T15:22:28.190949+00:00",
+        "first_bytes": 5312086016,
+        "last_observed": "2026-10-22T15:26:08.444626+00:00"
+      },
+      "FinalizingDataIndex": {
+        "first_observed": "2026-10-22T15:26:09.446055+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:26:15.454154+00:00"
+      },
+      "SyncingIndexPartition": {
+        "first_observed": "2026-10-22T15:26:16.455511+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:26:47.496826+00:00"
+      },
+      "UpdatingCoherency": {
+        "first_observed": "2026-10-22T15:26:48.498254+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:26:52.503691+00:00"
+      },
+      "Verifying": {
+        "first_observed": "2026-10-22T15:26:53.505069+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:31:16.854866+00:00"
+      },
+      "Write operation 已完成；磁带保持装载": {
+        "first_observed": "2026-10-22T15:31:17.856454+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:31:17.856454+00:00"
+      }
+    }
+  },
+  "000000000000000018e0e3cb85ddd4ac-0000432f.summary.json": {
+    "job_id": "000000000000000018e0e3cb85ddd4ac-0000432f",
+    "operation": "read",
+    "phase": "completed",
+    "bytes": 34359738368,
+    "items": 1,
+    "total_wall_seconds": 282.813,
+    "all_history": {
+      "samples": 254,
+      "min_MB_s": 0.056,
+      "p10_MB_s": 84.091,
+      "median_MB_s": 143.351,
+      "p90_MB_s": 144.607,
+      "max_MB_s": 149.328,
+      "mean_MB_s": 134.222
+    },
+    "history_without_first_last_10": {
+      "samples": 234,
+      "min_MB_s": 4.419,
+      "p10_MB_s": 80.993,
+      "median_MB_s": 143.335,
+      "p90_MB_s": 144.6,
+      "max_MB_s": 145.159,
+      "mean_MB_s": 134.008
+    },
+    "peak_RSS_KiB_observed": 20396,
+    "max_state_bytes_observed": 34187,
+    "completion": {
+      "index_committed": false,
+      "generation": null,
+      "verification": "not_requested",
+      "eject": {
+        "status": "not_requested"
+      },
+      "corrected_write_errors": null,
+      "hard_write_errors": null,
+      "corrected_read_errors": null,
+      "hard_read_errors": null,
+      "tape_alerts": []
+    },
+    "error": null,
+    "observed_phases": {
+      "Read operation 正在运行": {
+        "first_observed": "2026-10-22T15:31:54.991719+00:00",
+        "first_bytes": 0,
+        "last_observed": "2026-10-22T15:36:37.324576+00:00"
+      },
+      "Read operation 已完成": {
+        "first_observed": "2026-10-22T15:36:38.758079+00:00",
+        "first_bytes": 34359738368,
+        "last_observed": "2026-10-22T15:36:38.758079+00:00"
+      }
+    }
+  },
+  "final-diagnose.txt": "磁带机: /dev/nst0  (回绕设备 /dev/st0)\n  SCSI 设备:   /dev/sg0\n  厂商:        QUANTUM\n  型号:        ULTRIUM 5\n  固件版本:    3210\n  序列号:      HU1340YHGE\n只读有界诊断：完整扫描 index partition，定点读取 data index。\n一致性: Healthy\n普通写入安全: true\nLabel UUID: 20ec029b-3788-4d3c-911a-8a4d876f28df\nP0 B5 7659475 bytes: index gen=4 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df self=p0b5 previous=Some(TapePos { partition: 1, startblock: 75791 })\nP1 B75791 7659479 bytes: index gen=4 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df self=p1b75791 previous=Some(TapePos { partition: 1, startblock: 65788 })\nP0 VCI: gen=4 block=5 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df vcr=00000000000003EB\nP1 VCI: gen=4 block=75791 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df vcr=00000000000003EB\n",
+  "final-health.txt": "磁带机: /dev/sg0 (ULTRIUM 5)\n写入错误计数: corrected=0，uncorrected=0，processed=13976\n  without-delay=1398，with-delay=0，correction-runs=165012\n读取错误计数: corrected=2，uncorrected=0，processed=31167\n  without-delay=9558，with-delay=2，correction-runs=9558\nTapeAlert: 无活动 flag\n写通道 diagnostic baseline: 16 个通道\n",
+  "post-trace-diagnose.txt": "磁带机: /dev/nst0  (回绕设备 /dev/st0)\n  SCSI 设备:   /dev/sg0\n  厂商:        QUANTUM\n  型号:        ULTRIUM 5\n  固件版本:    3210\n  序列号:      HU1340YHGE\n一致性: Healthy\n普通写入安全: true\nLabel UUID: 20ec029b-3788-4d3c-911a-8a4d876f28df\nP0 B5 7659475 bytes: index gen=4 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df self=p0b5 previous=Some(TapePos { partition: 1, startblock: 75791 })\nP1 B75791 7659479 bytes: index gen=4 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df self=p1b75791 previous=Some(TapePos { partition: 1, startblock: 65788 })\nP0 VCI: gen=4 block=5 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df vcr=00000000000003EB\nP1 VCI: gen=4 block=75791 uuid=20ec029b-3788-4d3c-911a-8a4d876f28df vcr=00000000000003EB\n",
+  "post-trace-health.txt": "磁带机: /dev/sg0 (ULTRIUM 5)\n写入错误计数: corrected=0，uncorrected=0，processed=13976\n  without-delay=1398，with-delay=0，correction-runs=165012\n读取错误计数: corrected=3，uncorrected=0，processed=45207\n  without-delay=13672，with-delay=3，correction-runs=13672\nTapeAlert: 无活动 flag\n写通道 diagnostic baseline: 16 个通道\n",
+  "IPC": {
+    "000000000000000018e0e46867b5d98d-0000479c.ipc.json": {
+      "response_bytes": 1616,
+      "phase": "running",
+      "preflight_in_status": false
+    },
+    "000000000000000018e0e4409e11538f-00004663.ipc.json": {
+      "response_bytes": 1682,
+      "phase": "starting",
+      "preflight_in_status": false
+    },
+    "000000000000000018e0e4898238cbfb-00004902.ipc.json": {
+      "response_bytes": 1616,
+      "phase": "running",
+      "preflight_in_status": false
+    }
+  }
+}

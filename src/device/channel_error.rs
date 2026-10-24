@@ -25,7 +25,7 @@ impl PageKind {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelCounters {
     pub c1_errors: u64,
     pub c1_uncorrectable: u64,

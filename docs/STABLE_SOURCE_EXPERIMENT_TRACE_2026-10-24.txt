@@ -1,0 +1,76 @@
+
+### nfs stable=False
+
+running 1 test
+BENCH_RESULT={"result":{"MB_s":44.967879145311684,"files_s":10978.48611946086,"scan_seconds":0.017499787,"stream_seconds":0.009108724,"verified":true},"spec":{"assume_stable":false,"count":100,"mode":"source","nested":false,"root":"/mnt/tapecpy_nfs/small-20261024/source-4096-nested/group-000","size":4096}}
+test app::performance_tests::host_small_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.03s
+
+strace: Process 6282 attached
+strace: Process 6283 attached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 43.72    0.001090           3       317         2 openat
+ 21.22    0.000529           2       202           pread64
+ 17.61    0.000439           1       412           statx
+ 17.45    0.000435           1       315           close
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.002493           2      1246         2 total
+
+### nfs stable=True
+
+running 1 test
+BENCH_RESULT={"result":{"MB_s":62.28550391572966,"files_s":15206.421854426188,"scan_seconds":0.003003502,"stream_seconds":0.006576169,"verified":true},"spec":{"assume_stable":true,"count":100,"mode":"source","nested":false,"root":"/mnt/tapecpy_nfs/small-20261024/source-4096-nested/group-000","size":4096}}
+test app::performance_tests::host_small_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.01s
+
+strace: Process 6287 attached
+strace: Process 6288 attached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 59.78    0.001711           5       317         2 openat
+ 22.36    0.000640           2       315           close
+ 11.11    0.000318           1       212           statx
+  6.74    0.000193           1       102           pread64
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.002862           3       946         2 total
+
+### smb stable=False
+
+running 1 test
+BENCH_RESULT={"result":{"MB_s":8.0403656191375,"files_s":1962.979887484741,"scan_seconds":0.037052579,"stream_seconds":0.050942957,"verified":true},"spec":{"assume_stable":false,"count":100,"mode":"source","nested":false,"root":"/mnt/tapecpy_smb/small-20261024/source-4096-nested/group-000","size":4096}}
+test app::performance_tests::host_small_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.10s
+
+strace: Process 6292 attached
+strace: Process 6293 attached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 33.42    0.002806           8       317         2 openat
+ 29.98    0.002517          12       202           pread64
+ 22.62    0.001899           4       412           statx
+ 13.97    0.001173           3       315           close
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.008395           6      1246         2 total
+
+### smb stable=True
+
+running 1 test
+BENCH_RESULT={"result":{"MB_s":65.95308732423848,"files_s":16101.827960019162,"scan_seconds":0.002562985,"stream_seconds":0.006210475,"verified":true},"spec":{"assume_stable":true,"count":100,"mode":"source","nested":false,"root":"/mnt/tapecpy_smb/small-20261024/source-4096-nested/group-000","size":4096}}
+test app::performance_tests::host_small_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.01s
+
+strace: Process 6297 attached
+strace: Process 6298 attached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 46.17    0.000777           2       317         2 openat
+ 30.18    0.000508           1       315           close
+ 15.63    0.000263           1       212           statx
+  8.02    0.000135           1       102           pread64
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.001683           1       946         2 total

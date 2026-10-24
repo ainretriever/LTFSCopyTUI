@@ -1,0 +1,214 @@
+{
+  "artifact_files": {
+    "cifs-after.txt": {
+      "bytes": 889,
+      "sha256": "e00d8730ed54e3458c10fc8ac4eec55ecc1fb09a1d3a37076368c8eae564daeb"
+    },
+    "cifs-before.txt": {
+      "bytes": 870,
+      "sha256": "9871abf4987dabcd8cc9ea4be0f49cb6f6038b0870fda93a97748a03ab31f782"
+    },
+    "mountstats-after.txt": {
+      "bytes": 5943,
+      "sha256": "a6ca17793c1f8c6a1c1c575fc32e8c092298f3be3c6930fb0ae4e3bd815b3d50"
+    },
+    "mountstats-before.txt": {
+      "bytes": 5698,
+      "sha256": "2f9a54f38ab9f79a1ab2dfe80331656d59aa49818ff1b23f965f5db80fcd2e0f"
+    },
+    "disks.txt": {
+      "bytes": 533,
+      "sha256": "8423a9e7df2d9948256ea2788bd17dbcf534c04e61901f55505ffbc8d0883e81"
+    },
+    "mounts.txt": {
+      "bytes": 3468,
+      "sha256": "6035ed54db430ff9cdb0bfba820dc96e8a2bd643b7176e8cf460052c1141948e"
+    },
+    "trace-pipeline-smb.trace": {
+      "bytes": 660,
+      "sha256": "192ffd7ca4b51f596d9f5896a4eff0cf44371e2f1b0af30bc0447f8fce687b2d"
+    },
+    "trace-pipeline-smb.stdout": {
+      "bytes": 2119,
+      "sha256": "542efd4d45ec093ca6e6706f4969911db82e497f1d494a922f1ad1ce549b7c0b"
+    },
+    "trace-pipeline-nfs.trace": {
+      "bytes": 660,
+      "sha256": "742a51eb84372b0beb7feb2361b9ed64de7068531b40e5773fcd66d226dd1658"
+    },
+    "trace-pipeline-nfs.stdout": {
+      "bytes": 2413,
+      "sha256": "93fad6e3e7a6d609a80307c4039d6456c369d8cd01b6b8880ecc63446a94e08b"
+    },
+    "trace-pipeline-local.trace": {
+      "bytes": 660,
+      "sha256": "4f94bfb69815c7a91e9b7e99f06ad5b73551d90f9b05be85acf97b8a28c45227"
+    },
+    "trace-pipeline-local.stdout": {
+      "bytes": 1977,
+      "sha256": "f04a90b14e4b153a2cc40d470b5a3367de7a6d210467f43cb37471d383398b8c"
+    },
+    "binary-telemetry.sha256": {
+      "bytes": 72,
+      "sha256": "3d7049818be572025a1dde2e3242ebd7d7b8101ed0a55c3f29b47380d98802b5"
+    },
+    "binary-tape-span.sha256": {
+      "bytes": 72,
+      "sha256": "79018caa757d596cdf2d0f6fc67ecc56e0200f722eeb941ae8da84146f131b4f"
+    },
+    "binary.sha256": {
+      "bytes": 72,
+      "sha256": "3d7049818be572025a1dde2e3242ebd7d7b8101ed0a55c3f29b47380d98802b5"
+    },
+    "binary-sgio.sha256": {
+      "bytes": 72,
+      "sha256": "91a142b7890661bc246ff26a64515cff5598adb00d8943d1fa9332221d26903c"
+    },
+    "binary-progress.sha256": {
+      "bytes": 72,
+      "sha256": "55bb8634854f1b52f0702cccbefd5ce2b6f54bf805ce274ee1896b2d111b7b3e"
+    },
+    "binary-batch.sha256": {
+      "bytes": 72,
+      "sha256": "ce4611996e6379b6641292b0b50ea6cac6e30b96ddd0f5afa48b666445764cf7"
+    },
+    "binary-actual-queue.sha256": {
+      "bytes": 72,
+      "sha256": "52f20696e87b3c65682a198ec14005fceba0af274a29c27111c08b9f38a990dd"
+    },
+    "final-health.txt": {
+      "bytes": 352,
+      "sha256": "7eeaa201caa480af539eb3836150c87fc1d36354ba0ebfc9cbef16b9923f9651"
+    },
+    "final-diagnose.txt": {
+      "bytes": 832,
+      "sha256": "f930fc9f68cd3fad9a2542d142de58d3af62801171a9a7deee0d1a4bc2bef218"
+    },
+    "sync-control.json": {
+      "bytes": 3897,
+      "sha256": "7542d72ffe47564746a4454fd9fe9dbb949e451c42687895e8b4b46a1ace148e"
+    },
+    "calibration-results.jsonl": {
+      "bytes": 29236,
+      "sha256": "d1713b6a2e2c068ad17a10537144e38fd4c0f07e1cb8294ee0d560ce874d1d2b"
+    },
+    "actual-queue-results.jsonl": {
+      "bytes": 1084,
+      "sha256": "8073d360d03a0b90a4e3e8902d48f92db5810733657fa138945fa82d40d20192"
+    },
+    "extra-results.jsonl": {
+      "bytes": 143253,
+      "sha256": "07add3be220452c1e36aa0de5daac8256fa620a760cb46ede4605733919c870e"
+    },
+    "results.jsonl": {
+      "bytes": 1616272,
+      "sha256": "11b3f3ef4f64108ca2dc5f02889d91ee9e1aaf42c6e558352274f33477cbff66"
+    },
+    "evidence.tar.gz": {
+      "bytes": 262402,
+      "sha256": "3f416eb4dc47f614db5f20cea0cbd1be55b24f94eed2eb5355224a0d9c81ef85"
+    },
+    "server-iostat.txt": {
+      "bytes": 10134845,
+      "sha256": "1a191de0621f236961492f34e35fc46188dc0651eb5a046884c35f70a1c3d1bb"
+    },
+    "server-smb-parameters.txt": {
+      "bytes": 12,
+      "sha256": "ef9df6ca219beef7355ef7cd71f71e7db12b522c6da6c158eb690129b5d49293"
+    }
+  },
+  "server_nvme_during_read_span": {
+    "batch-local-r0": {
+      "seconds_sampled": 247,
+      "nvme_write_MB_s": {
+        "median": 0.0,
+        "p99": 0.0,
+        "max": 0.016384
+      },
+      "nvme_w_await_ms_active": {
+        "median": 4.625,
+        "p99": 7.0,
+        "max": 7.0
+      },
+      "nvme_util_percent": {
+        "median": 0.0,
+        "p99": 0.0,
+        "max": 0.9
+      }
+    },
+    "batch-nfs-r0": {
+      "seconds_sampled": 248,
+      "nvme_write_MB_s": {
+        "median": 146.399232,
+        "p99": 201.40032,
+        "max": 202.313728
+      },
+      "nvme_w_await_ms_active": {
+        "median": 0.695,
+        "p99": 21.16,
+        "max": 29.9
+      },
+      "nvme_util_percent": {
+        "median": 9.0,
+        "p99": 34.6,
+        "max": 98.6
+      }
+    },
+    "batch-smb-r0": {
+      "seconds_sampled": 247,
+      "nvme_write_MB_s": {
+        "median": 0.069632,
+        "p99": 1140.965376,
+        "max": 1221.59104
+      },
+      "nvme_w_await_ms_active": {
+        "median": 3.335,
+        "p99": 16.0,
+        "max": 17.0
+      },
+      "nvme_util_percent": {
+        "median": 0.8,
+        "p99": 33.1,
+        "max": 34.2
+      }
+    }
+  },
+  "telemetry_summary": {
+    "batch-local-r0": {
+      "captured_windows": 21,
+      "temperature_min": 39,
+      "temperature_max": 42,
+      "worst_valid_negative_log10_rate_channel": [
+        -5.112599870728888,
+        9
+      ],
+      "raw_counter_windows": 21
+    },
+    "batch-nfs-r0": {
+      "captured_windows": 49,
+      "temperature_min": 39,
+      "temperature_max": 42,
+      "worst_valid_negative_log10_rate_channel": [
+        -5.1182304291967355,
+        9
+      ],
+      "raw_counter_windows": 49
+    },
+    "batch-smb-r0": {
+      "captured_windows": 49,
+      "temperature_min": 39,
+      "temperature_max": 40,
+      "worst_valid_negative_log10_rate_channel": [
+        -5.138510069267387,
+        9
+      ],
+      "raw_counter_windows": 49
+    }
+  },
+  "server_smb_parameters": {
+    "sync_always": "No",
+    "strict_sync": "Yes",
+    "case_sensitive": "Auto"
+  },
+  "limitations": "iostat is server-wide; UTC clock alignment assumed, not exclusive workload. No cold-cache or HDD inference."
+}

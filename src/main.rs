@@ -207,10 +207,7 @@ fn cmd_job_start_write(args: &[String]) -> Result<(), String> {
     let volume = app::inspect_volume(&drive).map_err(|error| error.to_string())?;
     let capacity = app::assess_write_capacity(
         plan.payload_bytes,
-        media
-            .mam
-            .as_ref()
-            .and_then(|mam| mam.remaining_capacity_mib),
+        volume.data_remaining_capacity_mib,
         job::timestamp_now(),
     );
     let barcode = media
@@ -589,10 +586,13 @@ fn cmd_media(selector: Option<&str>) -> Result<(), String> {
             println!("  介质类型:    0x{t:02x}");
         }
         if let Some(mib) = mam.remaining_capacity_mib {
-            println!("  剩余容量:    {}", format_capacity(mib));
+            println!(
+                "  分区0剩余:   {}（非 LTFS 数据容量预检值）",
+                format_capacity(mib)
+            );
         }
         if let Some(mib) = mam.max_capacity_mib {
-            println!("  最大容量:    {}", format_capacity(mib));
+            println!("  分区0最大:   {}", format_capacity(mib));
         }
         if let Some(n) = mam.load_count {
             println!("  装载次数:    {n}");
@@ -629,6 +629,11 @@ fn cmd_volume(selector: Option<&str>) -> Result<(), String> {
     }
 
     println!("LTFS: 是");
+    match volume.data_remaining_capacity_mib {
+        Some(mib) => println!("  数据分区剩余: {}", format_capacity(mib)),
+        None => println!("  数据分区剩余: 未知（不会回退到索引分区容量）"),
+    }
+
     if let Some(name) = volume
         .index
         .as_ref()

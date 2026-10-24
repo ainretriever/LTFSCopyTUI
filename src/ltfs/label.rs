@@ -88,6 +88,7 @@ pub enum LabelError {
     MissingField(&'static str),
     BadNumber(&'static str),
     InvalidBarcode,
+    UnsupportedBlockSize(u64),
 }
 
 impl std::fmt::Display for LabelError {
@@ -98,8 +99,20 @@ impl std::fmt::Display for LabelError {
             LabelError::MissingVersion => write!(f, "缺少 version 属性"),
             LabelError::MissingField(name) => write!(f, "缺少必需字段 <{name}>"),
             LabelError::BadNumber(name) => write!(f, "<{name}> 不是有效数字"),
+            LabelError::UnsupportedBlockSize(size) => {
+                write!(f, "不支持 LTFS blocksize {size}，支持 1..=1048576 bytes")
+            }
             LabelError::InvalidBarcode => write!(f, "Barcode 必须是 6 位大写 ASCII 字母或数字"),
         }
+    }
+}
+
+/// Current implementation limit, not a universal limit of all LTO drives.
+pub fn validate_blocksize(size: u64) -> Result<u64, LabelError> {
+    if (1..=1024 * 1024).contains(&size) {
+        Ok(size)
+    } else {
+        Err(LabelError::UnsupportedBlockSize(size))
     }
 }
 
@@ -204,7 +217,7 @@ impl Label {
             creator: creator.ok_or(LabelError::MissingField("creator"))?,
             format_time: format_time.ok_or(LabelError::MissingField("formattime"))?,
             volume_uuid: volume_uuid.ok_or(LabelError::MissingField("volumeuuid"))?,
-            blocksize: blocksize.ok_or(LabelError::MissingField("blocksize"))?,
+            blocksize: validate_blocksize(blocksize.ok_or(LabelError::MissingField("blocksize"))?)?,
             compression: compression.ok_or(LabelError::MissingField("compression"))?,
             this_partition: this_partition.ok_or(LabelError::MissingField("location/partition"))?,
             index_partition: index_partition.ok_or(LabelError::MissingField("partitions/index"))?,
@@ -344,6 +357,21 @@ mod tests {
     <blocksize>524288</blocksize>
     <compression>true</compression>
 </ltfslabel>"#;
+
+    #[test]
+    fn rejects_unsupported_block_sizes() {
+        for size in [0, 1_048_577, u64::MAX] {
+            assert!(validate_blocksize(size).is_err());
+            let xml = LABEL_XML.replace("524288", &size.to_string());
+            assert!(matches!(
+                Label::parse_xml(&xml),
+                Err(LabelError::UnsupportedBlockSize(_))
+            ));
+        }
+        for size in [1, 524_288, 1_048_576] {
+            assert_eq!(validate_blocksize(size).unwrap(), size);
+        }
+    }
 
     #[test]
     fn parse_ansi_label() {

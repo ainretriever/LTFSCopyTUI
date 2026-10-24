@@ -1,0 +1,3423 @@
+{
+  "concurrency": [
+    {
+      "protocol": "local",
+      "nested": false,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 623.8067373634733
+    },
+    {
+      "protocol": "local",
+      "nested": false,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 194.97199312532285
+    },
+    {
+      "protocol": "local",
+      "nested": false,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 138.74102397912097
+    },
+    {
+      "protocol": "local",
+      "nested": true,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 644.5744441137573
+    },
+    {
+      "protocol": "local",
+      "nested": true,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 186.16297341167578
+    },
+    {
+      "protocol": "local",
+      "nested": true,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 112.5210004061301
+    },
+    {
+      "protocol": "nfs",
+      "nested": false,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 20.87630481046236
+    },
+    {
+      "protocol": "nfs",
+      "nested": false,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 71.46373601330926
+    },
+    {
+      "protocol": "nfs",
+      "nested": false,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 88.83943917585239
+    },
+    {
+      "protocol": "nfs",
+      "nested": true,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 21.29592570883049
+    },
+    {
+      "protocol": "nfs",
+      "nested": true,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 72.32510660905633
+    },
+    {
+      "protocol": "nfs",
+      "nested": true,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 85.44277217408192
+    },
+    {
+      "protocol": "smb",
+      "nested": false,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 6.621262386877103
+    },
+    {
+      "protocol": "smb",
+      "nested": false,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 11.603263984221025
+    },
+    {
+      "protocol": "smb",
+      "nested": false,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 14.743577376977735
+    },
+    {
+      "protocol": "smb",
+      "nested": true,
+      "workers": 1,
+      "repeats": 3,
+      "median_MB_s": 3.778034778983055
+    },
+    {
+      "protocol": "smb",
+      "nested": true,
+      "workers": 4,
+      "repeats": 3,
+      "median_MB_s": 4.896102769946793
+    },
+    {
+      "protocol": "smb",
+      "nested": true,
+      "workers": 16,
+      "repeats": 3,
+      "median_MB_s": 6.624875783538628
+    }
+  ],
+  "records": [
+    {
+      "operation": "read",
+      "record_bytes": 4096,
+      "commands": 49152,
+      "bytes": 201326592,
+      "ioctl_seconds": 7.731360591,
+      "median_us": 155.809,
+      "mean_us": 157.2949338989258,
+      "p99_us": 169.503,
+      "max_ms": 6.464521,
+      "payload_MB_per_s_of_ioctl_time": 26.040253798841345
+    },
+    {
+      "operation": "read",
+      "record_bytes": 65536,
+      "commands": 3072,
+      "bytes": 201326592,
+      "ioctl_seconds": 1.030525647,
+      "median_us": 288.9215,
+      "mean_us": 335.4575673828125,
+      "p99_us": 557.045,
+      "max_ms": 15.561185,
+      "payload_MB_per_s_of_ioctl_time": 195.36300972818003
+    },
+    {
+      "operation": "read",
+      "record_bytes": 524288,
+      "commands": 384,
+      "bytes": 201326592,
+      "ioctl_seconds": 0.556590821,
+      "median_us": 1406.8995,
+      "mean_us": 1449.4552630208332,
+      "p99_us": 1653.473,
+      "max_ms": 3.331002,
+      "payload_MB_per_s_of_ioctl_time": 361.71381992661355
+    },
+    {
+      "operation": "write",
+      "record_bytes": 4096,
+      "commands": 49152,
+      "bytes": 201326592,
+      "ioctl_seconds": 5.710805694,
+      "median_us": 65.6385,
+      "mean_us": 116.18663928222657,
+      "p99_us": 79.352,
+      "max_ms": 2406.899958,
+      "payload_MB_per_s_of_ioctl_time": 35.253623181668
+    },
+    {
+      "operation": "write",
+      "record_bytes": 65536,
+      "commands": 3072,
+      "bytes": 201326592,
+      "ioctl_seconds": 0.95763171,
+      "median_us": 205.9945,
+      "mean_us": 311.729072265625,
+      "p99_us": 2573.791,
+      "max_ms": 15.513263,
+      "payload_MB_per_s_of_ioctl_time": 210.23384031424771
+    },
+    {
+      "operation": "write",
+      "record_bytes": 524288,
+      "commands": 384,
+      "bytes": 201326592,
+      "ioctl_seconds": 5.819132454,
+      "median_us": 1519.792,
+      "mean_us": 15153.990765625,
+      "p99_us": 38121.397,
+      "max_ms": 4549.006496,
+      "payload_MB_per_s_of_ioctl_time": 34.59735511976714
+    }
+  ],
+  "record_api": [
+    {
+      "operation": "write",
+      "record_bytes": 4096,
+      "commands": 49152,
+      "total_seconds": 5.716950627,
+      "median_us": 65.7505,
+      "mean_us": 116.31165826416016
+    },
+    {
+      "operation": "write",
+      "record_bytes": 65536,
+      "commands": 3072,
+      "total_seconds": 0.958443282,
+      "median_us": 206.188,
+      "mean_us": 311.993255859375
+    },
+    {
+      "operation": "write",
+      "record_bytes": 524288,
+      "commands": 384,
+      "total_seconds": 5.819643368,
+      "median_us": 1522.537,
+      "mean_us": 15155.321270833334
+    },
+    {
+      "operation": "read",
+      "record_bytes": 4096,
+      "commands": 49152,
+      "total_seconds": 8.732562212,
+      "median_us": 175.913,
+      "mean_us": 177.66443302408854
+    },
+    {
+      "operation": "read",
+      "record_bytes": 65536,
+      "commands": 3072,
+      "total_seconds": 1.11065764,
+      "median_us": 311.588,
+      "mean_us": 361.5422005208333
+    },
+    {
+      "operation": "read",
+      "record_bytes": 524288,
+      "commands": 384,
+      "total_seconds": 0.566615781,
+      "median_us": 1431.893,
+      "mean_us": 1475.5619296875
+    }
+  ],
+  "record_write": {
+    "bytes": 603979776,
+    "generation": 9,
+    "wall_seconds": 94.592332603,
+    "warnings": []
+  },
+  "record_read": {
+    "bytes": 603979776,
+    "verified_files": 52608
+  },
+  "notes": [
+    "Host source timing includes production SourcePipeline + SHA, excludes scan and independent verification.",
+    "Host destination times production safe prepare/open/write/finish/sync methods, excludes simulated input generation and post-sync verification.",
+    "Shared cache not globally dropped: repeated host tests measure warm/revalidated caches, not server-cold disk.",
+    "Record ioctl time excludes application gaps, hash, source generation and buffer initialization; it is not sustained streaming throughput.",
+    "Record bytes are appended as valid LTFS files, existing data preserved; tape test uses one transaction, 3 groups per record size, 64MiB per group."
+  ],
+  "date_local": "2026-10-24",
+  "timezone": "Asia/Kuching",
+  "device": "QUANTUM ULTRIUM 5 HU1340YHGE firmware 3210",
+  "volume_uuid": "820c0889-b80c-4636-904e-644cd3ffe26c",
+  "production_binary_sha256": "c28753240393f7ad5bd8b8047d1b4dff11e4e7f81caf0562ed4fa1cb8ea04b50",
+  "host_bench_sha256": "60c23bba7a067f85d342746debb9b295d1d79817ea7c6d94c6110d07c846395c",
+  "record_bench_sha256": "4a46057ddbe9c254a4deea849910b70e4166f30aa5a52e4c99b73950ea4e3bd1",
+  "capacity_before_record_test": [
+    {
+      "payload_100GiB_status": "Normal",
+      "preflight_data_remaining_MiB": 1279001
+    },
+    {
+      "partition": 0,
+      "remaining_MiB": 36476,
+      "role": "index"
+    },
+    {
+      "partition": 1,
+      "remaining_MiB": 1279001,
+      "role": "data"
+    }
+  ],
+  "host_raw": [
+    {
+      "tag": "generate-local-4096-flat",
+      "result": {
+        "generate_seconds": 0.142873549
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "generate",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "generate-nfs-4096-flat",
+      "result": {
+        "generate_seconds": 21.734736841
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "generate",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "generate-local-4096-nested",
+      "result": {
+        "generate_seconds": 0.10530266
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "generate",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "generate-nfs-4096-nested",
+      "result": {
+        "generate_seconds": 22.138455121
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "generate",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "generate-local-65536-flat",
+      "result": {
+        "generate_seconds": 0.102078055
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "generate",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "generate-nfs-65536-flat",
+      "result": {
+        "generate_seconds": 5.563487739
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "generate",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "generate-local-65536-nested",
+      "result": {
+        "generate_seconds": 0.095778454
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "generate",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "generate-nfs-65536-nested",
+      "result": {
+        "generate_seconds": 5.129725602
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "generate",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "generate-local-1048576-flat",
+      "result": {
+        "generate_seconds": 0.156625944
+      },
+      "spec": {
+        "count": 256,
+        "mode": "generate",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "generate-nfs-1048576-flat",
+      "result": {
+        "generate_seconds": 1.985131795
+      },
+      "spec": {
+        "count": 256,
+        "mode": "generate",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "generate-local-1048576-nested",
+      "result": {
+        "generate_seconds": 0.156443549
+      },
+      "spec": {
+        "count": 256,
+        "mode": "generate",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "generate-nfs-1048576-nested",
+      "result": {
+        "generate_seconds": 1.994893449
+      },
+      "spec": {
+        "count": 256,
+        "mode": "generate",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r0-4096-flat",
+      "result": {
+        "MB_s": 201.37165066795288,
+        "files_s": 49163.00065135568,
+        "scan_seconds": 0.026284579,
+        "stream_seconds": 0.203404997,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r0-4096-flat",
+      "result": {
+        "MB_s": 1303.9689459286162,
+        "files_s": 318351.7934396036,
+        "prepare_seconds": 0.103598421,
+        "stream_seconds": 0.031411791,
+        "sync_seconds": 0.287314074,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-r0-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-nfs-r0-4096-flat",
+      "result": {
+        "MB_s": 18.78796868262673,
+        "files_s": 4586.906416656916,
+        "scan_seconds": 3.330372465,
+        "stream_seconds": 2.180118601,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-4096-flat",
+      "result": {
+        "MB_s": 4.467477239818233,
+        "files_s": 1090.6926855024983,
+        "prepare_seconds": 13.545843096,
+        "stream_seconds": 9.168485434,
+        "sync_seconds": 0.00508404,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-r0-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r0-4096-flat",
+      "result": {
+        "MB_s": 6.159379784693171,
+        "files_s": 1503.7548302473563,
+        "scan_seconds": 3.7403016730000003,
+        "stream_seconds": 6.650020202,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r0-4096-flat",
+      "result": {
+        "MB_s": 3.5263365965225426,
+        "files_s": 860.9220206353864,
+        "prepare_seconds": 27.052099864,
+        "stream_seconds": 11.615453851,
+        "sync_seconds": 0.004124301,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r0-4096-nested",
+      "result": {
+        "MB_s": 208.69225773479565,
+        "files_s": 50950.2582360341,
+        "scan_seconds": 0.027006538,
+        "stream_seconds": 0.196269859,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r0-4096-nested",
+      "result": {
+        "MB_s": 1262.3048138838492,
+        "files_s": 308179.8862021116,
+        "prepare_seconds": 0.074616249,
+        "stream_seconds": 0.032448581,
+        "sync_seconds": 0.044113439,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r0-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-nfs-r0-4096-nested",
+      "result": {
+        "MB_s": 18.885204175206407,
+        "files_s": 4610.645550587502,
+        "scan_seconds": 1.8303233429999999,
+        "stream_seconds": 2.168893681,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-4096-nested",
+      "result": {
+        "MB_s": 4.491547772832976,
+        "files_s": 1096.5692804768007,
+        "prepare_seconds": 13.431720584,
+        "stream_seconds": 9.11935085,
+        "sync_seconds": 0.005150919,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r0-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r0-4096-nested",
+      "result": {
+        "MB_s": 3.438411129893721,
+        "files_s": 839.4558422592092,
+        "scan_seconds": 3.8465009549999998,
+        "stream_seconds": 11.91247889,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r0-4096-nested",
+      "result": {
+        "MB_s": 3.398881730353734,
+        "files_s": 829.8051099496421,
+        "prepare_seconds": 4.943838229,
+        "stream_seconds": 12.051022439,
+        "sync_seconds": 0.004024006,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r0-65536-flat",
+      "result": {
+        "MB_s": 1118.3448149900403,
+        "files_s": 17064.587631073613,
+        "scan_seconds": 0.012034851,
+        "stream_seconds": 0.12001462,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r0-65536-flat",
+      "result": {
+        "MB_s": 3657.651637257391,
+        "files_s": 55811.334797018295,
+        "prepare_seconds": 0.0327496,
+        "stream_seconds": 0.036695055,
+        "sync_seconds": 0.103758742,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r0-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r0-65536-flat",
+      "result": {
+        "MB_s": 991.5090461698809,
+        "files_s": 15129.227389066786,
+        "scan_seconds": 0.58871584,
+        "stream_seconds": 0.135367124,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-65536-flat",
+      "result": {
+        "MB_s": 66.68437235783172,
+        "files_s": 1017.5227715733599,
+        "prepare_seconds": 2.6620752960000003,
+        "stream_seconds": 2.012731368,
+        "sync_seconds": 0.00129365,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r0-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r0-65536-flat",
+      "result": {
+        "MB_s": 78.32638580186355,
+        "files_s": 1195.1657989786308,
+        "scan_seconds": 0.664809307,
+        "stream_seconds": 1.7135697840000002,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r0-65536-flat",
+      "result": {
+        "MB_s": 54.11768931029988,
+        "files_s": 825.770405735777,
+        "prepare_seconds": 1.9404149,
+        "stream_seconds": 2.480108255,
+        "sync_seconds": 0.000914581,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r0-65536-nested",
+      "result": {
+        "MB_s": 1204.0310011205518,
+        "files_s": 18372.0550708092,
+        "scan_seconds": 0.007896126,
+        "stream_seconds": 0.111473648,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r0-65536-nested",
+      "result": {
+        "MB_s": 3604.034836585724,
+        "files_s": 54993.20734536322,
+        "prepare_seconds": 0.023517851,
+        "stream_seconds": 0.037240963,
+        "sync_seconds": 0.102761215,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r0-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r0-65536-nested",
+      "result": {
+        "MB_s": 496.5060596756747,
+        "files_s": 7576.081232844157,
+        "scan_seconds": 0.534583512,
+        "stream_seconds": 0.270324451,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-65536-nested",
+      "result": {
+        "MB_s": 66.4679492256716,
+        "files_s": 1014.2204166514832,
+        "prepare_seconds": 2.656236753,
+        "stream_seconds": 2.019284927,
+        "sync_seconds": 0.001287626,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r0-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r0-65536-nested",
+      "result": {
+        "MB_s": 76.4946283365296,
+        "files_s": 1167.2153982014404,
+        "scan_seconds": 0.69046986,
+        "stream_seconds": 1.7546033090000002,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r0-65536-nested",
+      "result": {
+        "MB_s": 118.75271762479403,
+        "files_s": 1812.0226688353582,
+        "prepare_seconds": 0.921184092,
+        "stream_seconds": 1.130228686,
+        "sync_seconds": 0.000990158,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r0-1048576-flat",
+      "result": {
+        "MB_s": 1513.595590555944,
+        "files_s": 1443.4772401389541,
+        "scan_seconds": 0.001737126,
+        "stream_seconds": 0.177349523,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r0-1048576-flat",
+      "result": {
+        "MB_s": 3370.8191917431363,
+        "files_s": 3214.6636884147038,
+        "prepare_seconds": 0.01689134,
+        "stream_seconds": 0.07963508,
+        "sync_seconds": 0.210433857,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r0-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r0-1048576-flat",
+      "result": {
+        "MB_s": 1412.1177790552729,
+        "files_s": 1346.7004576256493,
+        "scan_seconds": 0.044135782,
+        "stream_seconds": 0.19009424,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-1048576-flat",
+      "result": {
+        "MB_s": 201.64968142112548,
+        "files_s": 192.30812208282993,
+        "prepare_seconds": 0.351358952,
+        "stream_seconds": 1.331197025,
+        "sync_seconds": 0.000187776,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r0-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-smb-r0-1048576-flat",
+      "result": {
+        "MB_s": 163.92649393753578,
+        "files_s": 156.33248704675273,
+        "scan_seconds": 0.084460026,
+        "stream_seconds": 1.6375355169999999,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r0-1048576-flat",
+      "result": {
+        "MB_s": 231.44442512767202,
+        "files_s": 220.72260391967012,
+        "prepare_seconds": 0.128143417,
+        "stream_seconds": 1.159826839,
+        "sync_seconds": 0.000216589,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r0-1048576-nested",
+      "result": {
+        "MB_s": 1579.8765195305537,
+        "files_s": 1506.6876597695862,
+        "scan_seconds": 0.000750474,
+        "stream_seconds": 0.169909137,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r0-1048576-nested",
+      "result": {
+        "MB_s": 3844.9629795730375,
+        "files_s": 3666.842441151655,
+        "prepare_seconds": 0.020257562,
+        "stream_seconds": 0.069814835,
+        "sync_seconds": 0.20822017,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r0-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r0-1048576-nested",
+      "result": {
+        "MB_s": 1547.6025976595338,
+        "files_s": 1475.9088493914926,
+        "scan_seconds": 0.050181786,
+        "stream_seconds": 0.173452446,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r0-1048576-nested",
+      "result": {
+        "MB_s": 182.26819343546663,
+        "files_s": 173.82449477717077,
+        "prepare_seconds": 0.356682345,
+        "stream_seconds": 1.472749858,
+        "sync_seconds": 0.000193981,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r0-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-smb-r0-1048576-nested",
+      "result": {
+        "MB_s": 162.36054247450483,
+        "files_s": 154.8390793557213,
+        "scan_seconds": 0.0862162,
+        "stream_seconds": 1.653329386,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r0-1048576-nested",
+      "result": {
+        "MB_s": 233.9514265458471,
+        "files_s": 223.11346678337776,
+        "prepare_seconds": 0.125212197,
+        "stream_seconds": 1.1473982440000001,
+        "sync_seconds": 0.000155031,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r0-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r1-1048576-flat",
+      "result": {
+        "MB_s": 1438.2927461153222,
+        "files_s": 1371.662851443598,
+        "scan_seconds": 0.043907789,
+        "stream_seconds": 0.186634784,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-1048576-flat",
+      "result": {
+        "MB_s": 200.5858855418179,
+        "files_s": 191.2936072748355,
+        "prepare_seconds": 0.360267359,
+        "stream_seconds": 1.3382569530000001,
+        "sync_seconds": 0.000189392,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-smb-r1-1048576-flat",
+      "result": {
+        "MB_s": 169.01608745257997,
+        "files_s": 161.18630166299818,
+        "scan_seconds": 0.115156939,
+        "stream_seconds": 1.5882242930000001,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r1-1048576-flat",
+      "result": {
+        "MB_s": 230.85841302696667,
+        "files_s": 220.16373923012415,
+        "prepare_seconds": 0.129264782,
+        "stream_seconds": 1.162770949,
+        "sync_seconds": 0.000167338,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r1-1048576-flat",
+      "result": {
+        "MB_s": 1570.6048842671798,
+        "files_s": 1497.84553934782,
+        "scan_seconds": 0.000799057,
+        "stream_seconds": 0.170912149,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r1-1048576-flat",
+      "result": {
+        "MB_s": 3494.4822266888586,
+        "files_s": 3332.5979487312875,
+        "prepare_seconds": 0.021413202,
+        "stream_seconds": 0.076816947,
+        "sync_seconds": 0.207219527,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r1-1048576-nested",
+      "result": {
+        "MB_s": 1488.4553732049799,
+        "files_s": 1419.501660542469,
+        "scan_seconds": 0.083058531,
+        "stream_seconds": 0.180344981,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-1048576-nested",
+      "result": {
+        "MB_s": 200.79616158070755,
+        "files_s": 191.4941421324802,
+        "prepare_seconds": 0.351041165,
+        "stream_seconds": 1.3368555149999999,
+        "sync_seconds": 0.000186749,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-smb-r1-1048576-nested",
+      "result": {
+        "MB_s": 164.3668977336531,
+        "files_s": 156.75248883595762,
+        "scan_seconds": 0.117214225,
+        "stream_seconds": 1.633147913,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r1-1048576-nested",
+      "result": {
+        "MB_s": 232.89269905927932,
+        "files_s": 222.1037855713647,
+        "prepare_seconds": 0.120245611,
+        "stream_seconds": 1.152614303,
+        "sync_seconds": 0.000222621,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r1-1048576-nested",
+      "result": {
+        "MB_s": 1552.116880935835,
+        "files_s": 1480.2140054090835,
+        "scan_seconds": 0.000648381,
+        "stream_seconds": 0.172947965,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r1-1048576-nested",
+      "result": {
+        "MB_s": 3663.395257370429,
+        "files_s": 3493.685967798642,
+        "prepare_seconds": 0.01332251,
+        "stream_seconds": 0.073275046,
+        "sync_seconds": 0.195626536,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r1-65536-flat",
+      "result": {
+        "MB_s": 104.9970388565854,
+        "files_s": 1602.1276680997528,
+        "scan_seconds": 0.591867307,
+        "stream_seconds": 1.278300126,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-65536-flat",
+      "result": {
+        "MB_s": 59.52941626532218,
+        "files_s": 908.3468058063078,
+        "prepare_seconds": 2.797639232,
+        "stream_seconds": 2.254645458,
+        "sync_seconds": 0.0013012,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r1-65536-flat",
+      "result": {
+        "MB_s": 75.68788030797278,
+        "files_s": 1154.905400207104,
+        "scan_seconds": 0.666783121,
+        "stream_seconds": 1.773305415,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r1-65536-flat",
+      "result": {
+        "MB_s": 53.94042924401477,
+        "files_s": 823.0656317751277,
+        "prepare_seconds": 1.940852162,
+        "stream_seconds": 2.488258434,
+        "sync_seconds": 0.000993567,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r1-65536-flat",
+      "result": {
+        "MB_s": 316.10153642431345,
+        "files_s": 4823.326666630759,
+        "scan_seconds": 0.007573495,
+        "stream_seconds": 0.424603213,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r1-65536-flat",
+      "result": {
+        "MB_s": 3520.519108831417,
+        "files_s": 53718.85847215907,
+        "prepare_seconds": 0.033005711,
+        "stream_seconds": 0.038124414,
+        "sync_seconds": 0.114226141,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r1-65536-nested",
+      "result": {
+        "MB_s": 104.59962920323449,
+        "files_s": 1596.0636780278699,
+        "scan_seconds": 0.407080404,
+        "stream_seconds": 1.283156824,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-65536-nested",
+      "result": {
+        "MB_s": 62.62148549882438,
+        "files_s": 955.5280380069638,
+        "prepare_seconds": 2.835341818,
+        "stream_seconds": 2.143317536,
+        "sync_seconds": 0.001275783,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r1-65536-nested",
+      "result": {
+        "MB_s": 72.99473686855943,
+        "files_s": 1113.8112925500402,
+        "scan_seconds": 0.719164821,
+        "stream_seconds": 1.8387315819999999,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r1-65536-nested",
+      "result": {
+        "MB_s": 107.23226410146577,
+        "files_s": 1636.2344986185574,
+        "prepare_seconds": 0.91453633,
+        "stream_seconds": 1.251654333,
+        "sync_seconds": 0.001047082,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r1-65536-nested",
+      "result": {
+        "MB_s": 388.2896669929846,
+        "files_s": 5924.830123794321,
+        "scan_seconds": 0.011958339,
+        "stream_seconds": 0.345663919,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r1-65536-nested",
+      "result": {
+        "MB_s": 3459.968502462543,
+        "files_s": 52794.929541969956,
+        "prepare_seconds": 0.023531613,
+        "stream_seconds": 0.038791604,
+        "sync_seconds": 0.101991651,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r1-4096-flat",
+      "result": {
+        "MB_s": 10.105693544091269,
+        "files_s": 2467.2103379129076,
+        "scan_seconds": 3.242563048,
+        "stream_seconds": 4.053160708,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-4096-flat",
+      "result": {
+        "MB_s": 4.4735015700412335,
+        "files_s": 1092.163469248348,
+        "prepare_seconds": 13.471379946,
+        "stream_seconds": 9.15613851,
+        "sync_seconds": 0.005166691,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r1-4096-flat",
+      "result": {
+        "MB_s": 6.2684751310059195,
+        "files_s": 1530.389436280742,
+        "scan_seconds": 3.789053567,
+        "stream_seconds": 6.534284518,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r1-4096-flat",
+      "result": {
+        "MB_s": 3.5412604440823574,
+        "files_s": 864.5655381060443,
+        "prepare_seconds": 27.604983507,
+        "stream_seconds": 11.566503127,
+        "sync_seconds": 0.00400645,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r1-4096-flat",
+      "result": {
+        "MB_s": 90.70518703369706,
+        "files_s": 22144.821053148695,
+        "scan_seconds": 0.032668835,
+        "stream_seconds": 0.451572852,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r1-4096-flat",
+      "result": {
+        "MB_s": 1244.040277140344,
+        "files_s": 303720.7707862168,
+        "prepare_seconds": 0.104815587,
+        "stream_seconds": 0.032924979,
+        "sync_seconds": 0.044576937,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-nfs-r1-4096-nested",
+      "result": {
+        "MB_s": 10.120845859714738,
+        "files_s": 2470.9096337194183,
+        "scan_seconds": 1.831796472,
+        "stream_seconds": 4.047092562,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r1-4096-nested",
+      "result": {
+        "MB_s": 4.452217048251563,
+        "files_s": 1086.9670527957917,
+        "prepare_seconds": 13.553387215,
+        "stream_seconds": 9.199910866,
+        "sync_seconds": 0.004905373,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r1-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r1-4096-nested",
+      "result": {
+        "MB_s": 3.460067138426412,
+        "files_s": 844.7429537173857,
+        "scan_seconds": 3.824373793,
+        "stream_seconds": 11.837920584,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r1-4096-nested",
+      "result": {
+        "MB_s": 3.3594670667162916,
+        "files_s": 820.1823893350321,
+        "prepare_seconds": 4.967368346,
+        "stream_seconds": 12.192410042,
+        "sync_seconds": 0.004095796,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r1-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r1-4096-nested",
+      "result": {
+        "MB_s": 89.2295529150637,
+        "files_s": 21784.558817154226,
+        "scan_seconds": 0.031650072,
+        "stream_seconds": 0.45904074,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r1-4096-nested",
+      "result": {
+        "MB_s": 1224.0978972293308,
+        "files_s": 298852.0256907546,
+        "prepare_seconds": 0.079355502,
+        "stream_seconds": 0.033461376,
+        "sync_seconds": 0.042471326,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r1-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r2-4096-flat",
+      "result": {
+        "MB_s": 3.4216061039768824,
+        "files_s": 835.3530527287311,
+        "scan_seconds": 8.2529618,
+        "stream_seconds": 11.97098636,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r2-4096-flat",
+      "result": {
+        "MB_s": 3.568356992591274,
+        "files_s": 871.180906394354,
+        "prepare_seconds": 26.643202187,
+        "stream_seconds": 11.478672141,
+        "sync_seconds": 0.004396376,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r2-4096-flat",
+      "result": {
+        "MB_s": 235.37646290192546,
+        "files_s": 57464.9567631654,
+        "scan_seconds": 0.033672069,
+        "stream_seconds": 0.174019099,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r2-4096-flat",
+      "result": {
+        "MB_s": 1258.4683923496427,
+        "files_s": 307243.259850987,
+        "prepare_seconds": 0.10686591,
+        "stream_seconds": 0.0325475,
+        "sync_seconds": 0.044036813,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-nfs-r2-4096-flat",
+      "result": {
+        "MB_s": 18.562195654255916,
+        "files_s": 4531.786048402323,
+        "scan_seconds": 3.142434081,
+        "stream_seconds": 2.206635506,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-4096-flat",
+      "result": {
+        "MB_s": 4.4846571259675345,
+        "files_s": 1094.8869936444175,
+        "prepare_seconds": 13.449187507,
+        "stream_seconds": 9.133362674,
+        "sync_seconds": 0.005708544,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-4096-flat",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r2-4096-nested",
+      "result": {
+        "MB_s": 3.5151145272465585,
+        "files_s": 858.1822576285543,
+        "scan_seconds": 3.845814527,
+        "stream_seconds": 11.652536406,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-smb-r2-4096-nested",
+      "result": {
+        "MB_s": 3.365534041346421,
+        "files_s": 821.6635843130911,
+        "prepare_seconds": 4.937265947,
+        "stream_seconds": 12.170431051,
+        "sync_seconds": 0.004346427,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-local-r2-4096-nested",
+      "result": {
+        "MB_s": 236.8295384531697,
+        "files_s": 57819.711536418385,
+        "scan_seconds": 0.02996081,
+        "stream_seconds": 0.172951399,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-local-r2-4096-nested",
+      "result": {
+        "MB_s": 1248.9935402090694,
+        "files_s": 304930.0635276048,
+        "prepare_seconds": 0.076700665,
+        "stream_seconds": 0.032794405,
+        "sync_seconds": 0.054334091,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-nfs-r2-4096-nested",
+      "result": {
+        "MB_s": 18.63110373351749,
+        "files_s": 4548.6093099407935,
+        "scan_seconds": 3.158622005,
+        "stream_seconds": 2.198474153,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-4096-nested",
+      "result": {
+        "MB_s": 4.4633284923556,
+        "files_s": 1089.679807704004,
+        "prepare_seconds": 13.418524179,
+        "stream_seconds": 9.177007713,
+        "sync_seconds": 0.005345423,
+        "verified": true
+      },
+      "spec": {
+        "count": 10000,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-4096-nested",
+        "size": 4096
+      }
+    },
+    {
+      "tag": "source-smb-r2-65536-flat",
+      "result": {
+        "MB_s": 74.71709841841343,
+        "files_s": 1140.092444128623,
+        "scan_seconds": 0.697226374,
+        "stream_seconds": 1.79634556,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r2-65536-flat",
+      "result": {
+        "MB_s": 52.135429012519275,
+        "files_s": 795.5235139849743,
+        "prepare_seconds": 1.9610963510000001,
+        "stream_seconds": 2.5744053620000003,
+        "sync_seconds": 0.00094251,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r2-65536-flat",
+      "result": {
+        "MB_s": 1128.9182830922969,
+        "files_s": 17225.925950505018,
+        "scan_seconds": 0.009130715,
+        "stream_seconds": 0.118890561,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r2-65536-flat",
+      "result": {
+        "MB_s": 3500.706504191699,
+        "files_s": 53416.54211718291,
+        "prepare_seconds": 0.033607948,
+        "stream_seconds": 0.038340183,
+        "sync_seconds": 0.103581356,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r2-65536-flat",
+      "result": {
+        "MB_s": 1040.727733936731,
+        "files_s": 15880.2449636342,
+        "scan_seconds": 0.625454545,
+        "stream_seconds": 0.128965265,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-65536-flat",
+      "result": {
+        "MB_s": 62.339067083812715,
+        "files_s": 951.2186749849352,
+        "prepare_seconds": 2.760301687,
+        "stream_seconds": 2.153027536,
+        "sync_seconds": 0.001306628,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-65536-flat",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r2-65536-nested",
+      "result": {
+        "MB_s": 72.48764950782859,
+        "files_s": 1106.0737534763884,
+        "scan_seconds": 0.724404231,
+        "stream_seconds": 1.851594429,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-smb-r2-65536-nested",
+      "result": {
+        "MB_s": 120.2299806455657,
+        "files_s": 1834.5639136591446,
+        "prepare_seconds": 0.916732524,
+        "stream_seconds": 1.116341592,
+        "sync_seconds": 0.001102699,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-local-r2-65536-nested",
+      "result": {
+        "MB_s": 1177.6801734853518,
+        "files_s": 17969.97335030139,
+        "scan_seconds": 0.016253123,
+        "stream_seconds": 0.113967893,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-local-r2-65536-nested",
+      "result": {
+        "MB_s": 3114.8927278184474,
+        "files_s": 47529.49108609692,
+        "prepare_seconds": 0.022687119,
+        "stream_seconds": 0.043089037,
+        "sync_seconds": 0.103559786,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-nfs-r2-65536-nested",
+      "result": {
+        "MB_s": 1038.0664128885699,
+        "files_s": 15839.63642713272,
+        "scan_seconds": 0.573566391,
+        "stream_seconds": 0.129295897,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-65536-nested",
+      "result": {
+        "MB_s": 64.04579464638849,
+        "files_s": 977.2612708494338,
+        "prepare_seconds": 2.884824012,
+        "stream_seconds": 2.095652474,
+        "sync_seconds": 0.001304274,
+        "verified": true
+      },
+      "spec": {
+        "count": 2048,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-65536-nested",
+        "size": 65536
+      }
+    },
+    {
+      "tag": "source-smb-r2-1048576-flat",
+      "result": {
+        "MB_s": 160.3287298696097,
+        "files_s": 152.90139185868236,
+        "scan_seconds": 0.119106594,
+        "stream_seconds": 1.674281685,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r2-1048576-flat",
+      "result": {
+        "MB_s": 232.58676267564363,
+        "files_s": 221.81202189983713,
+        "prepare_seconds": 0.128009927,
+        "stream_seconds": 1.154130411,
+        "sync_seconds": 0.000223587,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r2-1048576-flat",
+      "result": {
+        "MB_s": 931.33078236066,
+        "files_s": 888.1862472159004,
+        "scan_seconds": 0.003551299,
+        "stream_seconds": 0.288227836,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r2-1048576-flat",
+      "result": {
+        "MB_s": 3521.7564305777755,
+        "files_s": 3358.608656480575,
+        "prepare_seconds": 0.03716522,
+        "stream_seconds": 0.076222039,
+        "sync_seconds": 0.210012557,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r2-1048576-flat",
+      "result": {
+        "MB_s": 188.1563604898266,
+        "files_s": 179.43988846762332,
+        "scan_seconds": 0.08084691,
+        "stream_seconds": 1.426661609,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-1048576-flat",
+      "result": {
+        "MB_s": 199.59653350808324,
+        "files_s": 190.35008765037847,
+        "prepare_seconds": 0.355227117,
+        "stream_seconds": 1.344890371,
+        "sync_seconds": 0.000198668,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": false,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-1048576-flat",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-smb-r2-1048576-nested",
+      "result": {
+        "MB_s": 165.9664668314309,
+        "files_s": 158.2779568018254,
+        "scan_seconds": 0.086540686,
+        "stream_seconds": 1.617407788,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-smb-r2-1048576-nested",
+      "result": {
+        "MB_s": 231.15922552977275,
+        "files_s": 220.4506163881042,
+        "prepare_seconds": 0.119898514,
+        "stream_seconds": 1.16125781,
+        "sync_seconds": 0.000145743,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_smb/small-20261024/destination-smb-r2-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-local-r2-1048576-nested",
+      "result": {
+        "MB_s": 680.7364298085348,
+        "files_s": 649.2008493504857,
+        "scan_seconds": 0.003926492,
+        "stream_seconds": 0.394330969,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-local-r2-1048576-nested",
+      "result": {
+        "MB_s": 3465.440930150212,
+        "files_s": 3304.9020101072424,
+        "prepare_seconds": 0.015959416,
+        "stream_seconds": 0.077460693,
+        "sync_seconds": 0.209705288,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/home/ain/tapecpy-small-20261024/local/destination-local-r2-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "source-nfs-r2-1048576-nested",
+      "result": {
+        "MB_s": 187.0205171097262,
+        "files_s": 178.3566638085615,
+        "scan_seconds": 0.083449654,
+        "stream_seconds": 1.435326242,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "source",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/source-1048576-nested",
+        "size": 1048576
+      }
+    },
+    {
+      "tag": "destination-nfs-r2-1048576-nested",
+      "result": {
+        "MB_s": 200.57640180824018,
+        "files_s": 191.28456288169878,
+        "prepare_seconds": 0.355465941,
+        "stream_seconds": 1.338320229,
+        "sync_seconds": 0.00019109,
+        "verified": true
+      },
+      "spec": {
+        "count": 256,
+        "mode": "destination",
+        "nested": true,
+        "root": "/mnt/tapecpy_nfs/small-20261024/destination-nfs-r2-1048576-nested",
+        "size": 1048576
+      }
+    }
+  ],
+  "concurrency_raw": [
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.11671061799984273,
+      "MB_s": 350.9535010778128,
+      "files_s": 85682.00709907539,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.3053509119999944,
+      "MB_s": 134.14074885750054,
+      "files_s": 32749.206264038217,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.29522630599990407,
+      "MB_s": 138.74102397912097,
+      "files_s": 33872.32030740258,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 2.2638280770001984,
+      "MB_s": 18.093246751438894,
+      "files_s": 4417.296570175511,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.5731578319998789,
+      "MB_s": 71.46373601330926,
+      "files_s": 17447.20117512433,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.46105649000014637,
+      "MB_s": 88.83943917585239,
+      "files_s": 21689.316205042087,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 6.178075529999887,
+      "MB_s": 6.629896284223761,
+      "files_s": 1618.6270225155668,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 3.5300412070000675,
+      "MB_s": 11.603263984221025,
+      "files_s": 2832.828121147711,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 2.800913013999889,
+      "MB_s": 14.623802951133571,
+      "files_s": 3570.2643923665946,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.06107510300012109,
+      "MB_s": 670.6497081129571,
+      "files_s": 163732.83889476492,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.3103777280000486,
+      "MB_s": 131.9682319473438,
+      "files_s": 32218.806627769485,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.29412942599992675,
+      "MB_s": 139.25842292301007,
+      "files_s": 33998.63840893801,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 1.9156130239998674,
+      "MB_s": 21.382189140933107,
+      "files_s": 5220.261020735622,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.5688813879999088,
+      "MB_s": 72.00094934377879,
+      "files_s": 17578.356773383493,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.4793851949998498,
+      "MB_s": 85.44277217408192,
+      "files_s": 20860.05180031297,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 10.806242151000106,
+      "MB_s": 3.7904018277259497,
+      "files_s": 925.3910712221557,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 8.365837468000109,
+      "MB_s": 4.896102769946793,
+      "files_s": 1195.3375903190413,
+      "verified": true
+    },
+    {
+      "repeat": 0,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 6.1827574339999956,
+      "MB_s": 6.624875783538628,
+      "files_s": 1617.4013143404854,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.4450925209998786,
+      "MB_s": 92.02581051684572,
+      "files_s": 22467.238895714287,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.5826292570000078,
+      "MB_s": 70.30199652332162,
+      "files_s": 17163.573369951566,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 1.9620330499999454,
+      "MB_s": 20.87630481046236,
+      "files_s": 5096.754104116788,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 2.660045695000008,
+      "MB_s": 15.398231720977966,
+      "files_s": 3759.333916254386,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 3.64085325200017,
+      "MB_s": 11.25011011567079,
+      "files_s": 2746.6089149586887,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 6.420588106000196,
+      "MB_s": 6.37947791133368,
+      "files_s": 1557.4897244466993,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.27801528300005884,
+      "MB_s": 147.33003005446764,
+      "files_s": 35969.245618766516,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.20852599000022565,
+      "MB_s": 196.42635433576254,
+      "files_s": 47955.652914004524,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": false,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.06566136199990069,
+      "MB_s": 623.8067373634733,
+      "files_s": 152296.56673912922,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.420736037000097,
+      "MB_s": 97.35320105225632,
+      "files_s": 23767.87135064852,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.5479211140000189,
+      "MB_s": 74.75528676195273,
+      "files_s": 18250.802432117365,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 1.9233725999999933,
+      "MB_s": 21.29592570883049,
+      "files_s": 5199.200612507444,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 5.178732981999929,
+      "MB_s": 7.909270499631364,
+      "files_s": 1930.9742430740635,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 8.704324011000153,
+      "MB_s": 4.705707180504367,
+      "files_s": 1148.8542921153241,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 11.666626944999962,
+      "MB_s": 3.510869096363322,
+      "files_s": 857.1457754793266,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.36402093699985016,
+      "MB_s": 112.5210004061301,
+      "files_s": 27470.947364777858,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.22002227000007224,
+      "MB_s": 186.16297341167578,
+      "files_s": 45449.94468058491,
+      "verified": true
+    },
+    {
+      "repeat": 1,
+      "nested": true,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.0642998489997808,
+      "MB_s": 637.0154928379324,
+      "files_s": 155521.36055613583,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 6.186131527000043,
+      "MB_s": 6.621262386877103,
+      "files_s": 1616.5191374211677,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 3.3614400189999287,
+      "MB_s": 12.185253869913206,
+      "files_s": 2974.9154955842787,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 2.7781588520001606,
+      "MB_s": 14.743577376977735,
+      "files_s": 3599.5061955512047,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.06482564799989632,
+      "MB_s": 631.8486781661715,
+      "files_s": 154259.93119291295,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.2100814549999086,
+      "MB_s": 194.97199312532285,
+      "files_s": 47600.58425911202,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.30970784999999523,
+      "MB_s": 132.25367067706108,
+      "files_s": 32288.493817641865,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 1.9453930799998034,
+      "MB_s": 21.054870823332084,
+      "files_s": 5140.34932210256,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.543882591000056,
+      "MB_s": 75.31037153567539,
+      "files_s": 18386.321175702,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": false,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.48913579500003834,
+      "MB_s": 83.73952677087716,
+      "files_s": 20444.220403046183,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 1,
+      "seconds": 10.841615389000026,
+      "MB_s": 3.778034778983055,
+      "files_s": 922.3717722126598,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 4,
+      "seconds": 8.290383238999993,
+      "MB_s": 4.940664239418285,
+      "files_s": 1206.2168553267297,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "smb",
+      "workers": 16,
+      "seconds": 6.262008424999976,
+      "MB_s": 6.541032400479429,
+      "files_s": 1596.931738398298,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "local",
+      "workers": 1,
+      "seconds": 0.06354580200013515,
+      "MB_s": 644.5744441137573,
+      "files_s": 157366.80764496027,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "local",
+      "workers": 4,
+      "seconds": 0.2186024580000776,
+      "MB_s": 187.3720925863764,
+      "files_s": 45745.1397915958,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "local",
+      "workers": 16,
+      "seconds": 0.4499221529999886,
+      "MB_s": 91.0379711843196,
+      "files_s": 22226.067183671777,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 1,
+      "seconds": 1.948034104000044,
+      "MB_s": 21.026325933357004,
+      "files_s": 5133.380354823487,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 4,
+      "seconds": 0.5663316920001762,
+      "MB_s": 72.32510660905633,
+      "files_s": 17657.496730726645,
+      "verified": true
+    },
+    {
+      "repeat": 2,
+      "nested": true,
+      "protocol": "nfs",
+      "workers": 16,
+      "seconds": 0.5297284100001889,
+      "MB_s": 77.32264161551274,
+      "files_s": 18877.59805066229,
+      "verified": true
+    }
+  ],
+  "traces": {
+    "local": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 40.64    0.030490          17      1745           openat2\n 14.04    0.010531           3      2759           close\n 13.93    0.010451       10450         1           syncfs\n 12.51    0.009383           4      2024           read\n  7.54    0.005656           5      1011           write\n  6.83    0.005127           5      1016         2 openat\n  4.51    0.003387           3      1010           lseek\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.075025           7      9566         2 total\n",
+    "nfs": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 64.09    1.357427         777      1745           openat2\n 33.33    0.706006         255      2759           close\n  0.85    0.017920          17      1011           write\n  0.65    0.013868          13      1010           lseek\n  0.55    0.011575          11      1016         2 openat\n  0.51    0.010738           5      2024           read\n  0.02    0.000512         511         1           syncfs\n------ ----------- ----------- --------- --------- ----------------\n100.00    2.118046         221      9566         2 total\n",
+    "smb": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 50.99    0.662176         379      1745           openat2\n 27.39    0.355615         350      1016         2 openat\n 19.09    0.247925          89      2759           close\n  1.06    0.013825          13      1011           write\n  0.82    0.010650          10      1010           lseek\n  0.62    0.007992           3      2024           read\n  0.03    0.000380         379         1           syncfs\n------ ----------- ----------- --------- --------- ----------------\n100.00    1.298563         135      9566         2 total\n"
+  },
+  "diagnosis": "磁带机: /dev/nst0  (回绕设备 /dev/st0)\n  SCSI 设备:   /dev/sg0\n  厂商:        QUANTUM\n  型号:        ULTRIUM 5\n  固件版本:    3210\n  序列号:      HU1340YHGE\n只读有界诊断：完整扫描 index partition，定点读取 data index。\n一致性: Healthy\n普通写入安全: true\nLabel UUID: 820c0889-b80c-4636-904e-644cd3ffe26c\nP0 B5 76172173 bytes: index gen=9 uuid=820c0889-b80c-4636-904e-644cd3ffe26c self=p0b5 previous=Some(TapePos { partition: 1, startblock: 296524 })\nP1 B296524 76172178 bytes: index gen=9 uuid=820c0889-b80c-4636-904e-644cd3ffe26c self=p1b296524 previous=Some(TapePos { partition: 1, startblock: 243870 })\nP0 VCI: gen=9 block=5 uuid=820c0889-b80c-4636-904e-644cd3ffe26c vcr=0000000000000656\nP1 VCI: gen=9 block=296524 uuid=820c0889-b80c-4636-904e-644cd3ffe26c vcr=0000000000000656\n",
+  "health": "磁带机: /dev/sg0 (ULTRIUM 5)\n写入错误计数: corrected=0，uncorrected=0，processed=249\n  without-delay=0，with-delay=0，correction-runs=0\n读取错误计数: corrected=0，uncorrected=0，processed=2749\n  without-delay=340，with-delay=0，correction-runs=340\nTapeAlert: 无活动 flag\n写通道 diagnostic baseline: 16 个通道\n",
+  "raw_record_log": {
+    "remote_path": "/home/ain/tapecpy-small-20261024/record-results.log",
+    "sha256": "894bf77586172847e67f6d1ea33e60175b586d5524cbf6e068d1c7dc81f87115",
+    "bytes": 3759909
+  },
+  "record_telemetry": [
+    {
+      "bytes": 206569472,
+      "temperature": {
+        "current_celsius": 35,
+        "error": null,
+        "reference_celsius": null,
+        "sampled_unix_millis": 1792773397185,
+        "timestamp": "2026-10-23T16:36:37.185372651Z"
+      },
+      "worst_rate": 0.0
+    }
+  ],
+  "protocol_counter_raw": {
+    "smb-cifs-stats-before.txt": "Resources in use\nCIFS Session: 1\nShare (unique mount targets): 2\nSMB Request/Response Buffer: 1 Pool size: 5\nSMB Small Req/Resp Buffer: 1 Pool size: 30\nOperations (MIDs): 0\n\n0 session 0 share reconnects\nTotal vfs operations: 1988815 maximum at one time: 299\n\nMax requests in flight: 299\n1) \\\\192.168.10.239\\tapecpy-perf\nSMBs: 2549577 since 2026-10-23 16:15:13 UTC\nBytes read: 8722317312  Bytes written: 2661679104\nOpen files: 0 total (local), 0 open on server\nTreeConnects: 1 total 0 failed\nTreeDisconnects: 0 total 0 failed\nCreates: 893271 total 0 failed\nCloses: 893271 total 0 failed\nFlushes: 0 total 0 failed\nReads: 401472 total 0 failed\nWrites: 73824 total 0 failed\nLocks: 0 total 0 failed\nIOCTLs: 3 total 0 failed\nQueryDirectories: 2256 total 0 failed\nChangeNotifies: 0 total 0 failed\nQueryInfos: 285479 total 0 failed\nSetInfos: 0 total 0 failed\nOplockBreaks: 0 sent 0 failed\n",
+    "nfs-mountstats-before.txt": "device tmpfs mounted on /run with fstype tmpfs\ndevice /dev/nvme0n1p2 mounted on / with fstype ext4\ndevice devtmpfs mounted on /dev with fstype devtmpfs\ndevice tmpfs mounted on /dev/shm with fstype tmpfs\ndevice devpts mounted on /dev/pts with fstype devpts\ndevice sysfs mounted on /sys with fstype sysfs\ndevice securityfs mounted on /sys/kernel/security with fstype securityfs\ndevice cgroup2 mounted on /sys/fs/cgroup with fstype cgroup2\ndevice none mounted on /sys/fs/pstore with fstype pstore\ndevice efivarfs mounted on /sys/firmware/efi/efivars with fstype efivarfs\ndevice bpf mounted on /sys/fs/bpf with fstype bpf\ndevice configfs mounted on /sys/kernel/config with fstype configfs\ndevice proc mounted on /proc with fstype proc\ndevice systemd-1 mounted on /proc/sys/fs/binfmt_misc with fstype autofs\ndevice mqueue mounted on /dev/mqueue with fstype mqueue\ndevice debugfs mounted on /sys/kernel/debug with fstype debugfs\ndevice tracefs mounted on /sys/kernel/tracing with fstype tracefs\ndevice hugetlbfs mounted on /dev/hugepages with fstype hugetlbfs\ndevice none mounted on /run/credentials/systemd-journald.service with fstype tmpfs\ndevice fusectl mounted on /sys/fs/fuse/connections with fstype fusectl\ndevice tmpfs mounted on /tmp with fstype tmpfs\ndevice none mounted on /run/credentials/systemd-resolved.service with fstype tmpfs\ndevice /dev/nvme0n1p1 mounted on /boot/efi with fstype vfat\ndevice /dev/loop0 mounted on /snap/hwctl/123 with fstype squashfs\ndevice /dev/loop1 mounted on /snap/core24/1643 with fstype squashfs\ndevice /dev/loop2 mounted on /snap/hwctl/131 with fstype squashfs\ndevice /dev/loop3 mounted on /snap/snapd/27710 with fstype squashfs\ndevice none mounted on /run/credentials/systemd-networkd.service with fstype tmpfs\ndevice binfmt_misc mounted on /proc/sys/fs/binfmt_misc with fstype binfmt_misc\ndevice sunrpc mounted on /run/rpc_pipefs with fstype rpc_pipefs\ndevice none mounted on /run/credentials/getty@tty1.service with fstype tmpfs\ndevice tmpfs mounted on /run/user/1000 with fstype tmpfs\ndevice 192.168.10.239:/srv/tapecpy-perf mounted on /mnt/tapecpy_nfs with fstype nfs4 statvers=1.1\n\topts:\trw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,acregmin=3,acregmax=60,acdirmin=30,acdirmax=60,hard,fatal_neterrors=none,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.10.125,local_lock=none\n\tage:\t1443\n\timpl_id:\tname='Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64',domain='kernel.org',date='0,0'\n\tcaps:\tcaps=0xfffbfebf,wtmult=512,dtsize=1048576,bsize=0,namlen=255\n\tnfsv4:\tbm0=0xfdffbfff,bm1=0x40fdbe3e,bm2=0x762803,acl=0x3,sessions,pnfs=not configured,lease_time=90,lease_expired=0\n\tsec:\tflavor=1,pseudoflavor=1\n\tevents:\t67068 1707622 0 2 1393 521 3096672 98432 0 25120 0 196864 3003 0 642944 0 0 642944 0 0 98432 0 0 0 0 0 0 \n\tbytes:\t8722317312 3548905472 0 0 887226368 3548905472 216608 98432 \n\tRPC iostats version: 1.1  p/v: 100003/4 (nfs)\n\txprt:\ttcp 0 0 2 0 45 1507562 1507559 0 405274401 0 1027 147430347 373639475\n\tper-op statistics\n\t        NULL: 1 1 0 44 24 0 0 0 0\n\t        READ: 25120 25120 0 5928320 889838848 196 6780 7167 0\n\t       WRITE: 98432 98432 0 3572529152 11024384 779 79224 80419 0\n\t      COMMIT: 0 0 0 0 0 0 0 0 0\n\t        OPEN: 98432 98432 0 35041792 42522624 990 65288 66812 0\n\tOPEN_CONFIRM: 0 0 0 0 0 0 0 0 0\n\t OPEN_NOATTR: 496187 496187 0 144886604 181352936 4165 83100 89154 0\n\tOPEN_DOWNGRADE: 0 0 0 0 0 0 0 0 0\n\t       CLOSE: 0 0 0 0 0 0 0 0 0\n\t     SETATTR: 98432 98432 0 25986048 22048768 453 59928 61268 0\n\t      FSINFO: 1 1 0 184 172 0 0 0 0\n\t       RENEW: 0 0 0 0 0 0 0 0 0\n\t SETCLIENTID: 0 0 0 0 0 0 0 0 0\n\tSETCLIENTID_CONFIRM: 0 0 0 0 0 0 0 0 0\n\t        LOCK: 0 0 0 0 0 0 0 0 0\n\t       LOCKT: 0 0 0 0 0 0 0 0 0\n\t       LOCKU: 0 0 0 0 0 0 0 0 0\n\t      ACCESS: 3569 3569 0 768836 422824 12 1069 1116 0\n\t     GETATTR: 67069 67069 0 14761072 15379724 198 8694 9346 0\n\t      LOOKUP: 24869 24869 0 6126564 7580788 91 3667 3934 372\n\t LOOKUP_ROOT: 0 0 0 0 0 0 0 0 0\n\t      REMOVE: 0 0 0 0 0 0 0 0 0\n\t      RENAME: 0 0 0 0 0 0 0 0 0\n\t        LINK: 0 0 0 0 0 0 0 0 0\n\t     SYMLINK: 0 0 0 0 0 0 0 0 0\n\t      CREATE: 521 521 0 144196 179224 1 515 524 0\n\t    PATHCONF: 1 1 0 176 116 0 0 0 0\n\t      STATFS: 1 1 0 212 160 0 0 0 0\n\t    READLINK: 0 0 0 0 0 0 0 0 0\n\t     READDIR: 267 267 0 65148 7526468 1 180 186 0\n\t SERVER_CAPS: 2 2 0 368 424 0 0 0 0\n\t DELEGRETURN: 594622 594622 0 152960224 99900508 22203800 10720123 32990272 0\n\t      GETACL: 0 0 0 0 0 0 0 0 0\n\t      SETACL: 0 0 0 0 0 0 0 0 0\n\tFS_LOCATIONS: 0 0 0 0 0 0 0 0 0\n\tRELEASE_LOCKOWNER: 0 0 0 0 0 0 0 0 0\n\t     SECINFO: 0 0 0 0 0 0 0 0 0\n\tFSID_PRESENT: 0 0 0 0 0 0 0 0 0\n\t EXCHANGE_ID: 2 2 0 528 448 0 0 0 0\n\tCREATE_SESSION: 1 1 0 208 124 0 0 0 0\n\tDESTROY_SESSION: 0 0 0 0 0 0 0 0 0\n\t    SEQUENCE: 11 11 0 1364 880 0 7 8 0\n\tGET_LEASE_TIME: 0 0 0 0 0 0 0 0 0\n\tRECLAIM_COMPLETE: 1 1 0 132 88 0 9 9 0\n\t   LAYOUTGET: 0 0 0 0 0 0 0 0 0\n\tGETDEVICEINFO: 0 0 0 0 0 0 0 0 0\n\tLAYOUTCOMMIT: 0 0 0 0 0 0 0 0 0\n\tLAYOUTRETURN: 0 0 0 0 0 0 0 0 0\n\tSECINFO_NO_NAME: 0 0 0 0 0 0 0 0 0\n\tTEST_STATEID: 0 0 0 0 0 0 0 0 0\n\tFREE_STATEID: 0 0 0 0 0 0 0 0 0\n\tGETDEVICELIST: 0 0 0 0 0 0 0 0 0\n\tBIND_CONN_TO_SESSION: 0 0 0 0 0 0 0 0 0\n\tDESTROY_CLIENTID: 0 0 0 0 0 0 0 0 0\n\t        SEEK: 0 0 0 0 0 0 0 0 0\n\t    ALLOCATE: 0 0 0 0 0 0 0 0 0\n\t  DEALLOCATE: 0 0 0 0 0 0 0 0 0\n\t  ZERO_RANGE: 0 0 0 0 0 0 0 0 0\n\t LAYOUTSTATS: 0 0 0 0 0 0 0 0 0\n\t       CLONE: 0 0 0 0 0 0 0 0 0\n\t        COPY: 0 0 0 0 0 0 0 0 0\n\tOFFLOAD_CANCEL: 0 0 0 0 0 0 0 0 0\n\t     LOOKUPP: 0 0 0 0 0 0 0 0 0\n\t LAYOUTERROR: 0 0 0 0 0 0 0 0 0\n\t COPY_NOTIFY: 0 0 0 0 0 0 0 0 0\n\t    GETXATTR: 0 0 0 0 0 0 0 0 0\n\t    SETXATTR: 0 0 0 0 0 0 0 0 0\n\t  LISTXATTRS: 0 0 0 0 0 0 0 0 0\n\t REMOVEXATTR: 0 0 0 0 0 0 0 0 0\n\t   READ_PLUS: 0 0 0 0 0 0 0 0 0\n\tOFFLOAD_STATUS: 0 0 0 0 0 0 0 0 0\n\ndevice //192.168.10.239/tapecpy-perf mounted on /mnt/tapecpy_smb with fstype cifs\n",
+    "smb-cifs-stats-after.txt": "Resources in use\nCIFS Session: 1\nShare (unique mount targets): 2\nSMB Request/Response Buffer: 1 Pool size: 5\nSMB Small Req/Resp Buffer: 1 Pool size: 30\nOperations (MIDs): 0\n\n0 session 0 share reconnects\nTotal vfs operations: 1992565 maximum at one time: 299\n\nMax requests in flight: 299\n1) \\\\192.168.10.239\\tapecpy-perf\nSMBs: 2552597 since 2026-10-23 16:15:13 UTC\nBytes read: 8722317312  Bytes written: 2665775104\nOpen files: 2000 total (local), 2000 open on server\nTreeConnects: 1 total 0 failed\nTreeDisconnects: 0 total 0 failed\nCreates: 895278 total 0 failed\nCloses: 893278 total 0 failed\nFlushes: 0 total 0 failed\nReads: 401472 total 0 failed\nWrites: 74824 total 0 failed\nLocks: 0 total 0 failed\nIOCTLs: 3 total 0 failed\nQueryDirectories: 2256 total 0 failed\nChangeNotifies: 0 total 0 failed\nQueryInfos: 285485 total 0 failed\nSetInfos: 0 total 0 failed\nOplockBreaks: 0 sent 0 failed\n",
+    "nfs-mountstats-after.txt": "device tmpfs mounted on /run with fstype tmpfs\ndevice /dev/nvme0n1p2 mounted on / with fstype ext4\ndevice devtmpfs mounted on /dev with fstype devtmpfs\ndevice tmpfs mounted on /dev/shm with fstype tmpfs\ndevice devpts mounted on /dev/pts with fstype devpts\ndevice sysfs mounted on /sys with fstype sysfs\ndevice securityfs mounted on /sys/kernel/security with fstype securityfs\ndevice cgroup2 mounted on /sys/fs/cgroup with fstype cgroup2\ndevice none mounted on /sys/fs/pstore with fstype pstore\ndevice efivarfs mounted on /sys/firmware/efi/efivars with fstype efivarfs\ndevice bpf mounted on /sys/fs/bpf with fstype bpf\ndevice configfs mounted on /sys/kernel/config with fstype configfs\ndevice proc mounted on /proc with fstype proc\ndevice systemd-1 mounted on /proc/sys/fs/binfmt_misc with fstype autofs\ndevice mqueue mounted on /dev/mqueue with fstype mqueue\ndevice debugfs mounted on /sys/kernel/debug with fstype debugfs\ndevice tracefs mounted on /sys/kernel/tracing with fstype tracefs\ndevice hugetlbfs mounted on /dev/hugepages with fstype hugetlbfs\ndevice none mounted on /run/credentials/systemd-journald.service with fstype tmpfs\ndevice fusectl mounted on /sys/fs/fuse/connections with fstype fusectl\ndevice tmpfs mounted on /tmp with fstype tmpfs\ndevice none mounted on /run/credentials/systemd-resolved.service with fstype tmpfs\ndevice /dev/nvme0n1p1 mounted on /boot/efi with fstype vfat\ndevice /dev/loop0 mounted on /snap/hwctl/123 with fstype squashfs\ndevice /dev/loop1 mounted on /snap/core24/1643 with fstype squashfs\ndevice /dev/loop2 mounted on /snap/hwctl/131 with fstype squashfs\ndevice /dev/loop3 mounted on /snap/snapd/27710 with fstype squashfs\ndevice none mounted on /run/credentials/systemd-networkd.service with fstype tmpfs\ndevice binfmt_misc mounted on /proc/sys/fs/binfmt_misc with fstype binfmt_misc\ndevice sunrpc mounted on /run/rpc_pipefs with fstype rpc_pipefs\ndevice none mounted on /run/credentials/getty@tty1.service with fstype tmpfs\ndevice tmpfs mounted on /run/user/1000 with fstype tmpfs\ndevice 192.168.10.239:/srv/tapecpy-perf mounted on /mnt/tapecpy_nfs with fstype nfs4 statvers=1.1\n\topts:\trw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,acregmin=3,acregmax=60,acdirmin=30,acdirmax=60,hard,fatal_neterrors=none,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.10.125,local_lock=none\n\tage:\t1445\n\timpl_id:\tname='Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64',domain='kernel.org',date='0,0'\n\tcaps:\tcaps=0xfffbfebf,wtmult=512,dtsize=1048576,bsize=0,namlen=255\n\tnfsv4:\tbm0=0xfdffbfff,bm1=0x40fdbe3e,bm2=0x762803,acl=0x3,sessions,pnfs=not configured,lease_time=90,lease_expired=0\n\tsec:\tflavor=1,pseudoflavor=1\n\tevents:\t68068 1709625 0 2 1394 522 3105166 99432 0 25120 0 198864 3003 0 645688 0 0 645688 0 0 99432 0 0 0 0 0 0 \n\tbytes:\t8726413312 3553001472 0 0 887226368 3553001472 216608 99432 \n\tRPC iostats version: 1.1  p/v: 100003/4 (nfs)\n\txprt:\ttcp 0 0 2 0 0 1511564 1511561 0 405290409 0 1027 147430347 373639475\n\tper-op statistics\n\t        NULL: 1 1 0 44 24 0 0 0 0\n\t        READ: 25120 25120 0 5928320 889838848 196 6780 7167 0\n\t       WRITE: 99432 99432 0 3576865152 11136384 785 79870 81075 0\n\t      COMMIT: 0 0 0 0 0 0 0 0 0\n\t        OPEN: 99432 99432 0 35397792 42954624 997 65946 67482 0\n\tOPEN_CONFIRM: 0 0 0 0 0 0 0 0 0\n\t OPEN_NOATTR: 496187 496187 0 144886604 181352936 4165 83100 89154 0\n\tOPEN_DOWNGRADE: 0 0 0 0 0 0 0 0 0\n\t       CLOSE: 0 0 0 0 0 0 0 0 0\n\t     SETATTR: 99432 99432 0 26250048 22272768 457 60516 61869 0\n\t      FSINFO: 1 1 0 184 172 0 0 0 0\n\t       RENEW: 0 0 0 0 0 0 0 0 0\n\t SETCLIENTID: 0 0 0 0 0 0 0 0 0\n\tSETCLIENTID_CONFIRM: 0 0 0 0 0 0 0 0 0\n\t        LOCK: 0 0 0 0 0 0 0 0 0\n\t       LOCKT: 0 0 0 0 0 0 0 0 0\n\t       LOCKU: 0 0 0 0 0 0 0 0 0\n\t      ACCESS: 3570 3570 0 769064 422992 12 1069 1116 0\n\t     GETATTR: 68069 68069 0 14981072 15539724 199 8816 9472 0\n\t      LOOKUP: 24869 24869 0 6126564 7580788 91 3667 3934 372\n\t LOOKUP_ROOT: 0 0 0 0 0 0 0 0 0\n\t      REMOVE: 0 0 0 0 0 0 0 0 0\n\t      RENAME: 0 0 0 0 0 0 0 0 0\n\t        LINK: 0 0 0 0 0 0 0 0 0\n\t     SYMLINK: 0 0 0 0 0 0 0 0 0\n\t      CREATE: 522 522 0 144484 179568 1 524 533 0\n\t    PATHCONF: 1 1 0 176 116 0 0 0 0\n\t      STATFS: 1 1 0 212 160 0 0 0 0\n\t    READLINK: 0 0 0 0 0 0 0 0 0\n\t     READDIR: 267 267 0 65148 7526468 1 180 186 0\n\t SERVER_CAPS: 2 2 0 368 424 0 0 0 0\n\t DELEGRETURN: 594622 594622 0 152960224 99900508 22203800 10720123 32990272 0\n\t      GETACL: 0 0 0 0 0 0 0 0 0\n\t      SETACL: 0 0 0 0 0 0 0 0 0\n\tFS_LOCATIONS: 0 0 0 0 0 0 0 0 0\n\tRELEASE_LOCKOWNER: 0 0 0 0 0 0 0 0 0\n\t     SECINFO: 0 0 0 0 0 0 0 0 0\n\tFSID_PRESENT: 0 0 0 0 0 0 0 0 0\n\t EXCHANGE_ID: 2 2 0 528 448 0 0 0 0\n\tCREATE_SESSION: 1 1 0 208 124 0 0 0 0\n\tDESTROY_SESSION: 0 0 0 0 0 0 0 0 0\n\t    SEQUENCE: 11 11 0 1364 880 0 7 8 0\n\tGET_LEASE_TIME: 0 0 0 0 0 0 0 0 0\n\tRECLAIM_COMPLETE: 1 1 0 132 88 0 9 9 0\n\t   LAYOUTGET: 0 0 0 0 0 0 0 0 0\n\tGETDEVICEINFO: 0 0 0 0 0 0 0 0 0\n\tLAYOUTCOMMIT: 0 0 0 0 0 0 0 0 0\n\tLAYOUTRETURN: 0 0 0 0 0 0 0 0 0\n\tSECINFO_NO_NAME: 0 0 0 0 0 0 0 0 0\n\tTEST_STATEID: 0 0 0 0 0 0 0 0 0\n\tFREE_STATEID: 0 0 0 0 0 0 0 0 0\n\tGETDEVICELIST: 0 0 0 0 0 0 0 0 0\n\tBIND_CONN_TO_SESSION: 0 0 0 0 0 0 0 0 0\n\tDESTROY_CLIENTID: 0 0 0 0 0 0 0 0 0\n\t        SEEK: 0 0 0 0 0 0 0 0 0\n\t    ALLOCATE: 0 0 0 0 0 0 0 0 0\n\t  DEALLOCATE: 0 0 0 0 0 0 0 0 0\n\t  ZERO_RANGE: 0 0 0 0 0 0 0 0 0\n\t LAYOUTSTATS: 0 0 0 0 0 0 0 0 0\n\t       CLONE: 0 0 0 0 0 0 0 0 0\n\t        COPY: 0 0 0 0 0 0 0 0 0\n\tOFFLOAD_CANCEL: 0 0 0 0 0 0 0 0 0\n\t     LOOKUPP: 0 0 0 0 0 0 0 0 0\n\t LAYOUTERROR: 0 0 0 0 0 0 0 0 0\n\t COPY_NOTIFY: 0 0 0 0 0 0 0 0 0\n\t    GETXATTR: 0 0 0 0 0 0 0 0 0\n\t    SETXATTR: 0 0 0 0 0 0 0 0 0\n\t  LISTXATTRS: 0 0 0 0 0 0 0 0 0\n\t REMOVEXATTR: 0 0 0 0 0 0 0 0 0\n\t   READ_PLUS: 0 0 0 0 0 0 0 0 0\n\tOFFLOAD_STATUS: 0 0 0 0 0 0 0 0 0\n\ndevice //192.168.10.239/tapecpy-perf mounted on /mnt/tapecpy_smb with fstype cifs\n"
+  },
+  "test_harness_incident": "Initial SMB destination collided with NFS alias of same backend; create-new refused, no overwrite. Protocol-specific new names fixed it; retained failed log; completed tags were not rerun.",
+  "host_address": "ain@192.168.10.125",
+  "host": [
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1258.4683923496427,
+        "files_s": 307243.259850987,
+        "prepare_seconds": 0.104815587,
+        "stream_seconds": 0.0325475,
+        "sync_seconds": 0.044576937,
+        "total_MB_s": 223.27582561728474
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1248.9935402090694,
+        "files_s": 304930.0635276048,
+        "prepare_seconds": 0.076700665,
+        "stream_seconds": 0.032794405,
+        "sync_seconds": 0.044113439,
+        "total_MB_s": 263.7676201084791
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3520.519108831417,
+        "files_s": 53718.85847215907,
+        "prepare_seconds": 0.033005711,
+        "stream_seconds": 0.038124414,
+        "sync_seconds": 0.103758742,
+        "total_MB_s": 764.6449055024015
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3459.968502462543,
+        "files_s": 52794.929541969956,
+        "prepare_seconds": 0.023517851,
+        "stream_seconds": 0.038791604,
+        "sync_seconds": 0.102761215,
+        "total_MB_s": 816.832521814155
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3494.4822266888586,
+        "files_s": 3332.5979487312875,
+        "prepare_seconds": 0.021413202,
+        "stream_seconds": 0.076816947,
+        "sync_seconds": 0.210012557,
+        "total_MB_s": 874.4957446073714
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "local",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3663.395257370429,
+        "files_s": 3493.685967798642,
+        "prepare_seconds": 0.015959416,
+        "stream_seconds": 0.073275046,
+        "sync_seconds": 0.20822017,
+        "total_MB_s": 899.906620871314
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 4.4735015700412335,
+        "files_s": 1092.163469248348,
+        "prepare_seconds": 13.471379946,
+        "stream_seconds": 9.15613851,
+        "sync_seconds": 0.005166691,
+        "total_MB_s": 1.8097720060153497
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 4.4633284923556,
+        "files_s": 1089.679807704004,
+        "prepare_seconds": 13.431720584,
+        "stream_seconds": 9.177007713,
+        "sync_seconds": 0.005150919,
+        "total_MB_s": 1.812319027669568
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 62.339067083812715,
+        "files_s": 951.2186749849352,
+        "prepare_seconds": 2.760301687,
+        "stream_seconds": 2.153027536,
+        "sync_seconds": 0.0013012,
+        "total_MB_s": 27.309801187546828
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 64.04579464638849,
+        "files_s": 977.2612708494338,
+        "prepare_seconds": 2.835341818,
+        "stream_seconds": 2.095652474,
+        "sync_seconds": 0.001287626,
+        "total_MB_s": 26.95170204181718
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 200.5858855418179,
+        "files_s": 191.2936072748355,
+        "prepare_seconds": 0.355227117,
+        "stream_seconds": 1.3382569530000001,
+        "sync_seconds": 0.000189392,
+        "total_MB_s": 158.02277650901908
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "nfs",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 200.57640180824018,
+        "files_s": 191.28456288169878,
+        "prepare_seconds": 0.355465941,
+        "stream_seconds": 1.338320229,
+        "sync_seconds": 0.00019109,
+        "total_MB_s": 158.46461598900095
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3.5412604440823574,
+        "files_s": 864.5655381060443,
+        "prepare_seconds": 27.052099864,
+        "stream_seconds": 11.566503127,
+        "sync_seconds": 0.004124301,
+        "total_MB_s": 1.0591730719068677
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3.365534041346421,
+        "files_s": 821.6635843130911,
+        "prepare_seconds": 4.943838229,
+        "stream_seconds": 12.170431051,
+        "sync_seconds": 0.004095796,
+        "total_MB_s": 2.393635814420567
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 53.94042924401477,
+        "files_s": 823.0656317751277,
+        "prepare_seconds": 1.940852162,
+        "stream_seconds": 2.488258434,
+        "sync_seconds": 0.00094251,
+        "total_MB_s": 30.29674316034812
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 118.75271762479403,
+        "files_s": 1812.0226688353582,
+        "prepare_seconds": 0.916732524,
+        "stream_seconds": 1.130228686,
+        "sync_seconds": 0.001047082,
+        "total_MB_s": 65.39540830202749
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 231.44442512767202,
+        "files_s": 220.72260391967012,
+        "prepare_seconds": 0.128143417,
+        "stream_seconds": 1.159826839,
+        "sync_seconds": 0.000216589,
+        "total_MB_s": 208.38239191924058
+      }
+    },
+    {
+      "mode": "destination",
+      "protocol": "smb",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 232.89269905927932,
+        "files_s": 222.1037855713647,
+        "prepare_seconds": 0.120245611,
+        "stream_seconds": 1.152614303,
+        "sync_seconds": 0.000155031,
+        "total_MB_s": 210.8547157156625
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 201.37165066795288,
+        "files_s": 49163.00065135568,
+        "scan_seconds": 0.032668835,
+        "stream_seconds": 0.203404997
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 208.69225773479565,
+        "files_s": 50950.2582360341,
+        "scan_seconds": 0.02996081,
+        "stream_seconds": 0.196269859
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1118.3448149900403,
+        "files_s": 17064.587631073613,
+        "scan_seconds": 0.009130715,
+        "stream_seconds": 0.12001462
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1177.6801734853518,
+        "files_s": 17969.97335030139,
+        "scan_seconds": 0.011958339,
+        "stream_seconds": 0.113967893
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1513.595590555944,
+        "files_s": 1443.4772401389541,
+        "scan_seconds": 0.001737126,
+        "stream_seconds": 0.177349523
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "local",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1552.116880935835,
+        "files_s": 1480.2140054090835,
+        "scan_seconds": 0.000750474,
+        "stream_seconds": 0.172947965
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 18.562195654255916,
+        "files_s": 4531.786048402323,
+        "scan_seconds": 3.242563048,
+        "stream_seconds": 2.206635506
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 18.63110373351749,
+        "files_s": 4548.6093099407935,
+        "scan_seconds": 1.831796472,
+        "stream_seconds": 2.198474153
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 991.5090461698809,
+        "files_s": 15129.227389066786,
+        "scan_seconds": 0.591867307,
+        "stream_seconds": 0.135367124
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 496.5060596756747,
+        "files_s": 7576.081232844157,
+        "scan_seconds": 0.534583512,
+        "stream_seconds": 0.270324451
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1412.1177790552729,
+        "files_s": 1346.7004576256493,
+        "scan_seconds": 0.044135782,
+        "stream_seconds": 0.19009424
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "nfs",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 1488.4553732049799,
+        "files_s": 1419.501660542469,
+        "scan_seconds": 0.083058531,
+        "stream_seconds": 0.180344981
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 4096,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 6.159379784693171,
+        "files_s": 1503.7548302473563,
+        "scan_seconds": 3.789053567,
+        "stream_seconds": 6.650020202
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 4096,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 3.460067138426412,
+        "files_s": 844.7429537173857,
+        "scan_seconds": 3.845814527,
+        "stream_seconds": 11.837920584
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 65536,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 75.68788030797278,
+        "files_s": 1154.905400207104,
+        "scan_seconds": 0.666783121,
+        "stream_seconds": 1.773305415
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 65536,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 72.99473686855943,
+        "files_s": 1113.8112925500402,
+        "scan_seconds": 0.719164821,
+        "stream_seconds": 1.8387315819999999
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 1048576,
+      "nested": false,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 163.92649393753578,
+        "files_s": 156.33248704675273,
+        "scan_seconds": 0.115156939,
+        "stream_seconds": 1.6375355169999999
+      }
+    },
+    {
+      "mode": "source",
+      "protocol": "smb",
+      "size": 1048576,
+      "nested": true,
+      "repeats": 3,
+      "medians": {
+        "MB_s": 164.3668977336531,
+        "files_s": 156.75248883595762,
+        "scan_seconds": 0.086540686,
+        "stream_seconds": 1.633147913
+      }
+    }
+  ]
+}
