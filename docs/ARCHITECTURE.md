@@ -1848,3 +1848,25 @@ volume 显示数据分区余量。容量估算依然是 payload 对 MAM 剩余�
 
 Quantum LTO-5 PERF02 实测 index p0 36,476MiB、data p1 1,279,001MiB，100GiB
 payload 预检为 Normal。未装载时容量为 Unknown，正常 LOAD 后才取得上述读数。
+
+## 2026-10-25 写后校验读取与 SHA 重叠
+
+Application 层新增verify_pipeline。唯一设备owner继续通过ExtentReadCursor执行定位/READ并保留跨文件连续位置与共享record缓存；worker只计算有序SHA256，不持有设备。整个校验批次复用一个worker，每个文件的Finish屏障检查实际字节数和摘要，随后重置hash状态；空文件也经过屏障。全部通过后才发布验证完成。
+
+固定32个buffer令牌限制在途payload和队列消息，缓冲懒分配、所有权move传递并回收，沿现有1MiB record上限最多约32MiB，另加cursor最多一条record缓存。不是另起512MiB恢复管线。源写入SHA、索引/VCI提交语义和磁带命令编码均不变。
+
+等待buffer或文件屏障时每100ms检查取消；每次提交前及worker处理消息前检查token。SCSI命令仍需等待既有调用返回，不能并发中断。设备读取错误保留原错误；摘要/长度错误或worker退出禁止报告通过。退出关闭输入并join worker，不遗留后台哈希线程。详细真机结果见VERIFY_PIPELINE_RESULTS_2026-10-25.md。
+
+## 2026-10-25 SHA1 只读审计共享管线
+
+VerifyPipeline的worker增加SHA1/SHA256状态选择，写后完整校验默认仍为SHA256。SHA1审计通过同一个ExtentReadCursor和32个buffer令牌处理已有卷；字节顺序、长度/摘要屏障、取消与线程回收机制共享。Application的audit_sha1_volume一次识别卷后持有唯一lease/session，按文件首extent物理位置排序，跨文件保留cursor和worker，不经stdout/Python传递payload。
+
+按用户要求不以UUID/generation作固定门槛；恢复时仅验证已通过记录的文件路径、长度与当前索引SHA1相符。无唯一有效SHA1、symlink、稀疏/乱序extent在读取前明确拒绝，不静默跳过并宣称通过。完整payload摘要不匹配保留错误并继续其他文件，I/O错误或取消立即停止。整个审计仅READ/定位及卷识别，不更新带上摘要、index或VCI。
+
+## 2026-10-26 管线提交前复查
+
+摘要不匹配改为结构化VerifyError，包含实际摘要，不再根据设备错误文本决定是否继续下一个文件。SHA1事件记录实际摘要与当前批次文件总数；恢复记录仍只核对路径/长度/摘要，不引入UUID/generation门槛。重复路径在设备数据读取前拒绝。
+
+部分record切片回收后，在下一条READ前用reserve_exact恢复1MiB容量，避免Vec几何扩容突破单record分配预算。退出/worker失败后再次请求buffer或提交消息返回错误，不使用已被取走的thread handle。写后worker创建失败也保留“已提交但校验失败”上下文。
+
+审计示例的日志/进度持久化错误会请求取消、回收worker并返回失败；最终统计使用实际批次文件数，不用外部库存清单推断是否全部结束。提交前检查与限制见PIPELINE_CODE_REVIEW_2026-10-26.md。

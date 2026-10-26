@@ -1,0 +1,160 @@
+{
+  "results": [
+    {
+      "MB_s": 140.96854332370685,
+      "bytes": 93362483200,
+      "cpu_seconds": 106.80845013199999,
+      "max_read_gap_seconds": 0.000113099,
+      "mode": "read",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 0.2472948969999138,
+      "read_gaps_over_1ms": 0,
+      "read_io_seconds": 661.9711523830215,
+      "stream_seconds": 662.293026506,
+      "verified": null,
+      "wall_seconds": 722.155745973
+    },
+    {
+      "MB_s": 115.84298706168913,
+      "bytes": 93362483200,
+      "cpu_seconds": 589.729010463,
+      "max_read_gap_seconds": 0.010904718,
+      "mode": "serial",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 546.5288517869986,
+      "read_gaps_over_1ms": 178074,
+      "read_io_seconds": 259.3745181680028,
+      "stream_seconds": 805.939880938,
+      "verified": true,
+      "wall_seconds": 848.863042206
+    },
+    {
+      "MB_s": 140.99910107304189,
+      "bytes": 93362483200,
+      "cpu_seconds": 541.208080006,
+      "max_read_gap_seconds": 6.9656e-05,
+      "mode": "pipeline",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 0.4679583599999983,
+      "read_gaps_over_1ms": 0,
+      "read_io_seconds": 661.6379118199987,
+      "stream_seconds": 662.149492369,
+      "verified": true,
+      "wall_seconds": 704.426955903
+    },
+    {
+      "MB_s": 140.93605449405916,
+      "bytes": 93362483200,
+      "cpu_seconds": 543.1277450770001,
+      "max_read_gap_seconds": 7.5666e-05,
+      "mode": "pipeline",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 0.423604319,
+      "read_gaps_over_1ms": 0,
+      "read_io_seconds": 661.984436776001,
+      "stream_seconds": 662.445699471,
+      "verified": true,
+      "wall_seconds": 705.495806367
+    },
+    {
+      "MB_s": 116.5605898507297,
+      "bytes": 93362483200,
+      "cpu_seconds": 585.1888564420001,
+      "max_read_gap_seconds": 0.341034532,
+      "mode": "serial",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 546.4460846270109,
+      "read_gaps_over_1ms": 178074,
+      "read_io_seconds": 254.51434629600175,
+      "stream_seconds": 800.978129225,
+      "verified": true,
+      "wall_seconds": 844.051820969
+    },
+    {
+      "MB_s": 141.02987268452614,
+      "bytes": 93362483200,
+      "cpu_seconds": 104.8642508820003,
+      "max_read_gap_seconds": 0.000103633,
+      "mode": "read",
+      "pool_wait_count": 0,
+      "pool_wait_seconds": 0.0,
+      "read_calls": 178075,
+      "read_gap_seconds": 0.2340513039999807,
+      "read_gaps_over_1ms": 0,
+      "read_io_seconds": 661.7167282559979,
+      "stream_seconds": 662.005016546,
+      "verified": null,
+      "wall_seconds": 704.10772002
+    }
+  ],
+  "stable_windows": [
+    {
+      "mode": "read",
+      "samples": 620,
+      "stable_payload_MB_s": 140.77411303760317
+    },
+    {
+      "mode": "serial",
+      "samples": 755,
+      "stable_payload_MB_s": 115.77157166086775
+    },
+    {
+      "mode": "pipeline",
+      "samples": 616,
+      "stable_payload_MB_s": 140.80463229999077
+    },
+    {
+      "mode": "pipeline",
+      "samples": 616,
+      "stable_payload_MB_s": 140.73939909752136
+    },
+    {
+      "mode": "serial",
+      "samples": 750,
+      "stable_payload_MB_s": 116.48616712371243
+    },
+    {
+      "mode": "read",
+      "samples": 620,
+      "stable_payload_MB_s": 140.8346574291212
+    }
+  ],
+  "means_MB_s": {
+    "read": 140.9992080041165,
+    "serial": 116.20178845620941,
+    "pipeline": 140.96757778355052
+  },
+  "pipeline_vs_serial_percent": 21.312743681801493,
+  "pipeline_vs_read_percent": -0.02243290654869723,
+  "status": {
+    "status": "completed",
+    "started_unix": 1793012751.556911,
+    "pid": 1892,
+    "spec": {
+      "path": "/tape01/00.tar",
+      "bytes": 93362483200,
+      "sha256": "e6f668f4cc5249b6e759eba4c6314355420de56179769d15d6a8068d31e99ddf",
+      "modes": [
+        "read",
+        "serial",
+        "pipeline",
+        "pipeline",
+        "serial",
+        "read"
+      ]
+    },
+    "returncode": 0,
+    "finished_unix": 1793017281.2742336
+  },
+  "health_after": "磁带机: /dev/sg0 (ULTRIUM 5)\n写入错误计数: corrected=0，uncorrected=0，processed=0\n  without-delay=0，with-delay=0，correction-runs=0\n读取错误计数: corrected=0，uncorrected=0，processed=227305\n  without-delay=158870，with-delay=0，correction-runs=158870\nTapeAlert: 无活动 flag\n写通道 diagnostic baseline: 16 个通道\n"
+}

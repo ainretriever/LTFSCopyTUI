@@ -31,12 +31,15 @@ macro_rules! restore_probe {
 }
 
 mod read_pipeline;
+mod sha1_audit;
+mod verify_pipeline;
 #[cfg(test)]
 use read_pipeline::{
     READ_BATCH_BYTES, READ_BATCH_ENTRIES, ReadBatchProducer, ReadPipelineMetrics, sync_read_output,
     write_read_pipeline,
 };
 use read_pipeline::{ReadDestinationPipeline, ReadOutputFiles, ReadPipelineMessage};
+pub use sha1_audit::{Sha1AuditEvent, audit_sha1_volume};
 
 /// 发现当前系统上的全部磁带机。
 pub fn discover_drives() -> Result<Vec<TapeDrive>, device::Error> {
@@ -6280,16 +6283,20 @@ fn write_with_observer_inner(
         let generation = index.generation;
         let mut entries = planned_write_entries(&mut index, &plan.files)?;
         let mut cursor = ExtentReadCursor::default();
-        let mut buffer = Vec::new();
+        let mut verifier = verify_pipeline::VerifyPipeline::spawn(
+            options.cancellation.clone().unwrap_or_default(),
+        ).map_err(|error| format!("写入已提交（index generation {generation}、MAM VCI 已更新），但写后校验失败：{error}"))?;
         for hash in &hashes {
             progress.emit(WritePhase::Verifying, Some(&hash.path));
             let file = entries.remove(&hash.path).expect("已解析校验文件条目");
-            verify_file_hash(&mut session, file, hash, &mut cursor, &mut buffer).map_err(|e| {
-                format!(
-                    "写入已提交（index generation {}、MAM VCI 已更新），但写后校验失败：{e}",
-                    generation
-                )
-            })?;
+            verify_file_hash(&mut session, file, hash, &mut cursor, &mut verifier).map_err(
+                |e| {
+                    format!(
+                        "写入已提交（index generation {}、MAM VCI 已更新），但写后校验失败：{e}",
+                        generation
+                    )
+                },
+            )?;
         }
     }
 
@@ -6344,45 +6351,57 @@ fn verify_file_hash(
     file: &FileEntry,
     expected: &FileHash,
     cursor: &mut ExtentReadCursor,
-    reusable_buffer: &mut Vec<u8>,
+    verifier: &mut verify_pipeline::VerifyPipeline,
 ) -> Result<(), String> {
-    let mut hasher = Sha256::new();
+    verify_file_hash_with_progress(
+        session,
+        file,
+        (&expected.path, &expected.sha256),
+        cursor,
+        verifier,
+        &mut |_| {},
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn verify_file_hash_with_progress(
+    session: &mut impl ExtentTape,
+    file: &FileEntry,
+    expected: (&str, &str),
+    cursor: &mut ExtentReadCursor,
+    verifier: &mut verify_pipeline::VerifyPipeline,
+    observer: &mut dyn FnMut(u64),
+) -> Result<(), verify_pipeline::VerifyError> {
     let mut bytes = 0u64;
     for extent in &file.extents {
         let mut logical_block = extent.start_block;
         let mut remaining = extent.byte_count;
         let mut offset = extent.byte_offset;
         while remaining > 0 {
+            let mut buffer = verifier.buffer()?;
+            // Partial-record slices can return with a smaller allocation. Reserve
+            // exactly before the device's resize, avoiding geometric growth >1MiB.
+            if buffer.capacity() < crate::device::tape::READ_BUF_LEN {
+                buffer
+                    .reserve_exact(crate::device::tape::READ_BUF_LEN.saturating_sub(buffer.len()));
+            }
             let buf = cursor.chunk(
                 session,
                 extent.partition,
                 logical_block,
                 offset,
                 remaining,
-                std::mem::take(reusable_buffer),
+                buffer,
             )?;
-            hasher.update(&buf);
-            bytes += buf.len() as u64;
             remaining -= buf.len() as u64;
+            bytes += buf.len() as u64;
             logical_block += 1;
             offset = 0;
-            *reusable_buffer = buf;
+            verifier.submit(buf)?;
+            observer(bytes);
         }
     }
-    if bytes != file.length {
-        return Err(format!(
-            "{} 长度不匹配：index {} 字节，回读 {} 字节",
-            expected.path, file.length, bytes
-        ));
-    }
-    let actual = format!("{:x}", hasher.finalize());
-    if actual != expected.sha256 {
-        return Err(format!(
-            "{} SHA-256 不匹配：期望 {}，实际 {}",
-            expected.path, expected.sha256, actual
-        ));
-    }
-    Ok(())
+    verifier.finish_file_checked(expected.0, file.length, expected.1)
 }
 
 fn validate_write_vci(
@@ -7947,7 +7966,8 @@ mod tests {
             reads: 0,
         };
         let mut cursor = ExtentReadCursor::default();
-        let mut buffer = Vec::new();
+        let mut verifier =
+            verify_pipeline::VerifyPipeline::spawn(CancellationToken::default()).unwrap();
         for (path, partition, block, offset, payload) in [
             ("/a", 1, 10, 2, &b"cde"[..]),
             ("/b", 1, 10, 5, &b"fghABCD"[..]),
@@ -7968,7 +7988,7 @@ mod tests {
                 path: path.into(),
                 sha256: format!("{:x}", Sha256::digest(payload)),
             };
-            verify_file_hash(&mut tape, &file, &hash, &mut cursor, &mut buffer).unwrap();
+            verify_file_hash(&mut tape, &file, &hash, &mut cursor, &mut verifier).unwrap();
         }
         assert_eq!(tape.locates, 2);
         assert_eq!(tape.reads, 3);

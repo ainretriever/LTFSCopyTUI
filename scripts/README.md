@@ -56,3 +56,24 @@ TAPECPY_RESTORE_SPEC='{"root":"/tmp/tapecpy-restore-host-new","size":1048576,"co
 ## 构建和计时边界
 
 分阶段计时、SG_IO跟踪、伪随机夹具和实验开关均通过`cfg(test)`隔离；正式release不包含这些测试入口。测试二进制和正式二进制是不同构建，报告SHA必须按用途区分。历史脚本与数据不能假定新版本仍有相同事件数量、同步策略或字段含义，比较前先阅读对应报告的限制说明。
+
+## 写后校验只读 AB/BA（2026-10-25）
+
+`app::verify_pipeline::hardware::verify_ab`是显式ignored测试。仅在独占lease后读取已有LTFS文件，顺序为serial/pipeline/pipeline/serial，不写磁带。使用当前release测试构建，`TAPECPY_VERIFY_AB`需提供`path`、`bytes`和该前缀的独立`sha256`；要求单extent，大小不得超过文件与extent长度。命令示例（自行替换已核对的夹具与摘要）：
+
+```sh
+TAPECPY_VERIFY_AB='{"path":"/verified-fixture.bin","bytes":4294967296,"sha256":"EXPECTED_PREFIX_SHA256"}' \
+  cargo test --release --lib app::verify_pipeline::hardware::verify_ab -- --ignored --exact --nocapture
+```
+
+每轮输出`VERIFY_AB_RESULT`，stream_seconds从首次READ开始直至哈希完成，排除首次LOCATE；wall_seconds另含该轮LOCATE，不含测试开始时的卷识别。read_io_seconds为READ调用累计耗时，不是可独立当作持续带速的指标。串行路径仅保留在cfg(test)中；正式release没有切换或跳过校验的开关。设备、文件、二进制和CPU配置必须保持一致，不能运行全局--ignored。结果见docs/VERIFY_PIPELINE_RESULTS_2026-10-25.md。
+
+## SHA1旧带只读审计
+
+examples/perf_audit_inventory.rs导出解析后的索引及文件/哈希清单（不是原始索引字节保全）；examples/perf_audit_sha1.rs使用共享Rust管线执行整批审计。runner参数为inventory目录、旧Python审计files.jsonl、全新的输出目录。只从旧记录中恢复verified=true、read_exit_code=0、实际/预期SHA1和长度均一致的文件；同路径/长度/摘要还必须匹配当前索引。此runner目前是本轮实验入口，不是正式CLI功能或任意旧JSON格式转换工具。SIGTERM/SIGINT请求record边界取消，等待SCSI调用返回。结果events.jsonl记录逐文件终态，progress.json每秒保存进度，不能把reading或skipped_previous_pass当作本轮重新读取通过。详见SHA1_AUDIT_PIPELINE_2026-10-25.md。
+
+## 长流校验诊断与提交前复查
+
+同一verify_ab测试可在TAPECPY_VERIFY_AB中提供modes列表（read/serial/pipeline），显式设为read/serial/pipeline/pipeline/serial/read执行长流对照。read仅作为读取基线，不声明摘要验证通过。测试输出包含buffer等待、READ间隙及逐秒payload样本，指标均由cfg(test)隔离。scripts/g3260_test/run_long_verify.py为本轮实验的固定路径驱动，不是通用安装或自动执行入口；使用前阅读并替换夹具。长流结果见../docs/SHA256_LONG_STREAM_RESULTS_2026-10-26.md。
+
+SHA1审计runner依赖当前可读索引，明确拒绝缺失/重复/格式错误的SHA1、符号链接和稀疏/乱序extent；普通写后校验仍使用SHA256。对日志/进度保存失败返回错误并请求取消。核心审计API与实验example已可用，本次不新增正式CLI/TUI菜单。
